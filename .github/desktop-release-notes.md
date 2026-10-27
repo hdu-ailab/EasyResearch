@@ -2,19 +2,28 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.14 highlights
+## 0.1.15 highlights
 
-- Home workspace actions can rename the actual project folder or delete its
-  conversation histories while keeping the folder and project files.
-- Missing-folder recovery lets you choose the new location after an external
-  move/rename and reconnect the existing root and child sessions. Open Work tabs
-  follow the new location; active work requires confirmation before stopping.
-- Long conversations open with a recent history window and load older entries on
-  demand. Individual event subscriptions recover without restarting Agent work.
-- macOS ARM64 signature repair for [#7](https://github.com/hdu-ailab/EasyResearch/issues/7):
-  native binaries are ad-hoc signed and strictly verified before acceptance;
-  desktop packaging seals the application while preserving the accepted sidecar.
-  Release checks verify and launch a copy installed from the DMG.
+- Upload multiple files into the Work workspace or a chosen folder, with progress,
+  cancellation and retry. Each file may be up to 1 GiB; existing names are preserved.
+- Download full files and rename files directly from the file tree. Renaming also
+  updates the current view's open file tab.
+- Preview images with zoom controls and play MP4 videos with seeking and fullscreen.
+- Open interactive HTML reports in an isolated preview, including document-relative
+  CSS, scripts and images. Dependencies must be inline or within the report folder;
+  download CDN libraries alongside the report. Source view and download remain
+  available. Browser codec support applies to videos; HTML previews do not host a
+  backend or gain access to the EasyResearch application.
+
+## 0.1.15 更新
+
+- Work 文件面板支持多文件上传，可选择工作区或子目录，查看进度、取消和重试。
+  单文件最大 1 GiB，同名文件会提示冲突并保留原文件。
+- 支持直接下载完整文件、重命名文件，并同步更新当前页面已打开的文件标签。
+- 支持图片缩放预览、MP4 播放、进度拖动和全屏。
+- 支持隔离的交互式 HTML 报告预览及相对路径 CSS、脚本和图片，并可查看源码或下载。
+  HTML 依赖须内嵌或置于报告目录及其子目录，CDN 库需下载到本地；视频编码支持取决于
+  浏览器。HTML 预览不提供后端运行环境或主应用访问权限。
 
 ## Downloads
 
@@ -26,7 +35,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.14
+version=0.1.15
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -34,7 +43,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.14
+version=0.1.15
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 
