@@ -25,6 +25,10 @@ Common mismatches:
 - “No effect,” “equivalent,” or “safe” conclusions from imprecise or non-significant results
 - Abstract or conclusion claims that omit material harms, uncertainty, subgroup caveats, or null findings
 - Novelty claims that are broader than the search or cited literature supports
+- Supported contributions weakened by stacked hedges, repeated disclaimers or
+  preemptive judgments that the method is inadequate
+- Speculative failure predictions presented as limitations of a method without
+  evidence or relevance to an actual manuscript claim
 
 Constructive response:
 
@@ -261,4 +265,16 @@ Prefer: “At Methods, paragraph 3, the experimental unit is unclear. Because th
 
 Avoid: “The statistics are bad.”
 
-Requests for new experiments should be necessary to support an existing central claim, ethically and practically proportionate, and distinguished from optional future work. Often the appropriate remedy is to narrow a claim, add a limitation, provide missing analysis detail, or share an existing artifact.
+Requests for new experiments should be necessary to support an existing central
+claim, ethically and practically proportionate, and distinguished from optional
+future work. Choose the remedy that matches the evidence: correct the claim in
+either direction, clarify the protocol, supply existing evidence, or explain a
+material scientific limit at the affected claim. The protocol or comparison may
+already express sufficient scope; a disclaimer is not an automatic remedy.
+
+Keep actionable speculative concerns and reviewer-response preparation as
+author-only advice for Writing's `manuscript/author-notes.md`. Label optional
+extensions as optional, not established defects or publication prerequisites.
+Actual adverse findings and necessary uncertainty still belong with the claims
+they affect. A smaller accepted seed design alone does not make a result
+preliminary; judge the reported design, counts and uncertainty.

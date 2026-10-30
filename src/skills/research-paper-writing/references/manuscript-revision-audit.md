@@ -42,13 +42,35 @@ preserve that gap for its owner. Editing the prose must not conceal it.
 Read the assembled paper as a reader, not only as separate sections. Check that
 the question motivates the method, comparisons test the stated question, and
 results justify the contribution. Each main result should explain a comparison,
-observation, interpretation and scope limit.
+observation and interpretation. Scope may already be clear from the protocol,
+caption or stated conditions; add a qualification only when omission would
+change the claim's meaning. Do not restore a compulsory per-paragraph limit.
 
 Merge one- or two-sentence subsections when they fragment one idea. Replace
 table-by-table narration with analysis, remove repeated motivation, define
 symbols before use and keep terminology consistent. Preserve evidence-qualified
 language when improving fluency. Equations should describe the actual method;
 counting them is not a sufficiency test.
+
+Within this same argument pass:
+
+- Lead each paragraph with its point and remove preventive explanations that add
+  no fact or reasoning. Describe method operations and demonstrated contributions
+  instead of preemptively judging the method weak or of limited value.
+- Compare wording with original evidence for both overclaiming and underclaiming.
+  Restore supported conclusions diluted by stacked hedges or reflexive
+  preliminary/limited-value labels; preserve real uncertainty and adverse results.
+- State each shared qualification once where it affects interpretation. Repeat
+  only where the new location would otherwise mislead. Prefer positive scope;
+  retain conceptual contrasts that prevent an actual misunderstanding.
+- For every proposed limitation, identify the claim and the consequence. Move
+  speculative failure predictions, author reminders and actionable untested
+  extensions into `manuscript/author-notes.md`, even for an initial draft.
+- Keep optional reviewer suggestions optional. Record potential questions and
+  evidence-backed response points in author notes, linking finding IDs and
+  unresolved owner actions. A note neither repairs unsupported attribution nor
+  permits concealment of material evidence. A smaller accepted seed design alone
+  does not justify weakening the paper; inspect actual protocol and uncertainty.
 
 ## Audit figures with their captions and discussion
 
@@ -118,3 +140,5 @@ Distinguish build success, mechanical source checks, visual inspection and
 scientific evidence checks in `revision-report.md`. Do not mark an unavailable
 check as passed. Internal findings, paths, status, owner actions and verification
 queues stay in that report and the handoff, not the manuscript or its appendix.
+Keep author notes separate from every draft fragment and derived submission file;
+check that manuscript assembly has not included the companion notes.

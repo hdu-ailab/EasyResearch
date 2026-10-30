@@ -77,7 +77,11 @@ Required conditions:
 - At least one strong baseline has completed on 1-2 complete authoritative datasets.
 - The proposed model has completed on the same initial datasets.
 - The comparison against the strongest baseline is recorded.
-- Formal stochastic performance tables use at least 5 seeds by default, or the manuscript explicitly marks the smaller seed count as a limitation/preliminary result.
+- Formal stochastic performance tables use at least 5 seeds by default; accept
+  an explicitly waived smaller design or a deterministic-task exception recorded
+  by Experiment. Report actual counts and supported uncertainty. A smaller count
+  alone does not require a limitation/preliminary label; judge each claim by its
+  evidence and reserve `preliminary` for exploratory or inconclusive results.
 - The result is strong enough to support a paper claim, or the user explicitly wants a negative-result/analysis paper.
 - Core ablations are completed, scheduled, or clearly marked as missing blockers.
 - Dataset splits, metrics, seeds, and protocols are sufficiently documented.
@@ -117,7 +121,8 @@ Keep outputs separated by audience:
 - Internal evidence and workflow records:
   `manuscript/citation-verification.md`,
   `manuscript/writing-readiness-report.md` for readiness and the full-draft argument map,
-  `manuscript/revision-report.md` after revision or audit passes, and the
+  `manuscript/revision-report.md` after revision or audit passes,
+  `manuscript/author-notes.md` for actionable author-only concerns, and the
   immutable timestamped Writing handoff.
 - Derived submission files: `manuscript/latex/` and
   `manuscript/manuscript.pdf`.
@@ -143,12 +148,28 @@ status. Put those details in the dedicated internal files and Writing handoff,
 not in the title page, abstract, body, captions, acknowledgments, appendices, or
 references.
 
-Write manuscript limitations as scholarly limits of the method, evidence, or
-external validity. Do not expose internal TODOs, missing-artifact checklists,
-draft/readiness labels, or instructions to the user as paper content. A
-reproducibility section or appendix describes the protocol and may name a real
-public repository, DOI, archive, or submission supplement supplied for readers;
-it never points readers to EasyResearch-local project paths.
+Apply this boundary from the first draft, including section fragments and
+appendices. Speculative failure predictions about untested conditions,
+preventive disclaimers, anticipated reviewer objections and author TODOs belong
+in author notes, not manuscript prose. A reproducibility section or appendix
+describes the protocol and may name a real public repository, DOI, archive, or
+submission supplement supplied for readers; it never points readers to
+EasyResearch-local project paths.
+
+### Author Notes
+
+Maintain `manuscript/author-notes.md` when actionable concerns arise during
+readiness, drafting or revision. For each note, record the affected claim or
+location, evidence (or explicitly untested status), consequence, required
+correction versus optional extension, owner/next action and disposition. Reuse
+finding IDs and link readiness, citation and revision records instead of copying
+them. Where useful, include the potential reviewer question and response points
+supported by those records; mark missing evidence rather than inventing an answer.
+Update resolved notes; do not manufacture concerns to fill a checklist.
+Review supplies its immutable report; Writing owns these notes. In single-Agent
+mode, the writer applies the same convention. Notes are an author-facing companion,
+never an appendix, a source to concatenate into the paper, or a substitute for
+correcting unsupported claims and disclosing material scientific evidence.
 
 ## Manuscript Structure
 For a standard empirical ML/AI paper, use this default Markdown structure:
@@ -168,33 +189,32 @@ For a standard empirical ML/AI paper, use this default Markdown structure:
 
 ## 5. Discussion
 
-## 6. Limitations
-
-## 7. Conclusion
+## 6. Conclusion
 
 ## References
 ```
 
-Adjust the structure only when the target venue, paper type, or user request requires it.
+Add a separate Limitations section when claim-relevant scientific limits warrant
+one or the verified venue requires it; otherwise integrate necessary limits where
+they affect interpretation. Adjust the structure to the paper type and request.
 
 ## Voice And Style
 Use first-person plural for the paper's contribution and actions.
 
-Preferred:
-- "We propose ..."
-- "We evaluate ..."
-- "We find that ..."
-- "Our method ..."
-- "This work shows ..."
-
-Avoid as the default authorial voice:
-- "This paper proposes ..."
-- "The paper evaluates ..."
-- "The authors show ..."
+Prefer "We propose/evaluate/find ...", "Our method ..." or "This work shows ..."
+over "This paper proposes ...", "The paper evaluates ..." or "The authors show ...".
 
 Use "this paper" only when referring to the document itself, such as "The rest of this paper is organized as follows," and avoid that phrase when possible.
 
-Do not overclaim. Use "state-of-the-art" only if the experiments actually support it against comparable methods and protocols.
+Lead with the strongest evidence-supported contribution. Calibrate both
+overclaiming and underclaiming: uncertainty belongs where the evidence warrants
+it, not in stacked may/could/possibly or reflexive "only/preliminary" labels.
+Express scope positively through the studied task and conditions. State a
+qualification once where needed; repeat it only when omission there would mislead.
+Use "state-of-the-art" only with comparable experimental support.
+Describe the method's operations and demonstrated contribution instead of
+preemptively calling it weak, inadequate or of merely limited value. Concrete
+results and precise conditions carry the scientific meaning of mixed outcomes.
 
 ## Method Section Requirements
 The Method section must be technically complete. A short prose-only Method section is not acceptable for a model paper.
@@ -248,7 +268,9 @@ Include:
 - Train/validation/test or cross-validation protocol.
 - Seed policy and number of runs.
 - For stochastic training, default to at least 5 formal seeds when feasible.
-- Report mean plus sample standard deviation over formal seeds, using `ddof=1` semantics.
+- Report actual counts and mean plus sample standard deviation over formal seeds
+  (`ddof=1`). With one run, identify the single-run value; across-seed SD is
+  unavailable, not zero. Accepted execution exceptions do not erase uncertainty.
 - Use paired deltas for proposed-vs-baseline comparisons when runs share the same seed list.
 - Add confidence intervals and paired statistical tests when they materially support or limit a claim.
 - Main comparison table.
@@ -322,7 +344,9 @@ Do not leave fake BibTeX entries, placeholder venues, or invented author lists i
 
 ## Claim Discipline
 Every main scientific claim needs support from an actual experiment, ablation,
-analysis or verified source passage, with its limits stated accurately.
+analysis or verified source passage. Its scope must be clear from the task,
+protocol or comparison; add a qualification only when omitting it would change
+interpretation. A limit already expressed by the setup needs no extra disclaimer.
 
 Before a full draft, put a compact argument map in the existing
 `manuscript/writing-readiness-report.md`. Record the research question, audience
@@ -335,13 +359,21 @@ purpose. Use the following table to connect claims with their actual support:
 | <bounded claim> | <actual run/table or source passage> | <implementation and visual evidence, or not applicable> | <negative cases, uncertainty, untested conditions> | <section and purpose> |
 ```
 
-If a claim has no evidence, weaken it or remove it.
+If a claim has no evidence, remove it or replace it with the precise supported
+claim. Restore a stronger statement when the evidence supports it and the prose
+has unnecessarily weakened it.
 
 A limitation bounds a claim; it is not positive evidence for that claim. Keep
 planned experiments distinct from completed runs. Include relevant negative
 results and all formal seed/ablation evidence, not only a selected winner.
 For a section-only request, prepare only the relevant entries. For revisions,
 update changed entries and preserve the evidence behind unaffected claims.
+
+For each proposed limitation, identify the specific claim and how its
+interpretation changes. Preserve relevant observed failures, missing controls
+that prevent a claimed attribution, and material external-validity limits.
+An untested extension outside the stated claim is not itself a defect or evidence
+of failure. Put actionable follow-ups in author notes; omit irrelevant guesses.
 
 ## Drafting Workflow
 
@@ -365,7 +397,8 @@ Follow this order:
    bounded answer. Distinguish observations from proposed explanations.
 5. Write Related Work by comparing mechanisms, assumptions and evaluation
    settings. Write Introduction around the supported gap and contribution;
-   write Discussion/Limitations from counterevidence and untested conditions.
+   write Discussion from supported implications and claim-relevant counterevidence
+   or limits. Keep untested follow-ups and author cautions in author notes.
 6. Write or revise the title and Abstract last. They summarize the completed
    study, including mixed outcomes, rather than the initial proposal.
 7. Load the revision audit and perform the author revision passes below.
@@ -385,7 +418,10 @@ previous prose is not a substitute for original sources.
   uncertainty, citation support, counterexamples and scope of conclusions.
 - **Argument:** check whether sections answer the research question, comparisons
   establish the claimed difference, and paragraphs develop an explanation rather
-  than repeat tables or generic motivation. Merge fragments and remove repetition.
+  than repeat tables or generic motivation. Lead paragraphs with their point;
+  correct overclaiming and underclaiming against original evidence, consolidate
+  repeated qualifiers, express scope positively, and move actionable speculative
+  cautions to author notes. Retain contrasts that resolve a real ambiguity.
 - **Presentation:** check actual images, captions and their in-text discussion,
   notation, cross-references and required PDF rendering.
 
@@ -421,12 +457,16 @@ Before calling a draft usable, check:
 - Unverified citations are isolated in `citation-verification.md` and omitted
   from the manuscript.
 - Claims in Abstract and Introduction are supported by Results.
-- Each main result has an interpretation and scope limit, not just a repeated number.
+- Each main result has an interpretation; its scope is clear from the stated
+  setting or a necessary qualification, without an automatic boundary sentence.
 - Every included figure agrees with its caption, discussion and numeric source;
   visual checks actually performed are distinguished from unavailable checks.
-- Limitations include weak datasets, failed settings, incomplete ablations, and external validity limits.
+- Each included limitation changes interpretation of an identified claim; relevant
+  adverse results and uncertainty are preserved. Supported contributions are not
+  weakened by repeated disclaimers or speculative failure predictions.
 - The manuscript contains no workflow status, local project paths, internal
-  verification queues, revision log, or instructions to the user.
+  verification queues, revision log, or author-only cautions. Author notes remain
+  separate in drafts, section fragments and all derived submission formats.
 
 ## LaTeX And Venue Templates
 Use `latex-pdf` for a complete paper and for explicitly requested TeX/PDF work.
@@ -442,12 +482,6 @@ When converting Markdown to LaTeX:
 - Verify citations, figure paths, labels, and table formatting.
 - Follow `latex-pdf`'s rendered-output inspection; compiling is not visual review.
 - Do not modify venue `.sty` files.
-
-## Useful References
-Follow the required loading table above. Additional references:
-- `references/reviewer-guidelines.md` for self-review and rebuttal framing.
-- `references/checklists.md` for venue-specific checklists.
-- `references/manuscript-revision-audit.md` for near-complete manuscript audits.
 
 ## Do Not Do
 - **Do not draft the full manuscript or any complete section without explicit user consent.** Write readiness reports and gap analyses unless the user explicitly says "write the paper", "draft the manuscript", "start writing", or equivalent.

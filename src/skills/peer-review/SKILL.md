@@ -95,6 +95,11 @@ are not automatically loaded with this Skill.
 4. Assess problem clarity, contribution, method completeness, assumptions,
    baselines, datasets, protocols, leakage, seeds, statistics, ablations,
    robustness, reproducibility, ethics, disclosure, and claim limits.
+   Calibrate overclaiming and underclaiming against evidence. Flag supported
+   contributions obscured by excessive hedging, repeated disclaimers or
+   preemptive judgments that the method is weak. Scope expressed by the protocol
+   need not be restated after each result. Assess smaller accepted seed designs
+   by actual counts and uncertainty, not an automatic preliminary label.
 5. Check figures/tables against supplied source data, captions and the paragraphs
    interpreting them. Verify metric direction, legend mappings, uncertainty and
    whether the claimed trend or comparison actually follows. When supplied
@@ -106,6 +111,12 @@ are not automatically loaded with this Skill.
    material package; read its timestamped handoff before continuing.
 7. Separate major findings that affect validity/claims from minor findings that
    affect clarity, presentation, or localized correctness.
+   Keep optional extensions and anticipated objections distinct from defects.
+   Every requested scientific limitation must name the affected claim and its
+   interpretive consequence. An untested out-of-scope setting is not evidence of
+   failure. Recommend actionable author-only concerns for Writing's
+   `manuscript/author-notes.md`, not speculative negative manuscript prose.
+   Keep real adverse findings and necessary uncertainty reader-facing.
 8. Give each finding a stable ID. Cite exact manuscript/evidence paths and
    locators, explain impact, state the required action, and assign the responsible Agent: Search,
    Experiment, Writing, or Figures. Distinguish a wording correction from missing
@@ -133,6 +144,7 @@ after corrections; another Review requires an explicit user request.
 ## Reproducibility, Ethics, And Disclosure
 ## Figures, Tables, And Presentation
 ## Venue And Source-Limited Checks
+## Optional Extensions And Author Advice
 ## Finding Ownership And Required Actions
 | finding | severity | evidence locator | owner | required action |
 ## Unreviewed Areas And Limitations

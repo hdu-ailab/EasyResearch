@@ -42,6 +42,20 @@ seed/ablation results, plotting sources and actual figure exports needed by the
 claims. Reconcile these with early proposals and summaries; do not describe an
 unimplemented component or interpret a figure from its filename alone.
 
+## Manuscript Voice
+
+State evidence-supported contributions directly, from the first draft through
+the final paper. Express scope through the task, data and comparison; place a
+necessary qualification where it changes interpretation and consolidate shared
+limits. Correct both overclaiming and underclaiming. Keep real adverse results
+and scientific uncertainty visible. Speculative failure predictions, preventive
+disclaimers, anticipated reviewer objections and author reminders belong in the
+selected Skill's `manuscript/author-notes.md`, outside manuscript prose and its
+derived outputs. Notes never substitute for correcting an unsupported claim.
+Describe the method's operations and demonstrated contribution rather than
+preemptively judging it weak or of limited value. Put potential reviewer questions
+and evidence-backed response points in author notes, marking unknown answers.
+
 ## Procedure
 
 1. Read and apply `survey-paper-writing` to survey/review/tutorial requests and
@@ -52,11 +66,13 @@ unimplemented component or interpret a figure from its filename alone.
 2. Map every intended claim to experiment evidence or a verified source and,
    for surveys, create `manuscript/survey-plan.md` before prose. For empirical
    full drafts, organize the existing readiness report into the Skill's argument
-   map before writing sections. Keep limits and counterevidence visible.
+   map before writing sections. Map counterevidence and material limits to the
+   specific claims they affect.
 3. Verify citation metadata and claim support; record uncertain items in
    `manuscript/citation-verification.md` rather than fabricating references.
 4. When authorized, draft or revise `manuscript/manuscript.md` with the
-   paper-type-appropriate structure and explicit limitations. For long output,
+   paper-type-appropriate structure and evidence-calibrated claims. Maintain
+   author notes for actionable concerns and optional extensions. For long output,
    first apply `specialist-handoff`'s long-document recipe: persist and verify
    small sections separately, resume confirmed progress after interruption,
    then assemble and inspect locally before replacing the authoritative file.
@@ -70,6 +86,8 @@ unimplemented component or interpret a figure from its filename alone.
    their owners and record each finding ID, disposition, changed location and
    verification evidence in `manuscript/revision-report.md`. Narrowing a claim
    does not complete another owner's missing experiment or source correction.
+   Keep optional Review advice optional in author notes; it is not automatically
+   a manuscript defect or a reason to weaken a supported contribution.
    Do not perform or claim an independent re-review.
 7. For a complete paper, or whenever requested by the authorized deliverable,
    produce derived LaTeX under `manuscript/latex/`, compile
@@ -121,7 +139,7 @@ Return:
 - `handoff:` the new `handoffs/writing-YYYYMMDD-HHmmss-SSS.md`
 - `inputs_reviewed:` every project file inspected as task evidence
 - `artifacts:` relevant paths such as `manuscript/manuscript.md`,
-  `manuscript/survey-plan.md`,
+  `manuscript/survey-plan.md`, `manuscript/author-notes.md` when present,
   `manuscript/citation-verification.md`, `manuscript/latex/`,
   `manuscript/manuscript.pdf`, referenced `figures/`, and the handoff itself
 - `unresolved_gaps:` unsupported claims, missing experiments, unverified

@@ -84,7 +84,8 @@ orientation, use a technical/narrative survey.
 
 ## Manuscript And Audit Outputs
 
-Produce two distinct outputs with different audiences.
+Keep submission-facing prose and author-facing records distinct from the first
+draft, including section fragments, captions, appendices and derived TeX/PDF.
 
 The submission-facing `manuscript/manuscript.md` contains:
 
@@ -118,6 +119,35 @@ than inventing an anonymous-draft label. Keep unresolved references in
 `citation-verification.md` and the handoff, omit them from manuscript references,
 and return `partial` when they prevent the authorized manuscript from being
 complete.
+
+Maintain `manuscript/author-notes.md` when actionable author concerns arise. Record
+the affected claim/location, source evidence or explicitly untested status,
+consequence, required correction versus optional extension, owner/next action and
+disposition. Reuse finding IDs and link the survey plan, citation verification
+and revision records rather than duplicating them. Include potential reviewer
+questions and evidence-backed response points when useful; unknown answers remain
+unresolved. Update resolved notes without inventing a risk inventory. Writing
+owns these notes in either execution mode; Review supplies its immutable report.
+Author notes are a separate companion, never an appendix or assembly input, and
+never a substitute for correcting a claim or disclosing material evidence.
+
+## Evidence-Calibrated Voice
+
+Lead with the survey's supported synthesis, taxonomy and useful distinctions.
+State topic, time and source scope positively; this usually supplies the boundary
+without a disclaimer after each theme. Qualify a claim where omission would
+change its interpretation and consolidate shared qualifications. Preserve real
+contradictions, material coverage gaps and association-versus-causation distinctions.
+
+Correct both overclaiming and underclaiming against readable source passages.
+Remove stacked hedges and restore a supported conclusion that has been weakened.
+Describe evidence and tradeoffs concretely rather than preemptively calling the
+survey or a method weak, inadequate or of merely limited value. Speculative
+failure predictions, preventive disclaimers, anticipated reviewer objections and
+author TODOs belong in author notes, not any manuscript draft or final prose.
+For each scholarly limitation, identify the specific claim and how interpretation
+changes. An out-of-scope topic is not automatically a coverage defect; keep
+actionable optional expansions in author notes and omit irrelevant guesses.
 
 ## Durable Survey Plan
 
@@ -190,16 +220,20 @@ missing pieces after interruption rather than regenerating the entire survey.
    source support; a field-wide claim needs representative coverage, not one
    paper.
 6. Validate every citation against both metadata and the source passage that
-   supports the adjacent claim. Remove, weaken, or qualify unsupported claims.
+   supports the adjacent claim. Replace unsupported claims with precise supported
+   statements or remove them; restore underclaimed findings when sources justify it.
 7. Run a coherence pass across adjacent sections. Preserve citation keys,
-   numeric values, category assignments, and limitations while removing
-   repetition and abrupt transitions.
+   numeric values, category assignments, relevant counterevidence and necessary
+   uncertainty. Lead paragraphs with their point, consolidate repeated qualifiers,
+   prefer positive scope and remove preventive self-devaluation. Keep optional
+   Review advice in author notes rather than turning it into a manuscript defect.
 8. Recheck recent coverage before final delivery when the search period extends
    to the present.
 9. Compare the submission-facing manuscript with the Writing handoff. Move any
    workflow status, retrieval/screening audit, artifact-path inventory, or
-   unresolved-verification queue out of the manuscript and into the handoff or
-   internal verification artifact before deriving LaTeX/PDF.
+   unresolved-verification queue into the handoff or internal verification artifact.
+   Move actionable speculative cautions and response preparation to author notes;
+   keep that companion outside manuscript/LaTeX/PDF assembly.
 
 Do not impose arbitrary subsection word counts. Length follows the evidence,
 venue, audience, and user request.
@@ -220,15 +254,17 @@ topic, audience, and target venue:
 ## 4-N. Category Synthesis
 ## Cross-Category Comparison And Discussion
 ## Open Problems And Research Directions
-## Limitations Of This Survey
 ## Conclusion
 ## References
 ```
 
 For another orientation, change the scholarly sections required by the request
-or target venue. Add `Scope And Review Method` only when verified target-venue
-instructions require review-method reporting. The operational audit remains in
-the Writing handoff even when a concise methods section is present.
+or target venue. Add `Limitations Of This Survey` when material, claim-relevant
+coverage limits warrant it or the verified venue requires it; otherwise explain
+necessary limits where they affect the synthesis. Add `Scope And Review Method`
+only when verified target-venue instructions require review-method reporting.
+The operational audit remains in the Writing handoff even when a concise methods
+section is present.
 
 For a technical field, include notation and equations when they materially
 clarify shared assumptions or method differences. A survey does not need a
@@ -271,7 +307,9 @@ Complete when the authorized survey scope has:
 - a submission-facing title, abstract, body, and references free of workflow
   status and operational audit content not required by verified venue guidance;
 - verified citation metadata and claim support, with uncertainty isolated;
-- explicit survey coverage limitations and no hidden partial-source claims; and
+- clear survey scope and material coverage limits, with no hidden partial-source
+  claims or repeated speculative disclaimers; actionable author concerns remain
+  in separate author notes; and
 - every requested derived LaTeX/PDF or figure deliverable verified.
 
 Return `partial` when a useful plan or draft exists but coverage, citation

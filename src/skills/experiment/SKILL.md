@@ -215,10 +215,22 @@ Default rules:
 - Formal stochastic performance tables should use at least 5 seeds by default unless the user explicitly waives this or the task is deterministic.
 - Use the same seed list for proposed methods and baselines in paired comparisons.
 - Record the exact seed list in `formal-experiment-plan.md`, `experiment-record.md`, configs, and promoted summaries.
-- Report mean plus sample standard deviation over seeds, using `ddof=1`, not population standard deviation.
+- Report the actual run count and mean plus sample standard deviation over seeds,
+  using `ddof=1`, not population standard deviation. With one run, report a
+  single-run value; across-seed SD is unavailable, not zero.
 - For proposed-vs-baseline comparisons, add paired deltas by seed when the same seeds are used.
 - When possible, report 95% confidence intervals and paired statistical tests, such as paired t-test and Wilcoxon signed-rank test, especially for the strongest baseline.
-- If fewer than 5 seeds are used, label the results as preliminary or explicitly explain the compute/user constraint; do not present them as final paper evidence without caveats.
+- For fewer than 5 seeds, record the accepted waiver or deterministic design and
+  its rationale in the plan, record and handoff. Report the actual protocol,
+  counts, variation and statistical support in promoted summaries. A waiver
+  changes the execution requirement, not the strength of the evidence.
+- Judge each claim by the accepted design and observed uncertainty. Reserve
+  `preliminary` for genuinely exploratory or inconclusive evidence; a smaller
+  accepted seed count alone does not downgrade a result or the whole paper.
+  Identify any specific inference the evidence cannot support for Writing to
+  correct. Keep compute/user constraints and proposed follow-ups in internal
+  records for Writing's author notes, rather than prescribing manuscript
+  disclaimers or predictions of failure in untested settings.
 - If a 5-seed expansion weakens an earlier claim, update the manuscript story instead of hiding the variance.
 
 ## Model Trial Process

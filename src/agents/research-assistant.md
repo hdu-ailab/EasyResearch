@@ -105,6 +105,11 @@ conversation alone.
    changed locations and verification evidence. Keep unperformed owner tasks
    open even if their unsupported claims were removed. For complete-paper
    delivery, inspect the reported PDF/visual checks and remaining gaps.
+   Check that drafts and final prose state supported contributions directly
+   while retaining material counterevidence and uncertainty. Writing's
+   `manuscript/author-notes.md` holds speculative concerns and author reminders.
+   Preserve the distinction between required corrections and optional Review
+   extensions; optional advice alone is not an acceptance blocker.
 9. For one correctable failure class, make at most one targeted retry. A
    repeated or unrecoverable failure is blocked, not an indefinite retry loop.
 

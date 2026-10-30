@@ -97,6 +97,7 @@ manuscript/writing-readiness-report.md
 manuscript/survey-plan.md
 manuscript/manuscript.md
 manuscript/citation-verification.md
+manuscript/author-notes.md
 manuscript/latex/
 manuscript/manuscript.pdf
 figures/
@@ -160,6 +161,12 @@ coverage target, not permission to omit additional selected papers. They also re
 output unless the user limited scope. Writing tasks carry the exact drafting
 authority already supplied.
 
+Both writing routes keep speculative concerns, preventive disclaimers and
+actionable reviewer-response preparation in `manuscript/author-notes.md` when
+present. Require direct evidence-supported prose from the first draft, with real
+adverse findings and necessary uncertainty accurately reported. The writer owns
+the companion notes; Review contributes advice only through its immutable report.
+
 Empirical Writing tasks identify the accepted implementation/configuration,
 formal result and seed/ablation records, material passages, and figure/data
 paths needed for the intended claims. Require the Skill's compact argument map
@@ -206,6 +213,13 @@ On the hidden terminal status+handoff:
    Review is warranted. Review completion means the critique was produced, not
    that the paper passed. Route findings to Search, Experiment, Writing, or
     Figures and keep final acceptance with the Research Assistant.
+
+Keep optional Review extensions optional; they alone do not block acceptance or
+justify weakening a supported contribution. Verify that author-only cautions are
+in the companion notes rather than drafts, appendices or derived submission files.
+Notes never substitute for a required correction or material scientific disclosure.
+For a smaller accepted seed design, check actual counts and statistical support
+rather than demanding a blanket preliminary label.
 
 For manuscript drafting/revision acceptance, check the actual manuscript and
 the argument/evidence map required by the selected route and scope, not just

@@ -249,7 +249,7 @@ COLM reviews focus on relevance to language modeling in addition to standard cri
 ### COLM-Specific Considerations
 
 - **Language model focus**: Reviewers will assess whether the contribution advances understanding of language models. General ML contributions need explicit LM framing.
-- **Newer venue norms**: COLM is newer than NeurIPS/ICML, so reviewer calibration varies more. Write more defensively — anticipate a wider range of reviewer expertise.
+- **Reader expertise**: Define terms, explain reasoning steps and give supporting evidence for readers from different backgrounds. State the supported contribution directly and keep reviewer-response preparation in author notes.
 - **ICLR-derived process**: Review process is modeled on ICLR (open reviews, author response period, discussion among reviewers).
 - **Broad interpretation of "language modeling"**: Includes training, evaluation, alignment, safety, efficiency, applications, theory, multimodality (if language is central), and social impact of LMs.
 

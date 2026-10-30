@@ -10,6 +10,7 @@ against the completed study.
 - [Build the argument](#build-the-argument)
 - [Write each section for its purpose](#write-each-section-for-its-purpose)
 - [Explain results](#explain-results)
+- [Calibrate scope and author concerns](#calibrate-scope-and-author-concerns)
 - [Integrate figures and tables](#integrate-figures-and-tables)
 - [Revise paragraphs and sentences](#revise-paragraphs-and-sentences)
 - [Check the assembled paper](#check-the-assembled-paper)
@@ -74,8 +75,9 @@ technical details.
 
 Make the contribution concrete and checkable. If a short contribution list
 helps navigation, each item names a distinct result, method or insight and its
-scope. "Extensive experiments" alone is not a finding. Preview the limitations
-that materially change the central message; do not reserve them for the last page.
+scope. "Extensive experiments" alone is not a finding. State material mixed
+outcomes precisely when they change the central message, rather than adding a
+generic disclaimer about the method's value.
 
 ### Related Work
 
@@ -136,11 +138,14 @@ Connect observations to the initial question and prior work. Distinguish
 measured effects from possible explanations. A proposed mechanism should be
 presented as a hypothesis until a discriminating test supports it.
 
-Explain how data, protocol, uncertainty, missing controls or domain coverage
-limit interpretation. A non-significant result does not establish equivalence;
-a synthetic example does not establish deployment robustness. State what a
-follow-up could distinguish, without writing planned work as completed work.
-Use scholarly limitations rather than internal TODOs or task-status messages.
+For each scientific limit, name the claim affected and explain the consequence
+using actual data, protocol, uncertainty or coverage. A non-significant result
+does not establish equivalence. If missing controls prevent a mechanism claim,
+state the supported observation and remove that attribution. Untested deployment
+or another out-of-scope extension is not itself evidence of a method defect.
+Put actionable follow-ups and reviewer-response preparation in author notes.
+Use a separate Limitations section when these scientific facts warrant it or the
+verified venue requires it; describe actual scope rather than inventing warnings.
 
 ### Conclusion and Appendix
 
@@ -152,26 +157,55 @@ argument. Avoid duplicating the same evidence as multiple figures or tables.
 
 ## Explain results
 
-Each major result paragraph should let the reader recover four things:
+Each major result paragraph should let the reader recover three things:
 
 1. **Question:** what comparison or hypothesis is being tested?
 2. **Observation:** what changed, relative to which comparator, by how much and
    with what uncertainty or variation?
-3. **Interpretation:** what does this establish, and which alternatives remain?
-4. **Boundary:** under which conditions does the conclusion hold or fail?
+3. **Interpretation:** what answer or supported insight follows?
+
+The task, protocol, table caption or named comparison can already establish
+scope. Add a local qualification only when its omission would materially change
+the interpretation. There is no required final Boundary sentence or list of
+untested alternatives in every paragraph.
 
 Illustrative mixed-result pattern, not a result to copy into a paper:
 
 > We test whether the added penalty reduces error under both conditions. Mean
 > error decreases in condition A but increases in B under the matched protocol.
-> This supports a condition-dependent effect rather than uniform improvement.
-> The present comparison does not identify which property of the conditions
-> explains the difference.
+> The penalty's observed effect is condition-dependent, with an error reduction
+> in A and an increase in B.
+
+The direction reversal is the finding. A possible diagnostic for its cause can
+be an optional author note; it is not an automatic paragraph-ending admission.
+For a consistently supported result, state the measured improvement directly
+with its tested conditions, comparator and uncertainty.
 
 Replace general phrases such as "significantly better" with the actual metric,
 effect and uncertainty. Use "statistically significant" only with an appropriate
 reported analysis. Report absolute versus relative changes and percentage points
 unambiguously. Do not infer a mechanism from a prediction score alone.
+
+## Calibrate scope and author concerns
+
+Lead with the method's operation, observed result or demonstrated contribution.
+Use positive scope, such as "We evaluate offline classification on the specified
+benchmarks," rather than defining the study through what it does not claim.
+Keep a negative contrast when it resolves a real conceptual ambiguity, such as
+distinguishing association from causation; do not mechanically delete negation.
+
+Keep real adverse findings and uncertainty where they change interpretation.
+Consolidate a shared qualification and repeat it only where omission would
+mislead. Compare wording with the original evidence in both directions: remove
+unsupported claims and restore supported conclusions weakened by stacked hedges,
+"merely/only" judgments or generalized statements that the method is inadequate.
+
+Speculative failure predictions, preventive disclaimers and anticipated reviewer
+objections stay out of all manuscript prose, including first drafts, section
+fragments and appendices. Put actionable concerns in `manuscript/author-notes.md`
+with the affected claim, evidence or untested status, next action and optional
+versus required status. Reviewer-response points cite actual evidence; unresolved
+questions remain unresolved in those notes. Irrelevant guesses need no record.
 
 ## Integrate figures and tables
 
@@ -183,7 +217,8 @@ For each included figure, inspect the actual image and its numeric/source data,
 then read its caption and every substantive in-text interpretation together.
 Check axes, units, legend-to-method mapping, direction, uncertainty and ranges.
 A caption identifies the comparison, setting, abbreviations and uncertainty;
-the surrounding paragraph explains the inference and its limits.
+the surrounding paragraph explains the inference. Add a qualification only when
+the inference needs one beyond the scope already clear from the caption/setup.
 
 Group related panels when they answer one question and remain readable at the
 final size. Keep useful detail in the appendix; remove redundant presentations
@@ -206,8 +241,10 @@ logical connection. Remove repeated motivation and mechanically repeated
 phrases such as "as shown in Table..." when the reference is already clear.
 
 Use "We" for the study's actions. Preserve uncertainty where evidence warrants
-it; confident wording is not a reason to remove scientific qualification. Match
-sentence length to the idea rather than enforcing an arbitrary word count.
+it and remove unsupported or stacked hedging. Precision, not a blanket confident
+or cautious tone, determines claim strength. Move author-only cautions out of
+prose; keep the evidence that readers need. Match sentence length to the idea
+rather than enforcing an arbitrary word count.
 
 ## Check the assembled paper
 
@@ -216,6 +253,9 @@ as a sequence. They should describe the same method, question, findings and
 limits. Then read adjacent sections for missing definitions, duplicated content
 and abrupt transitions. Confirm that every promised contribution is actually
 demonstrated and every major conclusion has a source.
+Check that shared qualifications are not mechanically repeated and that supported
+contributions remain clear. Author notes are a separate companion, not a section
+or input to manuscript/TeX/PDF assembly.
 
 Use the parent Skill's bounded author revision passes and
 `manuscript-revision-audit.md` for concrete corrections. Keep original evidence
