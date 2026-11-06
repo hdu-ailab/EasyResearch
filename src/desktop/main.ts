@@ -306,7 +306,8 @@ function showLoading(status: string): void {
 
 async function createMainWindow(handle: DesktopSidecarHandle, hash: string): Promise<void> {
   mainWindow?.destroy();
-  const preload = join(__dirname, "preload.cjs");
+  // Bun may bake __dirname into the host bundle as the build-machine source path.
+  const preload = join(app.getAppPath(), "preload.cjs");
   const windowOptions = desktopWindowOptions(preload, DESKTOP_SESSION_PARTITION);
   const window = new BrowserWindow({ ...windowOptions, icon: join(process.resourcesPath, "icons", "icon.png") });
   mainWindow = window;

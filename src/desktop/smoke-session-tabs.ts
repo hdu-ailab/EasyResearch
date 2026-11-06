@@ -38,6 +38,12 @@ export async function prepareDesktopSmokeSessionTabs(options: ProbeOptions & {
 }): Promise<DesktopSmokeSessionTabsReceipt> {
   if (!options.transcriptUser?.trim()) throw new Error("Desktop session tabs requires fixture transcript evidence.");
   const probe = createProbe(options);
+  const bridgeAvailable = await probe.run(() => options.webContents.executeJavaScript(
+    "typeof window.easyresearchDesktop?.persistWebUiPreferences === 'function'",
+  ));
+  // Throw in the host: Electron can replace a renderer-thrown error with a generic
+  // executeJavaScript failure, hiding the reason a preference mirror never appeared.
+  if (bridgeAvailable !== true) throw new Error("Desktop session tabs preference bridge is unavailable in the authenticated renderer.");
   let root: SessionTab | undefined;
   let stableAt: number | undefined;
   while (true) {

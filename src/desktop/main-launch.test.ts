@@ -33,6 +33,7 @@ it.each([200, 503])("uses the shell-resolved root for desktop custody and child 
     whenReady: async () => {},
     setAppUserModelId: () => {},
     getPath: () => join(root, "user-data"),
+    getAppPath: () => join(root, "installed", "EasyResearch.app", "Contents", "Resources", "app.asar"),
     getVersion: () => "1.2.3",
     quit: () => { quit = true; },
   });

@@ -239,6 +239,30 @@ afterEach(() => {
 });
 
 describe("Desktop smoke against actual Work hydration and session metadata", () => {
+  it("prepares the selected real Work root when the host restores another unvisited bookmark first", async () => {
+    const persist = installPreferences([dormant, root]);
+    vi.mocked(api.getSnapshot).mockResolvedValue(snapshot());
+    const mounted = render(<ResolvedWork />, { wrapper: Providers });
+    await advance(25);
+    hydrateTranscript(mounted.container);
+    await advance(50);
+    expect(storedTabs().map((tab) => tab.id)).toEqual([dormant.id, root.id]);
+    expect(document.querySelector(`[data-session-tab-id="${dormant.id}"]`)).not.toBeNull();
+    expect(document.querySelector(`[data-session-surface="${dormant.id}"]`)).toBeNull();
+    const preparing = prepare();
+    await advance(200);
+    const receipt = await preparing;
+    expect(receipt.tabs[1]).toEqual(root);
+    expect(receipt.tabs[0].id).not.toBe(dormant.id);
+    expect(storedTabs()).toEqual(receipt.tabs);
+    expect(api.getSnapshot).toHaveBeenCalledExactlyOnceWith(root.id);
+    expect(api.openSession).toHaveBeenCalledTimes(1);
+    expect(
+      persist.mock.calls.filter(
+        ([raw]) => raw && JSON.parse(raw).sessionTabs?.some((tab: SessionTab) => tab.id === receipt.tabs[0].id),
+      ),
+    ).toHaveLength(1);
+  });
   it.each(["initial", "successor"] as const)(
     "rejects the review's static pre-effect real Work false pass in %s",
     async (phase) => {

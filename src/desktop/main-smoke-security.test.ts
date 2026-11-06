@@ -24,6 +24,8 @@ it.each([
   let uiChecks = 0;
   let rendererPreferenceWrites = 0;
   const project = join(root, "project");
+  const installedAppPath = join(root, "installed", "resources", "app.asar");
+  const preloads: unknown[] = [];
   const descriptor = { id: "smoke-session", cwd: project, name: "Security fixture" };
   const transcriptUser = "Renderer security fixture prompt.";
   const initialPreferences = JSON.stringify({
@@ -60,6 +62,7 @@ it.each([
     whenReady: async () => {},
     setAppUserModelId() {},
     getPath: () => join(root, "user-data"),
+    getAppPath: () => installedAppPath,
     getVersion: () => "1.2.3",
     commandLine: { hasSwitch: (name: string) => name === "no-sandbox" && fixture.noSandbox },
     quit() { quit = true; },
@@ -78,6 +81,7 @@ it.each([
 
     constructor(private readonly options: { webPreferences: Record<string, unknown> }) {
       super();
+      if (options.webPreferences.preload) preloads.push(options.webPreferences.preload);
       const storage = new Map([[STORAGE_KEY, initialPreferences]]);
       const localStorage = {
         getItem: (key: string) => storage.get(key) ?? null,
@@ -214,6 +218,7 @@ it.each([
   try {
     await import("./main");
     await vi.waitFor(() => expect(uiChecks).toBeGreaterThan(0));
+    expect(preloads).toEqual([join(installedAppPath, "preload.cjs")]);
     expect(events().map((event) => event.type)).toEqual(["desktop-smoke.sidecar-ready"]);
     resolveUi([true, true]);
 

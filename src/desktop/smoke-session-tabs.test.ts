@@ -116,6 +116,14 @@ async function cleared(h: ReturnType<typeof harness>, receipt?: DesktopSmokeSess
 }
 
 describe("packaged session-tab preference acceptance", () => {
+  it("reports a missing preload bridge before waiting for a mirror that cannot be written", async () => {
+    const h = harness();
+    delete window.easyresearchDesktop;
+    writeDesktopPreferenceBlob(userDataDir, null);
+    await expect(h.prepare()).rejects.toThrow(/preference bridge is unavailable/);
+    expect(h.executeJavaScript).toHaveBeenCalledTimes(1);
+    expect(h.persist).not.toHaveBeenCalled();
+  });
   it.each(["en", "zh-CN"] as const)("preserves absent, empty and named root metadata while checking its actual %s label", async (language) => {
     for (const name of [undefined, "", "Named root", "   "]) {
       document.body.replaceChildren();
