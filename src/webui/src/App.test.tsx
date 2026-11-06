@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import packageJson from "../../../package.json";
+import type { SessionSnapshotDto } from "../../web/contracts";
 import { App } from "./App";
 import * as api from "./api";
 import { I18nProvider } from "./i18n/I18nProvider";
@@ -20,6 +21,10 @@ vi.mock("./api", async (importOriginal) => {
     createSession: vi.fn(),
     deleteSession: vi.fn(),
     deleteWorkspace: vi.fn(),
+    relocateWorkspace: vi.fn(),
+    resumeRelocatedSession: vi.fn(),
+    listDirectories: vi.fn(),
+    listDirectoryRoots: vi.fn(),
     stopSession: vi.fn(),
     touchSession: vi.fn(),
     getSnapshot: vi.fn(),
@@ -181,6 +186,14 @@ describe("App routing", () => {
     vi.mocked(api.createSession).mockReset();
     vi.mocked(api.deleteSession).mockReset();
     vi.mocked(api.deleteWorkspace).mockReset();
+    vi.mocked(api.relocateWorkspace).mockReset();
+    vi.mocked(api.resumeRelocatedSession).mockReset();
+    vi.mocked(api.listDirectories)
+      .mockReset()
+      .mockImplementation(async (path) => ({ path: path ?? "/tmp", entries: [] }));
+    vi.mocked(api.listDirectoryRoots)
+      .mockReset()
+      .mockResolvedValue([{ name: "/", path: "/" }]);
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
     vi.mocked(api.getProviderTimeoutSettings)
@@ -232,6 +245,553 @@ describe("App routing", () => {
       return disconnectConfiguration;
     });
     stubEvents();
+  });
+
+  const tabButton = (id: string) =>
+    document.querySelector<HTMLButtonElement>(`[role="tab"][data-session-tab-id="${id}"]`)!;
+  const sessionSurface = (id: string) => document.querySelector<HTMLElement>(`[data-session-surface="${id}"]`)!;
+
+  function multipleSessions() {
+    const sessions = ["s1", "s2", "s3"].map((id) => ({
+      ...persisted.sessions[0]!,
+      id,
+      name: "Same title",
+      path: `/store/${id}.jsonl`,
+      cwd: id === "s3" ? "/other" : "/p",
+    }));
+    vi.mocked(api.listStatus).mockResolvedValue({ ...persisted, sessions });
+    vi.mocked(api.openSession).mockImplementation(async (path) => {
+      const session = sessions.find((session) => session.path === path)!;
+      return { id: session.id, cwd: session.cwd, sessionName: session.name, status: "ready", isStreaming: false };
+    });
+    vi.mocked(api.getSnapshot).mockImplementation(async (id) => ({
+      ...(workSnapshot as SessionSnapshotDto),
+      session: {
+        id,
+        cwd: id === "s3" ? "/other" : "/p",
+        sessionName: "Same title",
+        status: "ready",
+        isStreaming: false,
+      },
+    }));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ language: "en", sessionTabs: sessions.map(({ id, cwd, name }) => ({ id, cwd, name })) }),
+    );
+    return sessions;
+  }
+
+  async function chooseRecoveryFolder() {
+    const user = userEvent.setup();
+    const recovery = await screen.findByRole("dialog", { name: "Workspace folder not found" });
+    await user.click(within(recovery).getByRole("button", { name: "Choose new folder" }));
+    const picker = screen.getByRole("dialog", { name: "Choose new folder" });
+    await user.clear(within(picker).getByRole("combobox"));
+    await user.type(within(picker).getByRole("combobox"), "/moved{Enter}");
+    await waitFor(() => expect(within(picker).getByRole("button", { name: "Migrate and open" })).toBeEnabled());
+    await user.click(within(picker).getByRole("button", { name: "Migrate and open" }));
+  }
+
+  it.each(["work", "home"] as const)(
+    "mounts the accepted new UUID from real empty-root recovery via %s and replaces its bookmark",
+    async (surface) => {
+      const realApi = await vi.importActual<typeof import("./api")>("./api");
+      vi.mocked(api.resumeRelocatedSession).mockImplementation(realApi.resumeRelocatedSession);
+      vi.mocked(api.listStatus).mockResolvedValue({
+        ...persisted,
+        sessions: [],
+        activeSessions:
+          surface === "home"
+            ? [{ id: "s1", cwd: "/p", sessionName: "Empty root", status: "ready", isStreaming: false }]
+            : [],
+      });
+      if (surface === "home")
+        vi.mocked(api.touchSession).mockRejectedValueOnce(
+          new api.ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/p", error: "Folder missing" }),
+        );
+      vi.mocked(api.getSnapshot).mockImplementation(async (id) => ({
+        ...(workSnapshot as SessionSnapshotDto),
+        session: { id, cwd: "/moved", status: "ready", isStreaming: false },
+      }));
+      if (surface === "work")
+        vi.mocked(api.getSnapshot).mockRejectedValueOnce(
+          new api.ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/p", error: "Folder missing" }),
+        );
+      vi.mocked(api.relocateWorkspace).mockImplementation(async () => {
+        vi.mocked(api.listStatus).mockResolvedValue({ ...persisted, sessions: [], activeSessions: [] });
+        return { cwd: "/moved", sessionIds: ["s1"] };
+      });
+      const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/api/status") return Response.json({ ...persisted, sessions: [], activeSessions: [] });
+        if (path === "/api/sessions" && init?.method === "POST")
+          return Response.json({ id: "recovered", cwd: "/moved", status: "ready", isStreaming: false });
+        throw new Error(`Unexpected request ${path}`);
+      });
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ language: "en", sessionTabs: [{ id: "s1", cwd: "/p" }] }));
+        window.history.replaceState(null, "", surface === "work" ? "#/work/s1?cwd=%2Fp" : "#/");
+        render(<App />);
+        if (surface === "home") await userEvent.setup().click(await within(workspace()).findByText("Empty root"));
+        await chooseRecoveryFolder();
+        await waitFor(() => expect(window.location.hash).toBe("#/work/recovered?cwd=%2Fmoved"));
+        await waitFor(() => expect(sessionSurface("recovered")).not.toBeNull());
+        expect(tabButton("s1")).toBeNull();
+        expect(tabButton("recovered")).toHaveAttribute("aria-selected", "true");
+        expect(api.getSnapshot).toHaveBeenLastCalledWith("recovered");
+        expect(api.resumeRelocatedSession).toHaveBeenCalledOnce();
+      } finally {
+        fetch.mockRestore();
+      }
+    },
+  );
+
+  it.each(["delete", "relocate"] as const)(
+    "applies workspace %s results to dormant siblings after the initiating terminal SSE",
+    async (operation) => {
+      multipleSessions();
+      const mutation = deferred<Awaited<ReturnType<typeof api.deleteWorkspace>>>();
+      vi.mocked(api.deleteWorkspace).mockReturnValue(mutation.promise);
+      vi.mocked(api.relocateWorkspace).mockReturnValue(mutation.promise);
+      vi.mocked(api.resumeRelocatedSession).mockResolvedValue({
+        id: "s1",
+        cwd: "/moved",
+        status: "ready",
+        isStreaming: false,
+      });
+      vi.mocked(api.getSnapshot)
+        .mockRejectedValueOnce(new api.ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/p", error: "Folder missing" }))
+        .mockImplementation(async (id) => ({
+          ...(workSnapshot as SessionSnapshotDto),
+          session: {
+            id,
+            cwd: id === "s1" ? "/moved" : id === "s3" ? "/other" : "/p",
+            status: "ready",
+            isStreaming: false,
+          },
+        }));
+      const handlers = new Map<string, Parameters<typeof api.connectSessionEvents>[1]>();
+      vi.mocked(api.connectSessionEvents).mockImplementation((id, value) => {
+        handlers.set(id, value);
+        return vi.fn();
+      });
+      window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+      render(<App />);
+      const user = userEvent.setup();
+      if (operation === "delete") {
+        const recovery = await screen.findByRole("dialog", { name: "Workspace folder not found" });
+        await user.click(within(recovery).getByRole("button", { name: "Delete workspace" }));
+        await user.click(
+          within(screen.getByRole("dialog", { name: "Delete workspace" })).getByRole("button", {
+            name: "Delete workspace",
+          }),
+        );
+        act(() => handlers.get("s1")!.onEvent({ type: "session_deleted", sessionId: "s1" }));
+        await waitFor(() => expect(window.location.hash).toBe("#/work/s2?cwd=%2Fp"));
+        await act(async () => mutation.resolve({ cwd: "/p", sessionIds: ["s1", "s2"] }));
+        await waitFor(() => expect(window.location.hash).toBe("#/work/s3?cwd=%2Fother"));
+        expect(tabButton("s1")).toBeNull();
+        expect(tabButton("s2")).toBeNull();
+        expect(api.resumeRelocatedSession).not.toHaveBeenCalled();
+      } else {
+        await chooseRecoveryFolder();
+        act(() => handlers.get("s1")!.onEvent({ type: "session_relocated", sessionId: "s1", cwd: "/moved" }));
+        await waitFor(() => expect(window.location.hash).toBe("#/work/s1?cwd=%2Fmoved"));
+        await act(async () => mutation.resolve({ cwd: "/moved", sessionIds: ["s1", "s2"] }));
+        expect(
+          JSON.parse(localStorage.getItem(STORAGE_KEY)!).sessionTabs.find((tab: { id: string }) => tab.id === "s2").cwd,
+        ).toBe("/moved");
+        expect(sessionSurface("s2")).toBeNull();
+        expect(api.resumeRelocatedSession).toHaveBeenCalledOnce();
+        expect(window.location.hash).toBe("#/work/s1?cwd=%2Fmoved");
+      }
+    },
+  );
+
+  it("suspends the whole retained recovery layer when browser navigation activates Home", async () => {
+    vi.mocked(api.listStatus).mockResolvedValue(persisted);
+    vi.mocked(api.openSession).mockRejectedValueOnce(
+      new api.ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/p", error: "Folder missing" }),
+    );
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    render(<App />);
+    const form = await screen.findByRole("dialog", { name: "Workspace folder not found" });
+    const backdrop = form.parentElement!;
+    simulateBrowserBackTo("#/");
+    expect(form).toBeInTheDocument();
+    expect(backdrop).not.toBeVisible();
+    expect(backdrop).toHaveAttribute("inert");
+    simulateBrowserBackTo("#/work/s1?cwd=%2Fp");
+    expect(screen.getByRole("dialog", { name: "Workspace folder not found" })).toBe(form);
+  });
+
+  it.each(["active", "background"] as const)(
+    "keeps only the surviving root when %s recovery SSE and HTTP deletion settle in one React batch",
+    async (selection) => {
+      const sessions = multipleSessions();
+      const mutation = deferred<Awaited<ReturnType<typeof api.deleteWorkspace>>>();
+      vi.mocked(api.deleteWorkspace).mockReturnValue(mutation.promise);
+      const handlers = new Map<string, Parameters<typeof api.connectSessionEvents>[1]>();
+      vi.mocked(api.connectSessionEvents).mockImplementation((id, value) => {
+        handlers.set(id, value);
+        return vi.fn();
+      });
+      vi.mocked(api.getSnapshot)
+        .mockRejectedValueOnce(new api.ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/p", error: "Folder missing" }))
+        .mockImplementation(async (id) => {
+          if (id !== "s3") throw new api.ApiError(404, { error: "Unknown session" });
+          return {
+            ...(workSnapshot as SessionSnapshotDto),
+            session: { id, cwd: "/other", status: "ready", isStreaming: false },
+          };
+        });
+      window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+      render(<App />);
+      const user = userEvent.setup();
+      const recovery = await screen.findByRole("dialog", { name: "Workspace folder not found" });
+      await user.click(within(recovery).getByRole("button", { name: "Delete workspace" }));
+      await user.click(
+        within(screen.getByRole("dialog", { name: "Delete workspace" })).getByRole("button", {
+          name: "Delete workspace",
+        }),
+      );
+      if (selection === "background") {
+        simulateBrowserBackTo("#/work/s3?cwd=%2Fother");
+        await waitFor(() => expect(handlers.has("s3")).toBe(true));
+      }
+      vi.mocked(api.listStatus).mockResolvedValue({
+        ...persisted,
+        sessions: sessions.filter((session) => session.id === "s3"),
+      });
+      await act(async () => {
+        handlers.get("s1")!.onEvent({ type: "session_deleted", sessionId: "s1" });
+        mutation.resolve({ cwd: "/p", sessionIds: ["s1", "s2"] });
+        await mutation.promise;
+      });
+      await waitFor(() => expect(window.location.hash).toBe("#/work/s3?cwd=%2Fother"));
+      expect(
+        [...document.querySelectorAll("[data-session-tab-id]")].map((tab) => tab.getAttribute("data-session-tab-id")),
+      ).toEqual(["s3"]);
+      expect(tabButton("s3")).toHaveAttribute("aria-selected", "true");
+      expect(api.openSession).not.toHaveBeenCalledWith("/store/s2.jsonl");
+      expect(api.getSnapshot).not.toHaveBeenCalledWith("s2");
+      expect(screen.queryByText("Unknown session")).toBeNull();
+    },
+  );
+
+  it.each(["work", "settings", "config"] as const)(
+    "advances through consecutive visited-root deletion SSEs before rendering the %s host",
+    async (surface) => {
+      multipleSessions();
+      const handlers = new Map<string, Parameters<typeof api.connectSessionEvents>[1]>();
+      vi.mocked(api.connectSessionEvents).mockImplementation((id, value) => {
+        handlers.set(id, value);
+        return vi.fn();
+      });
+      window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+      const user = userEvent.setup();
+      await renderWork();
+      await user.click(tabButton("s2"));
+      await waitFor(() => expect(handlers.has("s2")).toBe(true));
+      await user.click(tabButton("s1"));
+      let draft: HTMLElement | undefined;
+      if (surface !== "work") {
+        await user.click(screen.getByRole("button", { name: "Settings" }));
+      }
+      if (surface === "settings") {
+        await user.click(screen.getByRole("tab", { name: "Network" }));
+        draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+        fireEvent.change(draft, { target: { value: "http://draft.example" } });
+      }
+      if (surface === "config") {
+        await user.click(screen.getByRole("button", { name: /open config browser/i }));
+        expect(await screen.findByText("Config browser")).toBeVisible();
+      }
+      act(() => {
+        handlers.get("s1")!.onEvent({ type: "session_deleted", sessionId: "s1" });
+        handlers.get("s2")!.onEvent({ type: "session_deleted", sessionId: "s2" });
+      });
+      const expected =
+        surface === "config"
+          ? `#/config?returnTo=${encodeURIComponent("#/work/s3?cwd=%2Fother&settings=1")}`
+          : `#/work/s3?cwd=%2Fother${surface === "settings" ? "&settings=1" : ""}`;
+      await waitFor(() => expect(window.location.hash).toBe(expected));
+      expect(tabButton("s1")).toBeNull();
+      expect(tabButton("s2")).toBeNull();
+      expect(api.getSnapshot).toHaveBeenCalledTimes(3);
+      if (draft) {
+        expect(screen.getByRole("textbox", { name: "All traffic proxy" })).toBe(draft);
+        expect(draft).toHaveValue("http://draft.example");
+        simulateBrowserBackTo("#/work/s3?cwd=%2Fother");
+        expect(await screen.findByRole("dialog", { name: "Discard network changes?" })).toBeVisible();
+      }
+      if (surface === "config") {
+        expect(screen.getByText("Config browser")).toBeVisible();
+        await user.click(screen.getByRole("button", { name: "Back to Settings" }));
+        await waitFor(() => expect(window.location.hash).toBe("#/work/s3?cwd=%2Fother&settings=1"));
+        await user.click(screen.getByRole("button", { name: "Close" }));
+        await waitFor(() => expect(window.location.hash).toBe("#/work/s3?cwd=%2Fother"));
+      }
+    },
+  );
+
+  it("honors a root selection published immediately before background deletion events in the same batch", async () => {
+    multipleSessions();
+    const handlers = new Map<string, Parameters<typeof api.connectSessionEvents>[1]>();
+    vi.mocked(api.connectSessionEvents).mockImplementation((id, value) => {
+      handlers.set(id, value);
+      return vi.fn();
+    });
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    const user = userEvent.setup();
+    await renderWork();
+    await user.click(tabButton("s2"));
+    await waitFor(() => expect(handlers.has("s2")).toBe(true));
+    await user.click(tabButton("s3"));
+    await waitFor(() => expect(handlers.has("s3")).toBe(true));
+    const survivingView = sessionSurface("s3");
+    await user.click(tabButton("s1"));
+    act(() => {
+      tabButton("s3").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      handlers.get("s1")!.onEvent({ type: "session_deleted", sessionId: "s1" });
+      handlers.get("s2")!.onEvent({ type: "session_deleted", sessionId: "s2" });
+    });
+    expect(window.location.hash).toBe("#/work/s3?cwd=%2Fother");
+    expect(sessionSurface("s3")).toBe(survivingView);
+    expect(tabButton("s1")).toBeNull();
+    expect(tabButton("s2")).toBeNull();
+    expect(api.getSnapshot).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["create", "history", "active"] as const)(
+    "does not let a pending Home %s discard a dirty Settings draft",
+    async (source) => {
+      const request = deferred<Awaited<ReturnType<typeof api.createSession>>>();
+      vi.mocked(api.listStatus).mockResolvedValue({
+        ...persisted,
+        sessions: [{ ...persisted.sessions[0]!, name: "Home root" }],
+        activeSessions: [{ id: "active", cwd: "/p", sessionName: "Active root", status: "ready", isStreaming: false }],
+      });
+      vi.mocked(api.createSession).mockReturnValue(request.promise);
+      vi.mocked(api.openSession).mockReturnValue(request.promise);
+      if (source === "active") vi.mocked(api.touchSession).mockReturnValue(request.promise.then(() => undefined));
+      const user = userEvent.setup();
+      render(<App />);
+      await screen.findByText("Home root");
+      if (source === "create") await user.click(screen.getByRole("button", { name: "New session /p" }));
+      else await user.click(screen.getByText(source === "history" ? "Home root" : "Active root"));
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      const settings = screen.getByRole("dialog", { name: "Settings" });
+      await user.click(screen.getByRole("tab", { name: "Network" }));
+      const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+      fireEvent.change(draft, { target: { value: "http://draft.example" } });
+      await act(async () => request.resolve({ id: "s1", cwd: "/p", status: "ready", isStreaming: false }));
+      expect(window.location.hash).toBe("#/?settings=1");
+      expect(screen.getByRole("dialog", { name: "Settings" })).toBe(settings);
+      expect(draft).toHaveValue("http://draft.example");
+      expect(api.getSnapshot).not.toHaveBeenCalled();
+      simulateBrowserBackTo("#/");
+      expect(await screen.findByRole("dialog", { name: "Discard network changes?" })).toBeVisible();
+    },
+  );
+
+  it("pairs root tab and panel IDs per App, including lazy, loading and error panels", async () => {
+    multipleSessions();
+    const first = render(<App />);
+    const second = render(<App />);
+    const firstTabs = [...first.container.querySelectorAll<HTMLElement>("[data-session-tab-id]")];
+    const secondTabs = [...second.container.querySelectorAll<HTMLElement>("[data-session-tab-id]")];
+    expect(new Set([...firstTabs, ...secondTabs].map((tab) => tab.id)).size).toBe(6);
+    for (const tab of [...firstTabs, ...secondTabs]) {
+      const panel = document.getElementById(tab.getAttribute("aria-controls")!);
+      expect(panel).toHaveAttribute("role", "tabpanel");
+      expect(panel).toHaveAttribute("aria-labelledby", tab.id);
+      expect(panel).not.toHaveAttribute("data-session-surface");
+      expect(panel).toBeEmptyDOMElement();
+    }
+    expect(api.getSnapshot).not.toHaveBeenCalled();
+    const pending = deferred<Awaited<ReturnType<typeof api.openSession>>>();
+    vi.mocked(api.openSession).mockReturnValueOnce(pending.promise);
+    fireEvent.click(firstTabs[0]!);
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledOnce());
+    const tab = first.container.querySelector<HTMLElement>('[data-session-tab-id="s1"]')!;
+    const panel = document.getElementById(tab.getAttribute("aria-controls")!)!;
+    expect(panel).toBeVisible();
+    expect(within(panel).getByText("Loading session…")).toBeVisible();
+    await act(async () => pending.reject(new Error("Cannot open this root")));
+    expect(document.getElementById(tab.getAttribute("aria-controls")!)).toBe(panel);
+    expect(within(panel).getByRole("alert")).toHaveTextContent("Cannot open this root");
+    expect(panel).toHaveAttribute("aria-labelledby", tab.id);
+  });
+
+  it("keeps real Work drafts, node identity and leases across root tabs and Home; close only disposes its view", async () => {
+    multipleSessions();
+    const releases = new Map<string, ReturnType<typeof vi.fn>>();
+    vi.mocked(api.connectSessionEvents).mockImplementation((id) => {
+      const release = vi.fn();
+      releases.set(id, release);
+      return release;
+    });
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    const user = userEvent.setup();
+    await renderWork();
+    const first = sessionSurface("s1");
+    const draft = within(first).getByRole("textbox", { name: "Message" });
+    await user.type(draft, "first draft");
+    const header = document.querySelector(".er-topbar");
+    const settings = screen.getByRole("button", { name: "Settings" });
+    await user.click(tabButton("s2"));
+    await waitFor(() => expect(sessionSurface("s2")).not.toBeNull());
+    const second = sessionSurface("s2");
+    await user.type(within(second).getByRole("textbox", { name: "Message" }), "second draft");
+    expect(first).toHaveAttribute("inert");
+    expect(first).toHaveAttribute("aria-hidden", "true");
+    expect(first).toHaveStyle({ visibility: "hidden" });
+    expect(first).not.toHaveAttribute("hidden");
+    expect(releases.get("s1")).not.toHaveBeenCalled();
+    await user.click(tabButton("s1"));
+    expect(sessionSurface("s1")).toBe(first);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(draft);
+    expect(draft).toHaveValue("first draft");
+    expect(api.openSession).toHaveBeenCalledTimes(2);
+    expect(api.getSnapshot).toHaveBeenCalledTimes(2);
+    expect(document.querySelector(".er-topbar")).toBe(header);
+    expect(screen.getByRole("button", { name: "Settings" })).toBe(settings);
+    await user.click(screen.getByRole("button", { name: /back to home/i }));
+    expect(await workspace()).toBeVisible();
+    await user.type(screen.getByRole("searchbox"), "Same");
+    await user.click(tabButton("s1"));
+    expect(draft).toHaveValue("first draft");
+    await user.click(screen.getByRole("button", { name: /back to home/i }));
+    expect(screen.getByRole("searchbox")).toHaveValue("Same");
+    fireEvent.keyDown(tabButton("s2"), { key: "Delete" });
+    expect(window.location.hash).toBe("#/");
+    expect(releases.get("s2")).toHaveBeenCalledOnce();
+    expect(releases.get("s1")).not.toHaveBeenCalled();
+    expect(second).not.toBeInTheDocument();
+    fireEvent.keyDown(tabButton("s3"), { key: "Delete" });
+    expect(api.getSnapshot).toHaveBeenCalledTimes(2);
+    expect(api.stopSession).not.toHaveBeenCalled();
+    expect(api.abortSession).not.toHaveBeenCalled();
+    expect(api.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("restores only URL-selected views, keeps Home explicit and ignores external live tab changes", async () => {
+    multipleSessions();
+    const user = userEvent.setup();
+    render(<App />);
+    await workspace();
+    await waitFor(() => expect(tabButton("s1")).not.toBeNull());
+    expect(window.location.hash).toBe("#/");
+    expect(api.openSession).not.toHaveBeenCalled();
+    expect(api.getSnapshot).not.toHaveBeenCalled();
+    await user.click(tabButton("s2"));
+    await waitFor(() => expect(sessionSurface("s2")).not.toBeNull());
+    const surface = sessionSurface("s2");
+    await act(async () => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ language: "en", studioTheme: "dark", sessionTabs: [] }));
+      window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
+    });
+    expect(tabButton("s1")).toBeInTheDocument();
+    expect(sessionSurface("s2")).toBe(surface);
+    expect(window.location.hash).toBe("#/work/s2?cwd=%2Fp");
+    expect(document.documentElement.dataset.uiTheme).toBe("dark");
+    simulateBrowserBackTo("#/");
+    expect(workspace()).toBeVisible();
+    simulateBrowserBackTo("#/work/s2?cwd=%2Fp");
+    expect(sessionSurface("s2")).toBe(surface);
+    expect(api.openSession).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the strip usable while resolving, and ignores a closed tab's late open", async () => {
+    multipleSessions();
+    const pending = deferred<Awaited<ReturnType<typeof api.openSession>>>();
+    vi.mocked(api.openSession).mockReturnValueOnce(pending.promise);
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    render(<App />);
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledOnce());
+    expect(tabButton("s1")).toHaveAttribute("data-loading", "true");
+    fireEvent.keyDown(tabButton("s1"), { key: "Delete" });
+    await waitFor(() => expect(sessionSurface("s2")).not.toBeNull());
+    expect(window.location.hash).toBe("#/work/s2?cwd=%2Fp");
+    await act(async () => pending.resolve({ id: "s1", cwd: "/obsolete", status: "ready", isStreaming: false }));
+    expect(tabButton("s1")).toBeNull();
+    expect(sessionSurface("s1")).toBeNull();
+    expect(window.location.hash).toBe("#/work/s2?cwd=%2Fp");
+  });
+
+  it("updates background live titles and deletes that tab without stealing the selected root", async () => {
+    multipleSessions();
+    const handlers = new Map<string, Parameters<typeof api.connectSessionEvents>[1]>();
+    vi.mocked(api.connectSessionEvents).mockImplementation((id, next) => {
+      handlers.set(id, next);
+      return vi.fn();
+    });
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    const user = userEvent.setup();
+    await renderWork();
+    await user.click(tabButton("s2"));
+    await waitFor(() => expect(handlers.has("s2")).toBe(true));
+    act(() => handlers.get("s1")!.onEvent({ type: "session_info_changed", name: "Background title" }));
+    await waitFor(() => expect(tabButton("s1")).toHaveAccessibleName("Background title"));
+    expect(tabButton("s2")).toHaveAttribute("aria-selected", "true");
+    act(() => handlers.get("s1")!.onEvent({ type: "session_deleted", sessionId: "s1" }));
+    await waitFor(() => expect(tabButton("s1")).toBeNull());
+    expect(window.location.hash).toBe("#/work/s2?cwd=%2Fp");
+    expect(api.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("retains many bookmarks but gives the App work lease only the selected resolved cwd", async () => {
+    multipleSessions();
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    const user = userEvent.setup();
+    await renderWork();
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-a",
+        generation: 1,
+        agentsChanged: true,
+        modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: false,
+        projectWatchLeaseId: "tabs/lease",
+      }),
+    );
+    await user.click(tabButton("s3"));
+    await waitFor(() => expect(sessionSurface("s3")).not.toBeNull());
+    await waitFor(() =>
+      expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenLastCalledWith(
+        "tabs/lease",
+        expect.objectContaining({ cwds: ["/other"] }),
+      ),
+    );
+    expect(sessionSurface("s1")).toBeInTheDocument();
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the Settings draft and close guard when its host is deleted and the next root is loading", async () => {
+    multipleSessions();
+    let events: Parameters<typeof api.connectSessionEvents>[1] | undefined;
+    vi.mocked(api.connectSessionEvents).mockImplementation((_id, handlers) => {
+      events = handlers;
+      return vi.fn();
+    });
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    const user = userEvent.setup();
+    await renderWork();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    const draft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+    fireEvent.change(draft, { target: { value: "http://draft.example" } });
+    vi.mocked(api.openSession).mockReturnValueOnce(new Promise(() => {}));
+    act(() => events!.onEvent({ type: "session_deleted", sessionId: "s1" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/work/s2?cwd=%2Fp&settings=1"));
+    expect(screen.getByRole("textbox", { name: "All traffic proxy" })).toBe(draft);
+    expect(draft).toHaveValue("http://draft.example");
+    simulateBrowserBackTo("#/work/s2?cwd=%2Fp");
+    expect(await screen.findByRole("dialog", { name: "Discard network changes?" })).toBeVisible();
+    expect(window.location.hash).toBe("#/work/s2?cwd=%2Fp&settings=1");
   });
 
   it("offers workspace recovery on a direct Work URL and allows history-only deletion", async () => {
@@ -354,7 +914,7 @@ describe("App routing", () => {
   });
 
   it.each(["local", "storage"] as const)(
-    "retains Home create ownership and failure across %s theme switches",
+    "retains pending Home creation across %s theme switches and reports only the current activation's failure",
     async (via) => {
       const request = deferred<Awaited<ReturnType<typeof api.createSession>>>();
       vi.mocked(api.listStatus).mockResolvedValue(persisted);
@@ -371,9 +931,11 @@ describe("App routing", () => {
         expect(api.createSession).toHaveBeenCalledOnce();
       }
       await act(async () => request.reject(new Error("Create failed")));
-      expect(await screen.findByRole("alert")).toHaveTextContent("Create failed");
+      if (via === "storage") expect(await screen.findByRole("alert")).toHaveTextContent("Create failed");
+      else expect(screen.queryByRole("alert")).toBeNull();
       await switchHomeTheme("dark", via);
-      expect(screen.getByRole("alert")).toHaveTextContent("Create failed");
+      if (via === "storage") expect(screen.getByRole("alert")).toHaveTextContent("Create failed");
+      else expect(screen.queryByRole("alert")).toBeNull();
       expect(screen.getByRole("button", { name: "New session /p" })).toBeEnabled();
     },
   );

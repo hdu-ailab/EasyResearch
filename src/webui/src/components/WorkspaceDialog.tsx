@@ -29,7 +29,7 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
   const close = () => {
     if (!inFlight.current) props.onClose();
   };
-  const { zIndex, dialogProps } = useModalLayer(close, formRef);
+  const { layerProps, dialogProps } = useModalLayer(close, formRef);
   const title = t(
     mode === "rename" ? "workspace.rename" : mode === "delete" ? "workspace.delete" : "workspace.missing",
   );
@@ -58,113 +58,111 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
   };
 
   return (
-    <>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: Cancel and modal keyboard handling also dismiss the dialog. */}
-      <div
-        role="presentation"
-        className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4"
-        style={{ zIndex }}
-        onMouseDown={(event) => {
-          if (event.target === event.currentTarget) close();
+    // biome-ignore lint/a11y/noStaticElementInteractions: Cancel and modal keyboard handling also dismiss the dialog.
+    <div
+      role="presentation"
+      className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4"
+      {...layerProps}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) close();
+      }}
+    >
+      <form
+        ref={formRef}
+        role="dialog"
+        {...dialogProps}
+        aria-label={title}
+        aria-describedby={descriptionId}
+        aria-busy={pending}
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-[460px] overflow-y-auto rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
         }}
       >
-        <form
-          ref={formRef}
-          role="dialog"
-          {...dialogProps}
-          aria-label={title}
-          aria-describedby={descriptionId}
-          aria-busy={pending}
-          className="max-h-[calc(100dvh-2rem)] w-full max-w-[460px] overflow-y-auto rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void submit();
-          }}
-        >
-          <h2 className="text-[14px] font-semibold text-v2-text-text-base">{title}</h2>
-          <p className="mt-3 break-all font-mono text-[12px] text-v2-text-text-muted">{props.cwd}</p>
-          <p id={descriptionId} className="mt-3 text-[13px] text-v2-text-text-muted">
-            {t(
-              mode === "rename"
-                ? "workspace.renameDescription"
-                : mode === "delete"
-                  ? "workspace.deleteDescription"
-                  : "workspace.missingDescription",
-            )}
+        <h2 className="text-[14px] font-semibold text-v2-text-text-base">{title}</h2>
+        <p className="mt-3 break-all font-mono text-[12px] text-v2-text-text-muted">{props.cwd}</p>
+        <p id={descriptionId} className="mt-3 text-[13px] text-v2-text-text-muted">
+          {t(
+            mode === "rename"
+              ? "workspace.renameDescription"
+              : mode === "delete"
+                ? "workspace.deleteDescription"
+                : "workspace.missingDescription",
+          )}
+        </p>
+        {mode === "rename" && (
+          <label className="mt-3 block text-[13px]">
+            {t("workspace.folderName")}
+            <input
+              className="mt-1 w-full rounded-md border border-v2-grey-300 bg-v2-background-bg-base p-2"
+              value={name}
+              disabled={pending}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+        )}
+        {directory && mode === "relocate" && <p className="mt-3 break-all font-mono text-[12px]">{directory}</p>}
+        {force && (
+          <p role="status" className="mt-3 text-[13px] text-v2-text-text-muted">
+            {t("workspace.busy")}
           </p>
-          {mode === "rename" && (
-            <label className="mt-3 block text-[13px]">
-              {t("workspace.folderName")}
-              <input
-                className="mt-1 w-full rounded-md border border-v2-grey-300 bg-v2-background-bg-base p-2"
-                value={name}
-                disabled={pending}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </label>
-          )}
-          {directory && mode === "relocate" && <p className="mt-3 break-all font-mono text-[12px]">{directory}</p>}
-          {force && (
-            <p role="status" className="mt-3 text-[13px] text-v2-text-text-muted">
-              {t("workspace.busy")}
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="mt-3 break-words text-[13px] text-v2-status-error">
-              {error}
-            </p>
-          )}
-          <div className="mt-4 flex flex-wrap justify-end gap-2">
-            <button type="button" className="er-outlined-button" disabled={pending} onClick={close}>
-              {t("dialog.cancel")}
-            </button>
-            {(mode === "missing" || mode === "relocate") && (
-              <>
-                <button
-                  type="button"
-                  className="er-outlined-button er-danger-action"
-                  disabled={pending}
-                  onClick={() => {
-                    setMode("delete");
-                    setForce(false);
-                    setError(null);
-                  }}
-                >
-                  {t("workspace.delete")}
-                </button>
-                <button
-                  type="button"
-                  className="er-outlined-button"
-                  disabled={pending}
-                  onClick={() => {
-                    setForce(false);
-                    setChoosing(true);
-                  }}
-                >
-                  {t("workspace.chooseFolder")}
-                </button>
-              </>
-            )}
-            {mode !== "missing" && (
+        )}
+        {error && (
+          <p role="alert" className="mt-3 break-words text-[13px] text-v2-status-error">
+            {error}
+          </p>
+        )}
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <button type="button" className="er-outlined-button" disabled={pending} onClick={close}>
+            {t("dialog.cancel")}
+          </button>
+          {(mode === "missing" || mode === "relocate") && (
+            <>
               <button
-                type="submit"
-                disabled={pending || (mode === "rename" && !name.trim())}
-                className={`er-outlined-button ${mode === "delete" ? "er-danger-action" : "font-medium"}`}
+                type="button"
+                className="er-outlined-button er-danger-action"
+                disabled={pending}
+                onClick={() => {
+                  setMode("delete");
+                  setForce(false);
+                  setError(null);
+                }}
               >
-                {pending
-                  ? t("workspace.working")
-                  : force
-                    ? t("workspace.stopAndContinue")
-                    : mode === "rename"
-                      ? t("workspace.rename")
-                      : mode === "delete"
-                        ? t("workspace.delete")
-                        : t("workspace.migrate")}
+                {t("workspace.delete")}
               </button>
-            )}
-          </div>
-        </form>
-      </div>
+              <button
+                type="button"
+                className="er-outlined-button"
+                disabled={pending}
+                onClick={() => {
+                  setForce(false);
+                  setChoosing(true);
+                }}
+              >
+                {t("workspace.chooseFolder")}
+              </button>
+            </>
+          )}
+          {mode !== "missing" && (
+            <button
+              type="submit"
+              disabled={pending || (mode === "rename" && !name.trim())}
+              className={`er-outlined-button ${mode === "delete" ? "er-danger-action" : "font-medium"}`}
+            >
+              {pending
+                ? t("workspace.working")
+                : force
+                  ? t("workspace.stopAndContinue")
+                  : mode === "rename"
+                    ? t("workspace.rename")
+                    : mode === "delete"
+                      ? t("workspace.delete")
+                      : t("workspace.migrate")}
+            </button>
+          )}
+        </div>
+      </form>
       {choosing && (
         <DirectoryDialog
           homeDir={props.homeDir}
@@ -179,6 +177,6 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
           }}
         />
       )}
-    </>
+    </div>
   );
 }

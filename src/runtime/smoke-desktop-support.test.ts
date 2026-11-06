@@ -643,8 +643,13 @@ describe("packaged Work Files acceptance milestone", () => {
       { type: "desktop-smoke.window-hidden", hidden: true, sidecarPid: 41 },
     ]) {
       expect(() => reduceDesktopSmokeEvents([...active, next], { target })).toThrow(/Work Files verification/i);
-      expect(reduceDesktopSmokeEvents([...active, workFilesVerified, next], { target }))
-        .toMatchObject({ workFilesVerified: true });
+      if (next.type === "desktop-smoke.window-hidden") {
+        expect(() => reduceDesktopSmokeEvents([...active, workFilesVerified, next], { target }))
+          .toThrow(/session tabs restoration/i);
+      } else {
+        expect(reduceDesktopSmokeEvents([...active, workFilesVerified, next], { target }))
+          .toMatchObject({ workFilesVerified: true });
+      }
     }
   });
 
@@ -671,6 +676,86 @@ describe("packaged Work Files acceptance milestone", () => {
       { type: "desktop-smoke.failure", message: "Desktop Work Files iframe deadline expired." },
       { type: "desktop-smoke.exit-started" },
     ])).toMatchObject({ workFilesVerified: false, failure: "Desktop Work Files iframe deadline expired." });
+  });
+});
+
+describe("packaged session-tab acceptance milestone", () => {
+  const hash = "#/work/current-root?cwd=%2Fpaper";
+  const oldOrigin = "http://127.0.0.1:43123";
+  const origin = "http://127.0.0.1:43124";
+  const cleared = {
+    type: "desktop-smoke.session-tabs-storage-cleared", bootId: "old", origin: oldOrigin, hash,
+    rendererStorageCleared: true, preferenceMirrorVerified: true,
+  };
+  const prefix = [
+    { type: "desktop-smoke.sidecar-ready", origin: oldOrigin, bootId: "old", sidecarPid: 41 },
+    { type: "desktop-smoke.renderer-security", osSandboxed: true, sandbox: true, contextIsolation: true, nodeIntegration: false },
+    { type: "desktop-smoke.window-loaded" },
+    { type: "desktop-smoke.state-visible" },
+    { type: "desktop-smoke.agent-running" },
+    workFilesVerified,
+    cleared,
+    { type: "desktop-smoke.restart-api-accepted", bootId: "old", hash },
+    { type: "desktop-smoke.restart-requested", bootId: "old" },
+    { type: "desktop-smoke.old-sidecar-exited", bootId: "old", clean: true },
+    { type: "desktop-smoke.sidecar-ready", origin, bootId: "new", sidecarPid: 42, rendererCredentialFresh: true },
+    { type: "desktop-smoke.renderer-security", osSandboxed: true, sandbox: true, contextIsolation: true, nodeIntegration: false },
+    { type: "desktop-smoke.successor-visible", bootId: "new", hash, authenticated: true, persistedSessionVisible: true },
+  ];
+  const restored = {
+    type: "desktop-smoke.session-tabs-restored", bootId: "new", origin, hash,
+    preferenceMirrorVerified: true, selectedRootVerified: true, inactiveBookmarkLazy: true,
+    rendererStorageCleared: true, originChanged: true,
+    snapshotTranscriptVerified: true,
+  };
+  const hidden = { type: "desktop-smoke.window-hidden", hidden: true, sidecarPid: 42 };
+
+  it.each(["windows-x64", "darwin-arm64", "linux-arm64"] as const)("requires restoration before %s close and Exit", (target) => {
+    expect(() => reduceDesktopSmokeEvents([...prefix, hidden], { target })).toThrow(/session tabs restoration/);
+    expect(reduceDesktopSmokeEvents([
+      ...prefix, restored, hidden,
+      { type: "desktop-smoke.exit-started" }, { type: "desktop-smoke.sidecar-stopped" },
+    ], { target })).toMatchObject({ sessionTabsStorageCleared: true, sessionTabsRestored: true, sessionTabsOriginChanged: true, hidden: true, stopped: true });
+  });
+
+  it.each([
+    { preferenceMirrorVerified: false }, { preferenceMirrorVerified: undefined },
+    { selectedRootVerified: false }, { inactiveBookmarkLazy: undefined },
+    { bootId: "old" }, { origin: oldOrigin }, { origin: "http://127.0.0.1:49999" },
+    { hash: "#/work/bookmark?cwd=%2Fpaper" },
+    { rendererStorageCleared: false }, { originChanged: false }, { originChanged: undefined },
+    { snapshotTranscriptVerified: false }, { snapshotTranscriptVerified: undefined },
+  ])("rejects incomplete or unrelated restoration evidence %j", (changed) => {
+    expect(() => reduceDesktopSmokeEvents([...prefix, { ...restored, ...changed }])).toThrow(/session tabs evidence did not prove/);
+  });
+
+  it("accepts OS reuse of the port after causal storage clear and reports originChanged=false", () => {
+    const sameOrigin = prefix.map((event) => event.type === "desktop-smoke.sidecar-ready" && "bootId" in event && event.bootId === "new"
+      ? { ...event, origin: oldOrigin } : event);
+    expect(reduceDesktopSmokeEvents([...sameOrigin, { ...restored, origin: oldOrigin, originChanged: false }]))
+      .toMatchObject({ sessionTabsRestored: true, sessionTabsStorageCleared: true, sessionTabsOriginChanged: false });
+    expect(() => reduceDesktopSmokeEvents([...sameOrigin, { ...restored, origin: oldOrigin }])).toThrow(/session tabs evidence did not prove/);
+  });
+
+  it("requires old-renderer clear evidence before restart, never a retrospective claim", () => {
+    const withoutClear = prefix.filter((event) => event !== cleared);
+    expect(() => reduceDesktopSmokeEvents([...withoutClear, restored])).toThrow(/cleared-storage/);
+    expect(() => reduceDesktopSmokeEvents([...withoutClear, cleared, restored])).toThrow(/before restart handoff/);
+    const beforeRestart = prefix.slice(0, prefix.indexOf(cleared));
+    expect(() => reduceDesktopSmokeEvents([...beforeRestart, cleared, cleared])).toThrow(/once before restart/);
+    for (const changed of [
+      { bootId: "new" }, { origin }, { rendererStorageCleared: false },
+      { preferenceMirrorVerified: undefined }, { hash: "#/" },
+    ]) expect(() => reduceDesktopSmokeEvents([...beforeRestart, { ...cleared, ...changed }])).toThrow(/old renderer and preserved host mirror/);
+    expect(() => reduceDesktopSmokeEvents([cleared])).toThrow(/after Work Files verification/);
+  });
+
+  it("rejects premature or duplicate proof and preserves failures before close", () => {
+    expect(() => reduceDesktopSmokeEvents([...prefix.slice(0, -1), restored])).toThrow(/before successor visibility/);
+    expect(() => reduceDesktopSmokeEvents([...prefix, restored, restored])).toThrow(/more than once/);
+    expect(reduceDesktopSmokeEvents([
+      ...prefix, { type: "desktop-smoke.failure", message: "Session tabs mirror changed." }, hidden,
+    ])).toMatchObject({ failure: "Session tabs mirror changed.", sessionTabsRestored: false, hidden: false });
   });
 });
 
@@ -916,12 +1001,17 @@ describe("desktop smoke milestones", () => {
       { type: "desktop-smoke.state-visible" },
       { type: "desktop-smoke.agent-running" },
       workFilesVerified,
+      {
+        type: "desktop-smoke.session-tabs-storage-cleared", bootId: "boot-old",
+        origin: "http://127.0.0.1:43123", hash: workHash,
+        rendererStorageCleared: true, preferenceMirrorVerified: true,
+      },
       { type: "desktop-smoke.restart-api-accepted", bootId: "boot-old", hash: workHash },
       { type: "desktop-smoke.restart-requested", bootId: "boot-old" },
       { type: "desktop-smoke.old-sidecar-exited", bootId: "boot-old", clean: true },
       {
         type: "desktop-smoke.sidecar-ready",
-        origin: "http://127.0.0.1:43123",
+        origin: "http://127.0.0.1:43124",
         bootId: "boot-new",
         sidecarPid: 42,
         rendererCredentialFresh: true,
@@ -932,6 +1022,18 @@ describe("desktop smoke milestones", () => {
         hash: workHash,
         authenticated: true,
         persistedSessionVisible: true,
+      },
+      {
+        type: "desktop-smoke.session-tabs-restored",
+        bootId: "boot-new",
+        origin: "http://127.0.0.1:43124",
+        hash: workHash,
+        preferenceMirrorVerified: true,
+        selectedRootVerified: true,
+        inactiveBookmarkLazy: true,
+        rendererStorageCleared: true,
+        originChanged: true,
+        snapshotTranscriptVerified: true,
       },
       { type: "desktop-smoke.window-hidden", hidden: true, sidecarPid: 42 },
       { type: "desktop-smoke.exit-started" },
@@ -945,10 +1047,13 @@ describe("desktop smoke milestones", () => {
       restartAccepted: true,
       restartRequested: true,
       oldSidecarExited: true,
-      successorOrigin: "http://127.0.0.1:43123",
+      successorOrigin: "http://127.0.0.1:43124",
       successorBootId: "boot-new",
       rendererCredentialFresh: true,
       successorVisible: true,
+      sessionTabsRestored: true,
+      sessionTabsStorageCleared: true,
+      sessionTabsOriginChanged: true,
       restoredHash: workHash,
       hidden: true,
       sidecarPid: 42,

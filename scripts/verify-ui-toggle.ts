@@ -42,6 +42,7 @@ if (!suppliedUrl) {
   assert.equal(built.status, 0, "Web rebuild must succeed before browser verification");
 }
 const artifacts = mkdtempSync(join(tmpdir(), "easyresearch-ui-toggle-"));
+const work = (page: Page) => page.locator('[data-session-surface][data-session-active="true"]');
 console.log(`UI_TOGGLE_VERIFY artifacts: ${artifacts}`);
 const server = suppliedUrl
   ? undefined
@@ -88,8 +89,10 @@ async function assertChrome(page: Page) {
 }
 
 async function assertTopbarHitAreas(page: Page, width: number) {
-  const buttons = page.getByRole("banner").getByRole("button");
-  await expect(buttons).toHaveCount(width < 820 ? 2 : 4);
+  // Session close buttons intentionally belong to the horizontally clipped strip.
+  // Persistent shell actions (including the new plus) must retain their full hit area.
+  const buttons = page.getByRole("banner").locator('button:not([role="tablist"] button):not([role="tab"])');
+  await expect(buttons).toHaveCount(width < 820 ? 3 : 5);
   for (const button of await buttons.all()) {
     const geometry = await button.evaluate((element) => {
       const rect = element.getBoundingClientRect();
@@ -285,6 +288,12 @@ try {
           assert(selected, "Open must use an exact fixture path");
           return route.fulfill({ json: active(selected.id) });
         }
+        if (key === "POST /api/workspaces/validate") {
+          const body = request.postDataJSON();
+          assert(sessions.some((session) => session.cwd === body.cwd), "Validate must use an exact fixture cwd");
+          assert.deepEqual(body, { cwd: body.cwd });
+          return route.fulfill({ json: { cwd: body.cwd } });
+        }
         if (key === "POST /api/sessions" && createPending) {
           assert.equal(request.postDataJSON().cwd, sessions[0]!.cwd);
           await createPending;
@@ -477,16 +486,16 @@ try {
           await page.getByTitle(session.name, { exact: true }).click();
           const workHash = `#/work/${session.id}?cwd=${encodeURIComponent(session.cwd)}`;
           await expect.poll(() => new URL(page.url()).hash).toBe(workHash);
-          const composer = page.getByRole("textbox", { name: /message/i });
+          const composer = work(page).getByRole("textbox", { name: /message/i });
           await expect(composer).toBeVisible();
           await composer.fill("Draft retained across interface switches");
           const streamCount = requests.filter(
             (key) => key === `GET /api/sessions/${session.id}/events`,
           ).length;
-          await page.getByRole("button", { name: "Files browser", exact: true }).click();
-          await page.getByRole("tree").getByText("draft.md", { exact: true }).click();
-          const outer = page.getByRole("separator", { name: "Resize panel", exact: true });
-          const treeHandle = page.getByRole("separator", { name: "Resize file tree" });
+          await page.getByRole("banner").getByRole("button", { name: "Files browser", exact: true }).click();
+          await work(page).getByRole("tree").getByText("draft.md", { exact: true }).click();
+          const outer = work(page).getByRole("separator", { name: "Resize panel", exact: true });
+          const treeHandle = work(page).getByRole("separator", { name: "Resize file tree" });
           await outer.focus();
           await page.keyboard.press("ArrowLeft");
           await treeHandle.focus();
@@ -507,21 +516,21 @@ try {
             );
             await expect(outer).toHaveAttribute("aria-valuenow", panelWidth!);
             await expect(treeHandle).toHaveAttribute("aria-valuenow", treeWidth!);
-            await expect(page.getByRole("tab", { name: "draft.md", exact: true })).toBeVisible();
+            await expect(work(page).getByRole("tab", { name: "draft.md", exact: true })).toBeVisible();
             for (const label of ["Files browser", "Agent list", "Settings"]) {
-              const button = page.getByRole("button", { name: label, exact: true });
+              const button = page.getByRole("banner").getByRole("button", { name: label, exact: true });
               await expect(button.locator("svg")).toBeVisible();
               assert(await button.getAttribute("title"), `Missing hover text: ${label}`);
             }
-            const expand = page.getByRole("button", { name: "Expand notes", exact: true });
+            const expand = work(page).getByRole("button", { name: "Expand notes", exact: true });
             await expect(expand.locator("svg")).toBeVisible();
             await expand.click();
-            const collapse = page.getByRole("button", { name: "Collapse notes", exact: true });
+            const collapse = work(page).getByRole("button", { name: "Collapse notes", exact: true });
             await expect(collapse).toBeVisible();
             await expect(collapse.locator("[title]")).toHaveAttribute("title", "Collapse notes");
             await collapse.click();
             await expect(
-              page.getByRole("treeitem", { name: "draft.md", exact: true }).locator("svg"),
+              work(page).getByRole("treeitem", { name: "draft.md", exact: true }).locator("svg"),
             ).toBeVisible();
             await page.getByRole("button", { name: "Settings", exact: true }).click();
             const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
@@ -537,11 +546,11 @@ try {
             await expect(treeHandle).toHaveAttribute("aria-valuenow", treeWidth!);
             await assertActionFeedback(
               page,
-              page.getByRole("button", { name: "Files browser", exact: true }),
+              page.getByRole("banner").getByRole("button", { name: "Files browser", exact: true }),
             );
-            await assertActionFeedback(page, page.getByRole("tab", { name: "draft.md", exact: true }));
-            await assertActionFeedback(page, page.getByRole("treeitem", { name: "draft.md", exact: true }));
-            const composerBoundary = page.locator("[data-chat-composer]");
+            await assertActionFeedback(page, work(page).getByRole("tab", { name: "draft.md", exact: true }));
+            await assertActionFeedback(page, work(page).getByRole("treeitem", { name: "draft.md", exact: true }));
+            const composerBoundary = work(page).locator("[data-chat-composer]");
             await composer.evaluate((element) => (element as HTMLElement).blur());
             await page.mouse.move(1, 1);
             const border = await composerBoundary.evaluate(
@@ -566,17 +575,23 @@ try {
             await page.setViewportSize({ width, height: 900 });
             await assertTopbarHitAreas(page, width);
             if (width >= 820) {
-              const path = page.getByRole("banner").getByTitle(session.cwd, { exact: true });
+              const tab = page.getByRole("banner").locator(`[data-session-tab-id="${session.id}"]`);
+              const name = tab.locator(".er-session-tab-name");
               assert(
-                await path.evaluate(
+                await name.evaluate(
                   (element) =>
                     element.scrollWidth > element.clientWidth &&
                     getComputedStyle(element).textOverflow === "ellipsis",
                 ),
-                "Long path must truncate",
+                "Long session name must truncate in the compact tab",
               );
+              await tab.focus();
+              const tooltip = page.getByRole("tooltip");
+              await expect(tooltip.getByText(session.name, { exact: true })).toBeVisible();
+              await expect(tooltip.getByText(session.cwd, { exact: true })).toBeVisible();
+              await tab.press("Escape");
               for (const label of ["Files browser", "Agent list"]) {
-                const button = page.getByRole("button", { name: label, exact: true });
+                const button = page.getByRole("banner").getByRole("button", { name: label, exact: true });
                 const before = await button.getAttribute("aria-pressed");
                 await button.click();
                 await expect(button).toHaveAttribute("aria-pressed", before === "true" ? "false" : "true");

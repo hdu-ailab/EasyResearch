@@ -1,5 +1,7 @@
 import { ChevronDown, Search } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { canFocusElement } from "../hooks/useModalLayer";
+import { useViewActivityRef } from "../view-activity";
 
 export interface SearchableSelectOption {
   value: string;
@@ -54,6 +56,8 @@ export function SearchableSelect({
   searchPlaceholder,
   emptyMessage,
 }: SearchableSelectProps) {
+  const activity = useViewActivityRef();
+  const { interactive } = activity.current;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -68,13 +72,17 @@ export function SearchableSelect({
   const shown = filterOptions(query, options);
 
   useLayoutEffect(() => {
+    if (!interactive) {
+      setOpen(false);
+      return;
+    }
     if (!open || !triggerRef.current) return;
     setDirection(flipDirection(triggerRef.current.getBoundingClientRect(), PANEL_MAX_HEIGHT, window.innerHeight));
-    inputRef.current?.focus();
-  }, [open]);
+    if (canFocusElement(inputRef.current)) inputRef.current.focus();
+  }, [open, interactive]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !interactive) return;
     const onPointerDown = (event: PointerEvent) => {
       if (triggerRef.current?.contains(event.target as Node)) return;
       if (panelRef.current?.contains(event.target as Node)) return;
@@ -83,7 +91,7 @@ export function SearchableSelect({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setOpen(false);
-        triggerRef.current?.focus();
+        if (activity.current.interactive && canFocusElement(triggerRef.current)) triggerRef.current.focus();
       }
     };
     document.addEventListener("pointerdown", onPointerDown);
@@ -92,9 +100,10 @@ export function SearchableSelect({
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [open]);
+  }, [open, interactive, activity]);
 
   const openPanel = () => {
+    if (!activity.current.interactive) return;
     setQuery("");
     setActiveIndex(
       Math.max(
@@ -106,9 +115,10 @@ export function SearchableSelect({
   };
 
   const choose = (option: SearchableSelectOption) => {
+    if (!activity.current.interactive) return;
     setOpen(false);
     onSelect(option.value);
-    triggerRef.current?.focus();
+    if (canFocusElement(triggerRef.current)) triggerRef.current.focus();
   };
 
   const triggerRect = triggerRef.current?.getBoundingClientRect();
@@ -138,7 +148,7 @@ export function SearchableSelect({
         <ChevronDown size={12} className="shrink-0 text-v2-icon-icon-muted" aria-hidden />
       </button>
 
-      {open && triggerRect ? (
+      {open && interactive && triggerRect ? (
         <div
           ref={panelRef}
           style={{
@@ -187,7 +197,7 @@ export function SearchableSelect({
                   event.preventDefault();
                   event.stopPropagation();
                   setOpen(false);
-                  triggerRef.current?.focus();
+                  if (canFocusElement(triggerRef.current)) triggerRef.current.focus();
                 } else if (event.key === "Tab") {
                   setOpen(false);
                 }

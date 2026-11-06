@@ -3,7 +3,9 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { FileEntryDto } from "../../../web/contracts";
 import { downloadFileUrl } from "../api";
+import { canFocusElement } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
+import { useViewActivityRef } from "../view-activity";
 
 export function FileActionMenu({
   entry,
@@ -15,6 +17,8 @@ export function FileActionMenu({
   onUpload(): void;
 }) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
+  const { interactive } = activity.current;
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -22,9 +26,13 @@ export function FileActionMenu({
   const [position, setPosition] = useState({ left: 0, top: 0 });
   const close = () => {
     setOpen(false);
-    trigger.current?.focus();
+    if (activity.current.interactive && canFocusElement(trigger.current)) trigger.current.focus();
   };
   useLayoutEffect(() => {
+    if (!interactive) {
+      setOpen(false);
+      return;
+    }
     if (!open || !trigger.current || !menu.current) return;
     const rect = trigger.current.getBoundingClientRect();
     const bounds = menu.current.getBoundingClientRect();
@@ -33,9 +41,9 @@ export function FileActionMenu({
       top: Math.max(8, Math.min(rect.bottom, window.innerHeight - bounds.height - 8)),
     });
     menu.current.querySelector<HTMLElement>("[role=menuitem]")?.focus();
-  }, [open]);
+  }, [open, interactive]);
   useEffect(() => {
-    if (!open) return;
+    if (!open || !interactive) return;
     const outside = (event: PointerEvent) => {
       if (!menu.current?.contains(event.target as Node) && !trigger.current?.contains(event.target as Node))
         setOpen(false);
@@ -50,7 +58,7 @@ export function FileActionMenu({
       window.removeEventListener("resize", hide);
       window.removeEventListener("scroll", hide, true);
     };
-  }, [open]);
+  }, [open, interactive]);
   const itemClass = "flex w-full items-center gap-2 rounded px-3 py-2 text-left text-[13px] hover:bg-v2-grey-100";
   return (
     <>
@@ -74,6 +82,7 @@ export function FileActionMenu({
         <Ellipsis size={14} aria-hidden />
       </button>
       {open &&
+        interactive &&
         createPortal(
           <div
             ref={menu}

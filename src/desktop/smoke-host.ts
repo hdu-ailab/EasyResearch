@@ -222,7 +222,7 @@ export async function prepareDesktopSmokeWork(options: {
   pollIntervalMs?: number;
   now?: () => number;
   wait?: (delayMs: number) => Promise<void>;
-}): Promise<{ sessionId: string; bootId: string }> {
+}): Promise<{ sessionId: string; bootId: string; transcriptUser: string }> {
   const fetchImpl = options.fetch ?? fetch;
   const request = async (path: string, init: RequestInit = {}): Promise<unknown> => {
     const response = await fetchImpl(`${options.origin}${path}`, {
@@ -288,12 +288,13 @@ export async function prepareDesktopSmokeWork(options: {
   };
 
   const messagePath = `/api/sessions/${encodeURIComponent(created.id)}/messages`;
+  const transcriptUser = "Keep this deterministic desktop smoke request active until the host exits.";
   try {
     await request(messagePath, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        message: "Keep this deterministic desktop smoke request active until the host exits.",
+        message: transcriptUser,
       }),
       signal: signalForRemainingBudget("message POST"),
     });
@@ -319,7 +320,7 @@ export async function prepareDesktopSmokeWork(options: {
     const activity = sessionActivity(snapshot);
     latestActivity = JSON.stringify(activity);
     if (activity.status === "running" && activity.isStreaming === true) {
-      return { sessionId: created.id, bootId: status.bootId };
+      return { sessionId: created.id, bootId: status.bootId, transcriptUser };
     }
     const remaining = deadline - now();
     if (remaining <= 0) break;

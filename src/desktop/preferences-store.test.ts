@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SESSION_TABS_MAX_BYTES, SESSION_TABS_MAX_COUNT, snapshotSessionTabs } from "../webui/src/session-tabs";
 import { getTimelineDetail, TIMELINE_CATEGORIES, TIMELINE_PRESETS } from "../webui/src/timeline-detail";
 import {
   desktopPreferencePath,
@@ -29,6 +30,45 @@ afterEach(() => {
 });
 
 describe("desktop preference persistence", () => {
+  it("mirrors bounded session bookmarks alongside chat categories and still accepts old blobs", () => {
+    const sessionTabs = snapshotSessionTabs(Array.from({ length: 70 }, (_, i) => ({ id: String(i), cwd: `/研究/${i}` })), "0");
+    const blob = JSON.stringify({ ...JSON.parse(valid), sessionTabs, timelineDetail: getTimelineDetail({}), studioTheme: "dark" });
+    writeDesktopPreferenceBlob(root, blob);
+    expect(readDesktopPreferenceBlob(root)).toBe(blob);
+    writeDesktopPreferenceBlob(root, valid);
+    expect(readDesktopPreferenceBlob(root)).toBe(valid);
+  });
+
+  it("strictly rejects malformed nested bookmarks without replacing the accepted mirror", () => {
+    const tab = { id: "root", cwd: "/workspace", name: "Research" };
+    const accepted = JSON.stringify({ ...JSON.parse(valid), sessionTabs: [tab] });
+    writeDesktopPreferenceBlob(root, accepted);
+    const candidates = [
+      null, {}, "tabs", [null], [{ ...tab, id: 1 }], [{ ...tab, id: "" }], [{ ...tab, cwd: "relative" }],
+      [{ ...tab, cwd: "C:relative" }], [{ ...tab, cwd: "\\\\server" }], [{ ...tab, cwd: "/bad\0path" }],
+      [{ ...tab, name: {} }], [{ ...tab, name: null }], [{ ...tab, name: "x".repeat(513) }],
+      [{ ...tab, status: "running" }], [{ ...tab, draft: "secret" }], [tab, tab],
+      Array.from({ length: SESSION_TABS_MAX_COUNT + 1 }, (_, i) => ({ id: String(i), cwd: "/" })),
+      [{ ...tab, cwd: `/${"研".repeat(SESSION_TABS_MAX_BYTES / 2)}` }],
+    ];
+    for (const sessionTabs of candidates) {
+      expect(() => writeDesktopPreferenceBlob(root, JSON.stringify({ ...JSON.parse(valid), sessionTabs }))).toThrow(/preference/i);
+      expect(readDesktopPreferenceBlob(root)).toBe(accepted);
+    }
+  });
+
+  it("enforces the bookmark byte boundary before the unchanged 16 KiB envelope limit", () => {
+    const base = { id: "exact", cwd: "/" };
+    const sessionTabs = [{ ...base, cwd: `/${"x".repeat(SESSION_TABS_MAX_BYTES - Buffer.byteLength(JSON.stringify([base])))}` }];
+    const blob = JSON.stringify({ ...JSON.parse(valid), sessionTabs });
+    writeDesktopPreferenceBlob(root, blob);
+    expect(readDesktopPreferenceBlob(root)).toBe(blob);
+    const oversized = JSON.stringify({ ...JSON.parse(valid), sessionTabs: [{ ...sessionTabs[0], cwd: `${sessionTabs[0]!.cwd}x` }] });
+    expect(Buffer.byteLength(oversized)).toBeLessThan(16 * 1024);
+    expect(() => writeDesktopPreferenceBlob(root, oversized)).toThrow(/schema/);
+    expect(readDesktopPreferenceBlob(root)).toBe(blob);
+  });
+
   it.each(TIMELINE_PRESETS)("round-trips a complete $id timeline policy through the host mirror", ({ value }) => {
     const blob = JSON.stringify({ ...JSON.parse(valid), timelineDetail: value });
     writeDesktopPreferenceBlob(root, blob);

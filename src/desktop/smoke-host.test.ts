@@ -250,10 +250,13 @@ describe("packaged desktop smoke preflight", () => {
 
     activity = { status: "running", isStreaming: true };
     waiters.shift()?.();
-    await expect(pending).resolves.toEqual({
+    const prepared = await pending;
+    expect(prepared).toMatchObject({
       sessionId: "active-session",
       bootId: "boot-old",
     });
+    expect(prepared.transcriptUser).toBe((requests.find(({ url }) => url.endsWith("/messages"))?.body as { message: string }).message);
+    expect(prepared.transcriptUser.length).toBeGreaterThan(0);
 
     expect(requests.map(({ method, url }) => [method, new URL(url).pathname])).toEqual([
       ["GET", "/api/status"],

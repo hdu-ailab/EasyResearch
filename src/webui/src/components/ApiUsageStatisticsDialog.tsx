@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ApiUsageSessionSummaryDto, ApiUsageStatisticsDto, ApiUsageTotalsDto } from "../../../web/contracts";
 import { getApiUsageStatistics } from "../api";
 import { useModalLayer } from "../hooks/useModalLayer";
@@ -24,7 +24,8 @@ export function ApiUsageStatisticsDialog({
 }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLElement>(null);
-  const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
+  const { layerProps, dialogProps } = useModalLayer(onClose, dialogRef);
+  const titleId = useId();
   const request = useRef(0);
   const [statistics, setStatistics] = useState<ApiUsageStatisticsDto | null>(liveStatistics ?? null);
   const [error, setError] = useState(false);
@@ -65,16 +66,16 @@ export function ApiUsageStatisticsDialog({
   };
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-black/20 p-4" style={{ zIndex }}>
+    <div className="fixed inset-0 flex items-center justify-center bg-black/20 p-4" {...layerProps}>
       <section
         ref={dialogRef}
         role="dialog"
         {...dialogProps}
-        aria-labelledby="api-usage-statistics-title"
+        aria-labelledby={titleId}
         className="flex max-h-[min(680px,calc(100vh-32px))] w-full max-w-[620px] flex-col overflow-hidden rounded-[12px] border border-v2-grey-200 bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
       >
         <header className="flex items-center justify-between border-b border-v2-grey-200 px-4 py-3">
-          <h2 id="api-usage-statistics-title" className="text-[14px] font-semibold text-v2-text-text-base">
+          <h2 id={titleId} className="text-[14px] font-semibold text-v2-text-text-base">
             {t("usage.statisticsTitle")}
           </h2>
           <button

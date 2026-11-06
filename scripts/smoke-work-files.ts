@@ -13,6 +13,7 @@ import type { importPi } from "../src/runtime/pi-import";
 import { workFilesMp4, workFilesSvg } from "./work-files-media-fixture";
 
 type Pi = Awaited<ReturnType<typeof importPi>>;
+const work = (page: Page) => page.locator('[data-session-surface][data-session-active="true"]');
 interface WireRecord {
   sequence: number;
   method: string;
@@ -284,27 +285,27 @@ function fixture(pi: Pi, runtime: string, label: string) {
 }
 
 async function showTree(page: Page): Promise<void> {
-  if (page.viewportSize()!.width < 820) await page.getByRole("tab", { name: "Files", exact: true }).click();
+  if (page.viewportSize()!.width < 820) await work(page).getByRole("tab", { name: "Files", exact: true }).click();
   else {
-    const files = page.getByRole("button", { name: "Files browser", exact: true });
+    const files = page.getByRole("banner").getByRole("button", { name: "Files browser", exact: true });
     if (await files.getAttribute("aria-pressed") !== "true") await files.click();
   }
-  const toggle = page.getByRole("button", { name: "Toggle file tree", exact: true });
+  const toggle = work(page).getByRole("button", { name: "Toggle file tree", exact: true });
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
-  await expect(page.getByRole("tree", { name: "Workspace files tree", exact: true })).toBeVisible();
+  await expect(work(page).getByRole("tree", { name: "Workspace files tree", exact: true })).toBeVisible();
 }
 
 async function openFile(page: Page, path: string): Promise<void> {
   await showTree(page);
-  const row = page.getByRole("treeitem").and(page.locator(`[title=${JSON.stringify(path)}]`));
+  const row = work(page).getByRole("treeitem").and(work(page).locator(`[title=${JSON.stringify(path)}]`));
   await row.focus();
   await row.press("Enter");
-  await expect(page.getByRole("tablist", { name: "Open files", exact: true }).getByRole("tab", { name: basename(path), exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(work(page).getByRole("tablist", { name: "Open files", exact: true }).getByRole("tab", { name: basename(path), exact: true })).toHaveAttribute("aria-selected", "true");
 }
 
 async function fileMenu(page: Page, name: string): Promise<Locator> {
   await showTree(page);
-  const trigger = page.getByRole("button", { name: `Actions for ${name}`, exact: true });
+  const trigger = work(page).getByRole("button", { name: `Actions for ${name}`, exact: true });
   await trigger.focus();
   await trigger.press("ArrowDown");
   const menu = page.getByRole("menu", { name: `Actions for ${name}`, exact: true });
@@ -316,23 +317,23 @@ async function chooseFiles(page: Page, files: string[], directoryName?: string):
   await showTree(page);
   const trigger = directoryName
     ? (await fileMenu(page, directoryName)).getByRole("menuitem", { name: "Upload here", exact: true })
-    : page.getByRole("button", { name: "Upload files", exact: true });
+    : work(page).getByRole("button", { name: "Upload files", exact: true });
   const chooser = page.waitForEvent("filechooser");
   await trigger.click();
   await (await chooser).setFiles(files);
 }
 
 function uploadRow(page: Page, name: string): Locator {
-  return page.getByRole("region", { name: "File uploads", exact: true }).getByRole("listitem", { name, exact: true });
+  return work(page).getByRole("region", { name: "File uploads", exact: true }).getByRole("listitem", { name, exact: true });
 }
 
 async function dismissUploads(page: Page): Promise<void> {
-  const buttons = page.getByRole("button", { name: /^Dismiss upload of / });
+  const buttons = work(page).getByRole("button", { name: /^Dismiss upload of / });
   while (await buttons.count()) await buttons.first().click();
 }
 
 async function htmlFrame(page: Page): Promise<Frame> {
-  const iframe = page.locator('iframe[title="HTML preview"]');
+  const iframe = work(page).locator('iframe[title="HTML preview"]');
   await expect(iframe).toBeVisible();
   const handle = await iframe.elementHandle();
   const frame = await handle?.contentFrame();
@@ -459,11 +460,11 @@ async function checkUploadFilenameGeometry(
   defaultTreeWidth: number,
   evidence: Array<Record<string, unknown>>,
 ): Promise<void> {
-  const tree = page.locator("[data-files-tree]");
+  const tree = work(page).locator("[data-files-tree]");
   const row = uploadRow(page, name);
   const filename = row.locator(`span[title=${JSON.stringify(name)}]`);
   const mobile = page.viewportSize()!.width < 820;
-  const handle = page.getByRole("separator", { name: "Resize file tree", exact: true });
+  const handle = work(page).getByRole("separator", { name: "Resize file tree", exact: true });
   const width = () => tree.evaluate((element) => element.getBoundingClientRect().width);
   const restoreDefault = async () => {
     if (mobile) return;
@@ -542,10 +543,10 @@ async function checkUploadFilenameGeometry(
 
 async function checkSplitters(page: Page, checks: string[], measurements: Record<string, unknown>): Promise<void> {
   if (page.viewportSize()!.width < 820) {
-    await expect(page.getByRole("separator", { name: "Resize file tree", exact: true })).toHaveCount(0);
+    await expect(work(page).getByRole("separator", { name: "Resize file tree", exact: true })).toHaveCount(0);
     return;
   }
-  const iframe = page.locator('iframe[title="HTML preview"]');
+  const iframe = work(page).locator('iframe[title="HTML preview"]');
   const originalSource = await iframe.getAttribute("src");
   const child = await htmlFrame(page);
   const observe = () => {
@@ -577,7 +578,7 @@ async function checkSplitters(page: Page, checks: string[], measurements: Record
     !!rect && point.x > rect.x && point.x < rect.x + rect.width && point.y > rect.y && point.y < rect.y + rect.height;
   try {
     for (const name of ["Resize panel", "Resize file tree"]) {
-      const handle = page.getByRole("separator", { name, exact: true });
+      const handle = work(page).getByRole("separator", { name, exact: true });
       const observation: Record<string, unknown> = { name };
       evidence.push(observation);
       const originalBodyStyles = await page.evaluate(bodyStyles);
@@ -759,13 +760,13 @@ async function main(): Promise<void> {
         }));
         const workUrl = `${origin}/#/work/${project.id}?cwd=${encodeURIComponent(project.cwd)}`;
         await page.goto(workUrl);
-        await expect(page.getByText(`Work files ready ${label}`, { exact: true })).toBeVisible();
+        await expect(work(page).getByText(`Work files ready ${label}`, { exact: true })).toBeVisible();
         await expect(page.locator("html")).toHaveAttribute("data-ui-theme", theme);
         assert.equal(await page.evaluate(() => document.documentElement.style.colorScheme), theme);
         await showTree(page);
-        await expect(page.getByRole("button", { name: "Upload files", exact: true }), "Compiled candidate must include the integrated file controls").toBeEnabled();
+        await expect(work(page).getByRole("button", { name: "Upload files", exact: true }), "Compiled candidate must include the integrated file controls").toBeEnabled();
         await noOverflow(page, "Initial file tree");
-        const defaultTreeWidth = await page.locator("[data-files-tree]").evaluate((element) => element.getBoundingClientRect().width);
+        const defaultTreeWidth = await work(page).locator("[data-files-tree]").evaluate((element) => element.getBoundingClientRect().width);
         const uploadFilenameGeometry: Array<Record<string, unknown>> = [];
         caseReport.measurements.initialTreeWidth = defaultTreeWidth;
         caseReport.measurements.uploadFilenameGeometry = uploadFilenameGeometry;
@@ -857,22 +858,22 @@ async function main(): Promise<void> {
         caseReport.checks.push("displayed upload filenames have meaningful visible text geometry without overlap/overflow in pending, failed and cancelled rows");
 
         await openFile(page, join(project.cwd, "draft.txt"));
-        await expect(page.locator("#work-panel-files pre")).toContainText("# Rename proof");
+        await expect(work(page).locator('[data-work-pane="files"] pre')).toContainText("# Rename proof");
         await showTree(page);
-        await page.getByRole("textbox", { name: "Filter files", exact: true }).fill("draft");
+        await work(page).getByRole("textbox", { name: "Filter files", exact: true }).fill("draft");
         await (await fileMenu(page, "draft.txt")).getByRole("menuitem", { name: "Rename file", exact: true }).click();
         const rename = page.getByRole("dialog", { name: "Rename file", exact: true });
         const renamedName = "改名 🐬.md";
         await rename.getByRole("textbox", { name: "File name", exact: true }).fill(renamedName);
         await rename.getByRole("button", { name: "Rename file", exact: true }).click();
         await expect(rename).toBeHidden();
-        await page.getByRole("textbox", { name: "Filter files", exact: true }).fill("");
-        const tabs = page.getByRole("tablist", { name: "Open files", exact: true });
+        await work(page).getByRole("textbox", { name: "Filter files", exact: true }).fill("");
+        const tabs = work(page).getByRole("tablist", { name: "Open files", exact: true });
         await expect(tabs.getByRole("tab", { name: "draft.txt", exact: true })).toHaveCount(0);
         await expect(tabs.getByRole("tab", { name: renamedName, exact: true })).toHaveCount(1);
         await tabs.getByRole("tab", { name: renamedName, exact: true }).click();
         await expect(tabs.getByRole("tab", { name: renamedName, exact: true })).toHaveAttribute("aria-selected", "true");
-        await expect(page.locator("#work-panel-files").getByRole("heading", { name: "Rename proof", exact: true })).toBeVisible();
+        await expect(work(page).locator('[data-work-pane="files"]').getByRole("heading", { name: "Rename proof", exact: true })).toBeVisible();
         await noOverflow(page, "Renamed Markdown preview");
         assert(!existsSync(join(project.cwd, "draft.txt")));
         assert.deepEqual(readFileSync(join(project.cwd, renamedName)), project.uploadFiles.get("draft.txt"));
@@ -889,29 +890,29 @@ async function main(): Promise<void> {
         caseReport.checks.push("browser attachment download preserves complete binary bytes and Unicode filename");
 
         await openFile(page, join(project.cwd, "image.svg"));
-        const image = page.getByRole("img", { name: "image.svg", exact: true });
+        const image = work(page).getByRole("img", { name: "image.svg", exact: true });
         await expect(image).toBeVisible();
         await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBe(640);
         const fittedWidth = (await image.boundingBox())!.width;
-        await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+        await work(page).getByRole("button", { name: "Zoom in", exact: true }).click();
         await expect.poll(async () => (await image.boundingBox())!.width).toBeGreaterThan(fittedWidth);
         await noOverflow(page, "Zoomed image preview");
-        await page.getByRole("button", { name: "Fit image", exact: true }).click();
+        await work(page).getByRole("button", { name: "Fit image", exact: true }).click();
         await expect.poll(async () => Math.abs((await image.boundingBox())!.width - fittedWidth)).toBeLessThan(1);
         await page.screenshot({ path: join(artifacts, `image-${label}.png`), fullPage: true });
         await openFile(page, join(project.cwd, "broken.svg"));
-        await expect(page.locator("#work-panel-files").getByRole("alert")).toContainText("Could not display this image");
+        await expect(work(page).locator('[data-work-pane="files"]').getByRole("alert")).toContainText("Could not display this image");
         const retryBefore = wire.records.length;
-        await page.getByRole("button", { name: "Retry image", exact: true }).click();
+        await work(page).getByRole("button", { name: "Retry image", exact: true }).click();
         await expect.poll(() => wire.records.slice(retryBefore).some((record) => new URL(record.path, origin).searchParams.get("path") === join(project.cwd, "broken.svg") && record.status === 200)).toBe(true);
-        await expect(page.locator("#work-panel-files").getByRole("alert")).toContainText("Could not display this image");
+        await expect(work(page).locator('[data-work-pane="files"]').getByRole("alert")).toContainText("Could not display this image");
         writeFileSync(join(project.cwd, "broken.svg"), workFilesSvg);
-        await page.getByRole("button", { name: "Retry image", exact: true }).click();
-        await expect(page.getByRole("img", { name: "broken.svg", exact: true })).toBeVisible();
+        await work(page).getByRole("button", { name: "Retry image", exact: true }).click();
+        await expect(work(page).getByRole("img", { name: "broken.svg", exact: true })).toBeVisible();
         caseReport.checks.push("image decode, visible zoom/fit, real corrupt-file error, retry request and restored-file recovery");
 
         await openFile(page, join(project.cwd, "video.mp4"));
-        const video = page.locator('video[aria-label="Video preview"]');
+        const video = work(page).locator('video[aria-label="Video preview"]');
         await expect(video).toBeVisible();
         await expect.poll(() => video.evaluate((element) => (element as HTMLVideoElement).readyState)).toBeGreaterThanOrEqual(2);
         const metadata = await video.evaluate((element) => {
@@ -940,10 +941,10 @@ async function main(): Promise<void> {
         caseReport.checks.push("actual H.264 playback/seek plus trusted-input fullscreen enter/exit with retained media/tab state and no overflow");
 
         await showTree(page);
-        await page.getByRole("button", { name: "Expand reports", exact: true }).click();
+        await work(page).getByRole("button", { name: "Expand reports", exact: true }).click();
         const htmlPath = join(project.reportDirectory, "report.html");
         await openFile(page, htmlPath);
-        const iframe = page.locator('iframe[title="HTML preview"]');
+        const iframe = work(page).locator('iframe[title="HTML preview"]');
         const readyHtml = async () => {
           const frame = await htmlFrame(page);
           await expect(frame.locator("#tail")).toHaveText(`FULL_HTML_TAIL_${label}`);
@@ -960,7 +961,7 @@ async function main(): Promise<void> {
         };
         const retryHtml = async () => {
           const previous = await scopePath();
-          await page.getByRole("button", { name: "Retry HTML", exact: true }).click();
+          await work(page).getByRole("button", { name: "Retry HTML", exact: true }).click();
           await expect.poll(scopePath).not.toBe(previous);
           const frame = await readyHtml();
           await released(previous);
@@ -984,13 +985,13 @@ async function main(): Promise<void> {
         await noOverflow(page, "Interactive HTML preview");
         await page.screenshot({ path: join(artifacts, `html-${label}.png`), fullPage: true });
         const previousScope = await scopePath();
-        await page.getByRole("button", { name: "Source", exact: true }).click();
+        await work(page).getByRole("button", { name: "Source", exact: true }).click();
         await expect(iframe).toHaveCount(0);
-        await expect.poll(() => page.locator("#work-panel-files pre").evaluate((element) => element.textContent?.length)).toBe(project.html.length);
-        assert(await page.locator("#work-panel-files pre").evaluate((element, tail) => element.textContent?.includes(tail), `FULL_HTML_TAIL_${label}`));
+        await expect.poll(() => work(page).locator('[data-work-pane="files"] pre').evaluate((element) => element.textContent?.length)).toBe(project.html.length);
+        assert(await work(page).locator('[data-work-pane="files"] pre').evaluate((element, tail) => element.textContent?.includes(tail), `FULL_HTML_TAIL_${label}`));
         await noOverflow(page, "Complete HTML source preview");
         await released(previousScope);
-        await page.getByRole("button", { name: "Preview", exact: true }).click();
+        await work(page).getByRole("button", { name: "Preview", exact: true }).click();
         frame = await readyHtml();
         const expiredPath = await scopePath();
         const expiredId = expiredPath.split("/")[4]!;
@@ -1048,9 +1049,9 @@ async function main(): Promise<void> {
         caseReport.checks.push("keyboard tab close releases the exact HTML scope");
         await showTree(page);
         if (width < 820) {
-          await page.getByRole("tab", { name: "Chat", exact: true }).click();
-          await expect(page.getByText(`Work files ready ${label}`, { exact: true })).toBeVisible();
-          await page.getByRole("tab", { name: "Files", exact: true }).click();
+          await work(page).getByRole("tab", { name: "Chat", exact: true }).click();
+          await expect(work(page).getByText(`Work files ready ${label}`, { exact: true })).toBeVisible();
+          await work(page).getByRole("tab", { name: "Files", exact: true }).click();
           await expect(tabs.getByRole("tab", { name: renamedName, exact: true })).toHaveCount(1);
           caseReport.checks.push("mobile Chat/Files switching preserves open file-tab identity");
         }

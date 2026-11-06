@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { I18nContext } from "../i18n/I18nProvider";
 import { messages } from "../i18n/messages";
+import { ViewActivityProvider } from "../view-activity";
 import { HomePage } from "./HomePage";
 
 vi.mock("../api", async (importOriginal) => {
@@ -30,6 +31,16 @@ vi.mock("../api", async (importOriginal) => {
 });
 
 const ApiError = api.ApiError;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
 
 const history = [
   {
@@ -138,6 +149,131 @@ describe("HomePage", () => {
     expect(workspace.parentElement).toHaveClass("min-h-full", "w-full", "flex", "flex-col");
     expect(workspace.parentElement).not.toHaveClass("px-2", "pb-2", "pt-[4px]");
     expect(within(workspace).getByRole("heading", { name: "Research sessions" })).toBeVisible();
+  });
+
+  it("omits the embedded header and forwards its existing one-shot update check", async () => {
+    const onUpdateAvailable = vi.fn();
+    vi.mocked(api.checkForUpdate).mockResolvedValue({ latestVersion: "9.9.9" });
+    render(
+      <HomePage
+        embedded
+        onOpenSession={vi.fn()}
+        onOpenSettings={vi.fn()}
+        settingsButton={null}
+        onUpdateAvailable={onUpdateAvailable}
+      />,
+    );
+    await screen.findByRole("region", { name: /research workspace/i });
+    await waitFor(() => expect(onUpdateAvailable).toHaveBeenCalledWith("9.9.9"));
+    expect(screen.queryByRole("button", { name: /back to home/i })).toBeNull();
+    expect(api.checkForUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a late creation select after leaving and returning to Home", async () => {
+    let complete!: (value: Awaited<ReturnType<typeof api.createSession>>) => void;
+    vi.mocked(api.createSession).mockReturnValue(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    const onOpenSession = vi.fn();
+    const content = (visible: boolean) => (
+      <ViewActivityProvider visible={visible} interactive={visible}>
+        <HomePage embedded onOpenSession={onOpenSession} onOpenSettings={vi.fn()} settingsButton={null} />
+      </ViewActivityProvider>
+    );
+    const user = userEvent.setup();
+    const view = render(content(true));
+    await user.click(await screen.findByRole("button", { name: "New session /proj" }));
+    expect(api.createSession).toHaveBeenCalledOnce();
+    view.rerender(content(false));
+    view.rerender(content(true));
+    await act(async () => complete({ id: "late", cwd: "/proj", status: "ready", isStreaming: false }));
+    expect(onOpenSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "New session /proj" })).toBeEnabled();
+  });
+
+  it.each(["history", "active", "create"] as const)(
+    "ignores an obsolete %s failure without cancelling a newer open",
+    async (source) => {
+      const obsolete = deferred<Awaited<ReturnType<typeof api.openSession>>>();
+      const latest = deferred<Awaited<ReturnType<typeof api.openSession>>>();
+      vi.mocked(api.listStatus).mockResolvedValue({
+        agentDir: "/agent",
+        homeDir: "/home/user",
+        sessions: [...history, otherHistory],
+        activeSessions: active,
+      } as never);
+      vi.mocked(api.openSession).mockImplementation((path) =>
+        path === otherHistory.path ? latest.promise : obsolete.promise,
+      );
+      vi.mocked(api.createSession).mockReturnValue(obsolete.promise);
+      if (source === "active") vi.mocked(api.touchSession).mockReturnValue(obsolete.promise.then(() => undefined));
+      const onOpenSession = vi.fn();
+      const user = userEvent.setup();
+      render(<HomePage onOpenSession={onOpenSession} onOpenSettings={vi.fn()} settingsButton={null} />);
+      if (source === "history") await user.click(await screen.findByText("Fault diagnosis"));
+      else if (source === "active") await user.click(await screen.findByText("a1"));
+      else await user.click(await screen.findByRole("button", { name: "New session /proj" }));
+      await user.click(screen.getByText("Other paper"));
+      await act(async () =>
+        obsolete.reject(new ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/proj", error: "Obsolete folder" })),
+      );
+      expect(screen.queryByRole("dialog", { name: "Workspace folder not found" })).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      await act(async () => latest.resolve({ id: "h2", cwd: "/other", status: "ready", isStreaming: false }));
+      expect(onOpenSession.mock.calls).toEqual([[{ id: "h2", cwd: "/other" }]]);
+    },
+  );
+
+  it("ends pending navigation when Home becomes noninteractive even if it stays visible", async () => {
+    const request = deferred<Awaited<ReturnType<typeof api.createSession>>>();
+    vi.mocked(api.createSession).mockReturnValue(request.promise);
+    const onOpenSession = vi.fn();
+    const content = (interactive: boolean) => (
+      <ViewActivityProvider visible interactive={interactive}>
+        <HomePage onOpenSession={onOpenSession} onOpenSettings={vi.fn()} settingsButton={null} />
+      </ViewActivityProvider>
+    );
+    const user = userEvent.setup();
+    const view = render(content(true));
+    await user.click(await screen.findByRole("button", { name: "New session /proj" }));
+    view.rerender(content(false));
+    view.rerender(content(true));
+    await act(async () => request.resolve({ id: "created", cwd: "/proj", status: "ready", isStreaming: false }));
+    expect(onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it("notifies the captured catalog owner of a background rename, including an empty name", async () => {
+    let complete!: () => void;
+    vi.mocked(api.renameSession).mockReturnValue(
+      new Promise<void>((resolve) => {
+        complete = resolve;
+      }),
+    );
+    const mutation = { renamed: vi.fn(), deleted: vi.fn(), workspace: vi.fn() };
+    const onCatalogMutationStart = vi.fn(() => mutation);
+    const content = (visible: boolean) => (
+      <ViewActivityProvider visible={visible} interactive={visible}>
+        <HomePage
+          embedded
+          onOpenSession={vi.fn()}
+          onOpenSettings={vi.fn()}
+          settingsButton={null}
+          onCatalogMutationStart={onCatalogMutationStart}
+        />
+      </ViewActivityProvider>
+    );
+    const user = userEvent.setup();
+    const view = render(content(true));
+    await user.click(await screen.findByRole("button", { name: "Rename session: Fault diagnosis" }));
+    const dialog = screen.getByRole("dialog");
+    await user.clear(within(dialog).getByRole("textbox"));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(onCatalogMutationStart).toHaveBeenCalledOnce();
+    view.rerender(content(false));
+    await act(async () => complete());
+    expect(mutation.renamed).toHaveBeenCalledWith("h1", "");
   });
 
   it("renames a workspace from its actions and retains the sessions under the new path", async () => {

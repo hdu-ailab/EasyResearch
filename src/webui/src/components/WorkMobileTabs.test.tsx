@@ -8,21 +8,21 @@ import type { WorkView } from "./WorkMobileTabs";
 import { WorkMobileTabs } from "./WorkMobileTabs";
 
 it("exposes one selected tab with stable tab and panel ids", () => {
-  render(<WorkMobileTabs active="chat" onChange={() => {}} />);
+  render(<WorkMobileTabs active="chat" onChange={() => {}} idPrefix="owner" />);
 
   const tabs = screen.getAllByRole("tab");
   expect(tabs).toHaveLength(3);
-  expect(tabs[0]).toHaveAttribute("id", "work-tab-chat");
+  expect(tabs[0]).toHaveAttribute("id", "owner-tab-chat");
   expect(tabs[0]).toHaveAttribute("aria-selected", "true");
-  expect(tabs[0]).toHaveAttribute("aria-controls", "work-panel-chat");
+  expect(tabs[0]).toHaveAttribute("aria-controls", "owner-panel-chat");
   expect(tabs[0]).toHaveAttribute("tabindex", "0");
-  expect(tabs[1]).toHaveAttribute("id", "work-tab-files");
+  expect(tabs[1]).toHaveAttribute("id", "owner-tab-files");
   expect(tabs[1]).toHaveAttribute("aria-selected", "false");
-  expect(tabs[1]).toHaveAttribute("aria-controls", "work-panel-files");
+  expect(tabs[1]).toHaveAttribute("aria-controls", "owner-panel-files");
   expect(tabs[1]).toHaveAttribute("tabindex", "-1");
-  expect(tabs[2]).toHaveAttribute("id", "work-tab-agents");
+  expect(tabs[2]).toHaveAttribute("id", "owner-tab-agents");
   expect(tabs[2]).toHaveAttribute("aria-selected", "false");
-  expect(tabs[2]).toHaveAttribute("aria-controls", "work-panel-agents");
+  expect(tabs[2]).toHaveAttribute("aria-controls", "owner-panel-agents");
   expect(tabs[2]).toHaveAttribute("tabindex", "-1");
 });
 

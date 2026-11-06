@@ -1,7 +1,9 @@
 import { File as FileIcon, FolderTree, X } from "lucide-react";
 import { useLayoutEffect, useRef } from "react";
 import type { FileContentDto } from "../../../web/contracts";
+import { canFocusElement } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
+import { useViewActivityRef } from "../view-activity";
 import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface FileTab {
@@ -19,6 +21,7 @@ export interface FileTabsProps {
 
 export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabsProps) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
   const toggleRef = useRef<HTMLButtonElement>(null);
   const restoreAfterClose = useRef(false);
@@ -27,12 +30,14 @@ export function FileTabs({ tabs, active, onActivate, onClose, toggle }: FileTabs
   useLayoutEffect(() => {
     if (!restoreAfterClose.current) return;
     restoreAfterClose.current = false;
+    if (!activity.current.interactive) return;
     const target = tabs.some((tab) => tab.path === active) ? active : (tabs.at(-1)?.path ?? null);
-    if (target) tabRefs.current.get(target)?.focus();
-    else toggleRef.current?.focus();
-  }, [active, tabs]);
+    const button = target ? (tabRefs.current.get(target) ?? null) : toggleRef.current;
+    if (canFocusElement(button)) button.focus();
+  }, [active, tabs, activity]);
 
   const handleTabKey = (event: React.KeyboardEvent<HTMLButtonElement>, path: string) => {
+    if (!activity.current.interactive) return;
     const index = tabs.findIndex((tab) => tab.path === path);
     if (event.key === "Delete") {
       event.preventDefault();

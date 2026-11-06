@@ -53,6 +53,12 @@ function Harness({ guard, onRoute }: { guard?: SettingsCloseGuard; onRoute?: (ro
       <button type="button" onClick={() => router.returnToSettings(config)}>
         return-to-settings
       </button>
+      <button type="button" onClick={() => router.replaceWorkSession({ id: "s1", cwd: "/moved" })}>
+        relocate-work
+      </button>
+      <button type="button" onClick={() => router.replaceWorkSession({ id: "replacement", cwd: "/moved" }, "s1")}>
+        recover-empty-work
+      </button>
     </>
   );
 }
@@ -74,6 +80,61 @@ afterEach(() => {
 });
 
 describe("useHashRoute", () => {
+  it.each(["work", "settings", "config"])(
+    "replaces an explicitly recovered UUID under %s and preserves the exact return host",
+    async (surface) => {
+      const user = userEvent.setup();
+      render(<Harness />);
+      await user.click(screen.getByRole("button", { name: "recover-empty-work" }));
+      expectRoute({ page: "home" });
+      await user.click(screen.getByRole("button", { name: "navigate-work" }));
+      if (surface !== "work") await user.click(screen.getByRole("button", { name: "open-settings" }));
+      if (surface === "config") await user.click(screen.getByRole("button", { name: "open-config" }));
+      await user.click(screen.getByRole("button", { name: "recover-empty-work" }));
+      const host = { page: "work" as const, session: { id: "replacement", cwd: "/moved" } };
+      if (surface === "config") {
+        expectRoute({ page: "config", returnTo: { ...host, settingsOpen: true } });
+        await user.click(screen.getByRole("button", { name: "return-to-settings" }));
+      }
+      if (surface !== "work") {
+        expectRoute({ ...host, settingsOpen: true });
+        await user.click(screen.getByRole("button", { name: "close-settings" }));
+      }
+      await waitFor(() => expectRoute(host));
+      await user.click(screen.getByRole("button", { name: "navigate-home" }));
+      await user.click(screen.getByRole("button", { name: "recover-empty-work" }));
+      expectRoute({ page: "home" });
+    },
+  );
+
+  it("rebinds only the matching selected UUID and keeps Settings Back on the new cwd", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "relocate-work" }));
+    expectRoute({ page: "home" });
+    await user.click(screen.getByRole("button", { name: "navigate-work" }));
+    await user.click(screen.getByRole("button", { name: "open-settings" }));
+    await user.click(screen.getByRole("button", { name: "relocate-work" }));
+    expectRoute({ page: "work", session: { id: "s1", cwd: "/moved" }, settingsOpen: true });
+    await user.click(screen.getByRole("button", { name: "close-settings" }));
+    await waitFor(() => expectRoute({ page: "work", session: { id: "s1", cwd: "/moved" } }));
+  });
+
+  it("keeps Config visible while rebinding its exact Settings return host", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "navigate-work" }));
+    await user.click(screen.getByRole("button", { name: "open-settings" }));
+    await user.click(screen.getByRole("button", { name: "open-config" }));
+    await user.click(screen.getByRole("button", { name: "relocate-work" }));
+    const settings = { page: "work" as const, session: { id: "s1", cwd: "/moved" }, settingsOpen: true as const };
+    expectRoute({ page: "config", returnTo: settings });
+    await user.click(screen.getByRole("button", { name: "return-to-settings" }));
+    expectRoute(settings);
+    await user.click(screen.getByRole("button", { name: "close-settings" }));
+    await waitFor(() => expectRoute({ page: "work", session: settings.session }));
+  });
+
   it("opens Settings over Home with a marked entry and closes it through browser Back", async () => {
     setLocation("#/", { preserved: "yes" });
     const user = userEvent.setup();

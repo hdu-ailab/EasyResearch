@@ -8,7 +8,9 @@ import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../f
 import { relativeFilesystemPath } from "../filesystem-path";
 import { useFileUploads } from "../hooks/useFileUploads";
 import { useLazyTree } from "../hooks/useLazyTree";
+import { canFocusElement } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
+import { useViewActivityRef } from "../view-activity";
 import { FileActionMenu } from "./FileActionMenu";
 import { FileRenameDialog } from "./FileRenameDialog";
 import { FileUploads } from "./FileUploads";
@@ -45,6 +47,8 @@ function FilesPanelScope({
   onFileEventsConsumed,
 }: FilesPanelProps) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
+  const { interactive } = activity.current;
   const [filter, setFilter] = useState("");
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const tree = useLazyTree<FileEntryDto>({ root, loadChildren: listEntries, enabled: loadEnabled });
@@ -61,15 +65,20 @@ function FilesPanelScope({
     else tree.refreshDirectory(directory);
   });
   const chooseUpload = (directory: string) => {
-    if (!loadEnabled) return;
+    if (!loadEnabled || !activity.current.interactive) return;
     destination.current = directory;
     picker.current?.click();
   };
   const startRename = (entry: FileEntryDto) => {
+    if (!activity.current.interactive) return;
     setRenaming({ entry, opener: document.activeElement });
   };
 
   const startFileDrag = (event: DragEvent, entry: FileEntryDto) => {
+    if (!activity.current.interactive) {
+      event.preventDefault();
+      return;
+    }
     if (entry.kind !== "file") return;
     event.dataTransfer.effectAllowed = "copy";
     event.dataTransfer.setData(FILE_PATH_DRAG_TYPE, JSON.stringify({ root, kind: entry.kind, path: entry.path }));
@@ -161,19 +170,28 @@ function FilesPanelScope({
     : (displayedRows[0]?.entry.path ?? null);
 
   const focusRow = (path: string) => {
+    if (!activity.current.interactive) return;
     setFocusedPath(path);
     rowRefs.current.get(path)?.focus();
   };
 
   useEffect(() => {
+    if (!interactive) {
+      pendingFocus.current = null;
+      return;
+    }
     const cancelMovedFocus = (event: FocusEvent) => {
       if (pendingFocus.current && event.target !== pendingFocus.current.opener) pendingFocus.current = null;
     };
     document.addEventListener("focusin", cancelMovedFocus, true);
     return () => document.removeEventListener("focusin", cancelMovedFocus, true);
-  }, []);
+  }, [interactive]);
 
   useEffect(() => {
+    if (!activity.current.interactive) {
+      pendingFocus.current = null;
+      return;
+    }
     const pending = pendingFocus.current;
     if (!pending) return;
     const { path, opener } = pending;
@@ -187,12 +205,12 @@ function FilesPanelScope({
     const row = rowRefs.current.get(path);
     if (row) {
       pendingFocus.current = null;
-      row.focus();
+      if (canFocusElement(row)) row.focus();
     } else if (tree.status(parentPath(path)) === "loaded") {
       pendingFocus.current = null;
-      filterInput.current?.focus();
+      if (canFocusElement(filterInput.current)) filterInput.current.focus();
     }
-  }, [tree.status]);
+  }, [tree.status, activity]);
 
   const handleTreeKey = (event: React.KeyboardEvent<HTMLElement>, row: TreeRow) => {
     if (event.target !== event.currentTarget) return;
@@ -251,6 +269,10 @@ function FilesPanelScope({
         className="hidden"
         aria-label={t("files.upload")}
         onChange={(event) => {
+          if (!activity.current.interactive) {
+            event.target.value = "";
+            return;
+          }
           uploads.enqueue(destination.current, Array.from(event.target.files ?? []));
           event.target.value = "";
         }}
@@ -462,7 +484,9 @@ function FilesPanelScope({
             onComplete={(result) => {
               onFileRenamed?.(result);
               setFocusedPath(result.entry.path);
-              pendingFocus.current = { path: result.entry.path, opener: renaming.opener };
+              pendingFocus.current = activity.current.interactive
+                ? { path: result.entry.path, opener: renaming.opener }
+                : null;
               tree.refreshDirectory(parentPath(result.oldPath));
             }}
           />,

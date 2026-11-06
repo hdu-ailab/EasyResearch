@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileWatcherEvent } from "../../../web/contracts";
 import { listEntries, readFileContent } from "../api";
 import { allObservers } from "../testing/transcriptTest";
+import { ViewActivityProvider } from "../view-activity";
 import { FileBrowser, type FileBrowserHandle } from "./FileBrowser";
 
 const docxLoader = vi.hoisted(() => ({ load: vi.fn(), render: vi.fn() }));
@@ -67,6 +68,139 @@ describe("FileBrowser", () => {
     });
     return { ...view, handle, container, observer };
   }
+
+  describe("retained media ownership", () => {
+    let fullscreen: Element | null;
+    let exitFullscreen: ReturnType<typeof vi.fn<() => Promise<void>>>;
+    let originalElement: PropertyDescriptor | undefined;
+    let originalExit: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      originalElement = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+      originalExit = Object.getOwnPropertyDescriptor(document, "exitFullscreen");
+      fullscreen = null;
+      exitFullscreen = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+      Object.defineProperties(document, {
+        fullscreenElement: { configurable: true, get: () => fullscreen },
+        exitFullscreen: { configurable: true, value: exitFullscreen },
+      });
+      vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+      vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      for (const [key, descriptor] of [
+        ["fullscreenElement", originalElement],
+        ["exitFullscreen", originalExit],
+      ] as const) {
+        if (descriptor) Object.defineProperty(document, key, descriptor);
+        else Reflect.deleteProperty(document, key);
+      }
+    });
+
+    async function retainedVideos() {
+      const first = createRef<FileBrowserHandle>();
+      const second = createRef<FileBrowserHandle>();
+      const views = (selected: "first" | "second") => (
+        <>
+          <ViewActivityProvider visible={selected === "first"} interactive={selected === "first"}>
+            <FileBrowser ref={first} root="/p" />
+          </ViewActivityProvider>
+          <ViewActivityProvider visible={selected === "second"} interactive={selected === "second"}>
+            <FileBrowser ref={second} root="/q" />
+          </ViewActivityProvider>
+        </>
+      );
+      const view = render(views("first"));
+      await act(async () => {
+        first.current?.openPath("/p/first.mp4");
+        second.current?.openPath("/q/second.mp4");
+      });
+      const videos = view.container.querySelectorAll("video");
+      const a = videos[0]!;
+      const b = videos[1]!;
+      a.currentTime = 42.5;
+      b.currentTime = 17.25;
+      // Instance-owned fakes distinguish the two media owners; spying on an
+      // inherited prototype mock would alias both videos' call histories.
+      const pauseA = vi.fn();
+      const pauseB = vi.fn();
+      const loadA = vi.fn();
+      Object.defineProperties(a, {
+        pause: { configurable: true, value: pauseA },
+        load: { configurable: true, value: loadA },
+      });
+      Object.defineProperties(b, {
+        pause: { configurable: true, value: pauseB },
+        load: { configurable: true, value: vi.fn() },
+      });
+      const source = a.src;
+      return {
+        ...view,
+        a,
+        b,
+        pauseA,
+        pauseB,
+        loadA,
+        source,
+        select: (selected: "first" | "second") => view.rerender(views(selected)),
+      };
+    }
+
+    it("pauses an inactive pane and exits only its owned fullscreen without resetting its media", async () => {
+      const view = await retainedVideos();
+      fullscreen = view.a;
+      view.select("second");
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+      expect(view.pauseA).toHaveBeenCalledOnce();
+      expect(view.pauseB).not.toHaveBeenCalled();
+      expect(view.a.currentTime).toBe(42.5);
+      expect(view.b.currentTime).toBe(17.25);
+      expect(view.a.src).toBe(view.source);
+      expect(view.loadA).not.toHaveBeenCalled();
+      fullscreen = null;
+      view.select("first");
+      expect(view.container.querySelector("video")).toBe(view.a);
+      expect(view.a.currentTime).toBe(42.5);
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+    });
+
+    it("leaves another root's fullscreen video and playback untouched on deactivation and fullscreenchange", async () => {
+      const view = await retainedVideos();
+      fullscreen = view.b;
+      view.select("second");
+      fireEvent(document, new Event("fullscreenchange"));
+      expect(exitFullscreen).not.toHaveBeenCalled();
+      expect(view.pauseA).toHaveBeenCalledOnce();
+      expect(view.pauseB).not.toHaveBeenCalled();
+      expect(view.b.currentTime).toBe(17.25);
+      expect(view.a.currentTime).toBe(42.5);
+    });
+
+    it("rechecks ownership for late fullscreen completion and observes browser rejection without affecting the next root", async () => {
+      const view = await retainedVideos();
+      view.select("second");
+      expect(exitFullscreen).not.toHaveBeenCalled();
+      const pending = Promise.withResolvers<void>();
+      exitFullscreen.mockReturnValueOnce(pending.promise);
+      fullscreen = view.a;
+      fireEvent(document, new Event("fullscreenchange"));
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+      fullscreen = view.b;
+      await act(async () => pending.reject(new DOMException("Fullscreen transition rejected", "NotAllowedError")));
+      fireEvent(document, new Event("fullscreenchange"));
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+      expect(view.pauseB).not.toHaveBeenCalled();
+      expect(view.a.currentTime).toBe(42.5);
+      expect(view.a.src).toBe(view.source);
+      expect(view.loadA).not.toHaveBeenCalled();
+      fullscreen = null;
+      view.select("first");
+      fullscreen = view.a;
+      fireEvent(document, new Event("fullscreenchange"));
+      expect(exitFullscreen).toHaveBeenCalledOnce();
+    });
+  });
 
   it("dispatches a PDF file to the PDF preview without fetching bounded text", async () => {
     const user = userEvent.setup();

@@ -189,6 +189,9 @@ export interface DesktopSmokeState {
   successorSidecarPid?: number;
   rendererCredentialFresh: boolean;
   successorVisible: boolean;
+  sessionTabsStorageCleared: boolean;
+  sessionTabsRestored: boolean;
+  sessionTabsOriginChanged?: boolean;
   restoredHash?: string;
   hidden: boolean;
   sidecarPid?: number;
@@ -742,6 +745,8 @@ export function reduceDesktopSmokeEvents(
     successorRetryRequested: false,
     rendererCredentialFresh: false,
     successorVisible: false,
+    sessionTabsStorageCleared: false,
+    sessionTabsRestored: false,
     hidden: false,
     exitStarted: false,
     stopped: false,
@@ -955,6 +960,41 @@ export function reduceDesktopSmokeEvents(
         state.restoredHash = event.hash;
         state.successorVisible = true;
         break;
+      case "desktop-smoke.session-tabs-storage-cleared":
+        requireMilestone(
+          state.workFilesVerified && !state.restartRequested && !state.restartAccepted && !state.sessionTabsStorageCleared,
+          "Desktop session tabs storage clear proof must arrive once before restart handoff, after Work Files verification.",
+        );
+        requireMilestone(
+          event.bootId === state.initialBootId && event.origin === state.origin
+            && typeof event.hash === "string" && event.hash.startsWith("#/work/")
+            && event.rendererStorageCleared === true && event.preferenceMirrorVerified === true,
+          "Desktop session tabs storage clear proof did not match the old renderer and preserved host mirror.",
+        );
+        state.restoredHash = event.hash as string;
+        state.sessionTabsStorageCleared = true;
+        break;
+      case "desktop-smoke.session-tabs-restored":
+        requireMilestone(
+          state.successorVisible && !state.sessionTabsRestored,
+          "Desktop session tabs evidence arrived before successor visibility or more than once.",
+        );
+        requireMilestone(
+          event.bootId === state.successorBootId
+            && event.origin === state.successorOrigin
+            && state.sessionTabsStorageCleared
+            && event.rendererStorageCleared === true
+            && event.originChanged === (state.successorOrigin !== state.origin)
+            && event.hash === state.restoredHash
+            && event.preferenceMirrorVerified === true
+            && event.selectedRootVerified === true
+            && event.inactiveBookmarkLazy === true
+            && event.snapshotTranscriptVerified === true,
+          "Desktop session tabs evidence did not prove cleared-storage preference restoration with unchanged selection and a lazy bookmark.",
+        );
+        state.sessionTabsRestored = true;
+        state.sessionTabsOriginChanged = event.originChanged as boolean;
+        break;
       case "desktop-smoke.failure":
         if (typeof event.message !== "string" || event.message.trim().length === 0) {
           throw new Error("Invalid desktop smoke failure message.");
@@ -980,6 +1020,7 @@ export function reduceDesktopSmokeEvents(
           Number.isSafeInteger(event.sidecarPid) && (event.sidecarPid as number) > 0,
           "Desktop close did not report a valid sidecar process.",
         );
+        requireMilestone(state.sessionTabsRestored, "Window hid before Desktop session tabs restoration verification.");
         state.hidden = true;
         state.sidecarPid = event.sidecarPid as number;
         break;

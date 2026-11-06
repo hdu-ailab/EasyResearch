@@ -9,6 +9,7 @@ import {
   type SettingsHostRoute,
   sameHostRoute,
   type WorkRoute,
+  type WorkSession,
   withoutSettings,
   withSettings,
 } from "../router";
@@ -27,7 +28,10 @@ export interface SettingsCloseGuard {
 
 export interface HashRouter {
   route: AppRoute;
+  /** Latest accepted route, including navigation published before React renders. */
+  getRoute(): AppRoute;
   navigate(next: AppRoute): void;
+  replaceWorkSession(session: WorkSession, previousId?: string): void;
   openSettings(host: HomeRoute | WorkRoute): void;
   closeSettings(settings: SettingsHostRoute, options?: { replace?: boolean }): void;
   openConfig(returnTo: SettingsHostRoute): void;
@@ -107,6 +111,7 @@ export function useHashRoute(): HashRouter {
     routeRef.current = next;
     setRoute((current) => (sameRoute(current, next) ? current : next));
   }, []);
+  const getRoute = useCallback(() => routeRef.current, []);
 
   useLayoutEffect(() => {
     if (!isSettingsHostRoute(route)) return;
@@ -193,6 +198,29 @@ export function useHashRoute(): HashRouter {
     [publishRoute],
   );
 
+  // Metadata rebinds the selected host without selecting a different tab.
+  // Rebuild Settings' marked base; Config must not claim its old predecessor
+  // already has the new cwd (returnToSettings will synthesize that host).
+  const replaceWorkSession = useCallback(
+    (session: WorkSession, previousId = session.id) => {
+      const current = routeRef.current;
+      const host = current.page === "config" ? current.returnTo : current;
+      if (
+        host?.page !== "work" ||
+        host.session.id !== previousId ||
+        (host.session.id === session.id && host.session.cwd === session.cwd)
+      )
+        return;
+      const nextHost = { ...host, session };
+      const next: AppRoute =
+        current.page === "config" ? { page: "config", returnTo: { ...nextHost, settingsOpen: true } } : nextHost;
+      if (isSettingsHostRoute(next)) replaceWithSettings(next);
+      else window.history.replaceState(clearMarker(window.history.state), "", routeToHash(next));
+      publishRoute(next);
+    },
+    [publishRoute],
+  );
+
   const closeSettings = useCallback(
     (settings: SettingsHostRoute, options: { replace?: boolean } = {}) => {
       if (options.replace) {
@@ -257,7 +285,9 @@ export function useHashRoute(): HashRouter {
 
   return {
     route,
+    getRoute,
     navigate,
+    replaceWorkSession,
     openSettings,
     closeSettings,
     openConfig,

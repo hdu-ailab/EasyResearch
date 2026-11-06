@@ -1,13 +1,16 @@
 import { Bot, Files, MessageSquare } from "lucide-react";
-import type { KeyboardEvent } from "react";
-import { useRef } from "react";
+import type { KeyboardEvent, RefObject } from "react";
+import { useId, useRef } from "react";
 import { useI18n } from "../i18n/useI18n";
+import { useViewActivityRef } from "../view-activity";
 
 export type WorkView = "chat" | "files" | "agents";
 
 export interface WorkMobileTabsProps {
   active: WorkView;
   onChange: (view: WorkView) => void;
+  idPrefix?: string;
+  filesTabRef?: RefObject<HTMLButtonElement | null>;
 }
 
 const views = [
@@ -16,8 +19,11 @@ const views = [
   { id: "agents", label: "work.agentsTab", icon: Bot },
 ] as const;
 
-export function WorkMobileTabs({ active, onChange }: WorkMobileTabsProps) {
+export function WorkMobileTabs({ active, onChange, idPrefix, filesTabRef }: WorkMobileTabsProps) {
   const { t } = useI18n();
+  const generatedId = useId();
+  const prefix = idPrefix ?? `work-${generatedId}`;
+  const activity = useViewActivityRef();
   const refs = useRef<Record<WorkView, HTMLButtonElement | null>>({
     chat: null,
     files: null,
@@ -25,6 +31,7 @@ export function WorkMobileTabs({ active, onChange }: WorkMobileTabsProps) {
   });
 
   function select(view: WorkView) {
+    if (!activity.current.interactive) return;
     onChange(view);
     refs.current[view]?.focus();
   }
@@ -68,12 +75,14 @@ export function WorkMobileTabs({ active, onChange }: WorkMobileTabsProps) {
           key={id}
           ref={(node) => {
             refs.current[id] = node;
+            if (id === "files" && filesTabRef) filesTabRef.current = node;
           }}
-          id={`work-tab-${id}`}
+          id={`${prefix}-tab-${id}`}
+          data-work-tab={id}
           role="tab"
           type="button"
           aria-selected={active === id}
-          aria-controls={`work-panel-${id}`}
+          aria-controls={`${prefix}-panel-${id}`}
           tabIndex={active === id ? 0 : -1}
           onClick={() => select(id)}
           onKeyDown={(event) => handleKeyDown(event, id)}

@@ -1,5 +1,6 @@
 import { Bot, FileSearch, Settings } from "lucide-react";
-import { type Ref, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type Ref, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
   SessionTreeDto,
   SkillCommandDto,
@@ -59,6 +60,7 @@ import {
   temporarySubagentTabKey,
 } from "../subagent-tabs";
 import { prependTranscriptPage } from "../transcript-history";
+import { useViewActivityRef, ViewActivityProvider } from "../view-activity";
 
 export interface WorkPageProps {
   id: string;
@@ -70,6 +72,9 @@ export interface WorkPageProps {
   configurationError?: string | null;
   onWorkspaceMissing?: (cwd: string) => void;
   onWorkspaceRelocated?: (session: { id: string; cwd: string }) => void;
+  shell?: { actionsTarget: HTMLElement | null };
+  onSessionMetadata?: (session: { id: string; cwd: string; name?: string; status: string }) => void;
+  onSessionDeleted?: (id: string) => void;
 }
 
 type Panel = "files" | "agents" | null;
@@ -225,8 +230,19 @@ function SessionWorkPage({
   settingsButtonRef,
   configurationGeneration = 0,
   configurationError = null,
+  shell,
+  onSessionMetadata,
+  onSessionDeleted,
 }: WorkPageProps) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
+  const { visible, interactive } = activity.current;
+  const paneId = `work-${useId()}`;
+  const filesTabRef = useRef<HTMLButtonElement>(null);
+  const metadataCallback = useRef(onSessionMetadata);
+  metadataCallback.current = onSessionMetadata;
+  const deletedCallback = useRef(onSessionDeleted);
+  deletedCallback.current = onSessionDeleted;
   const [fileEvents, setFileEvents] = useState<{ sessionId: string; pending: readonly QueuedFileWatcherEvent[] }>({
     sessionId: id,
     pending: EMPTY_FILE_EVENTS,
@@ -298,17 +314,18 @@ function SessionWorkPage({
 
   const openTranscriptFile = useCallback(
     (reference: string) => {
+      if (!activity.current.interactive) return;
       const path = resolveTranscriptFilePath(cwd, reference);
       if (path === null) return;
       setPanel("files");
       if (window.innerWidth < CONVERSATION_FIRST_BREAKPOINT) {
         setMobileView("files");
         // Keep keyboard focus out of Chat before it becomes hidden.
-        document.getElementById("work-tab-files")?.focus();
+        filesTabRef.current?.focus();
       }
       fileBrowserRef.current?.openPath(path);
     },
-    [cwd],
+    [cwd, activity],
   );
 
   const handleWorkEvent = useCallback(
@@ -328,6 +345,7 @@ function SessionWorkPage({
         setHistoryOpen(false);
         setStatisticsOpen(false);
         setCommandError(null);
+        deletedCallback.current?.(parentOwner.current.id);
         return true;
       }
       const watcherEvent = parseFileWatcherEvent(event, cwd);
@@ -501,6 +519,10 @@ function SessionWorkPage({
     parentOwner.current = { id: sessionId, generation: parentOwner.current.generation + 1, deleted: false };
   }
   const status = connection.status;
+  useEffect(() => {
+    if (hydrationRevision === 0 || connection.deleted) return;
+    metadataCallback.current?.({ id: sessionId, cwd, name: sessionView.sessionName ?? "", status });
+  }, [sessionId, cwd, sessionView.sessionName, status, hydrationRevision, connection.deleted]);
   const filesLoadEnabled = status === "ready" || status === "running" || status === "stopped";
   fileEventsEnabled.current = filesLoadEnabled && fileEvents.sessionId === sessionId;
   const statusText = connection.deleted ? null : (commandError ?? connection.notice);
@@ -636,13 +658,25 @@ function SessionWorkPage({
     const row = rowRef.current;
     if (!row) return;
     const observer = new ResizeObserver(([entry]) => {
+      if (!activity.current.visible) return;
       const width = entry?.contentRect.width;
       if (width !== undefined && width <= 0) activeResizeCleanup.current?.();
       setAvailable(width);
     });
     observer.observe(row);
     return () => observer.disconnect();
-  }, []);
+  }, [activity]);
+
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (!visible || !row) return;
+    // Visibility preserves layout, so the last hidden resize may be the only
+    // observer notification. Reconcile the same content box on activation.
+    const style = getComputedStyle(row);
+    const width =
+      row.clientWidth - (Number.parseFloat(style.paddingLeft) || 0) - (Number.parseFloat(style.paddingRight) || 0);
+    if (width > 0) setAvailable(width);
+  }, [visible]);
 
   useEffect(() => {
     if (available !== undefined) setPanelMotionReady(true);
@@ -738,6 +772,13 @@ function SessionWorkPage({
     if (activeTab) transcriptRef.current?.scrollToLatest();
   }, [activeTab]);
 
+  useLayoutEffect(() => {
+    if (interactive) return;
+    activeResizeCleanup.current?.();
+    fileDragDepth.current = 0;
+    setFileDragOver(false);
+  }, [interactive]);
+
   const panelMin = Math.max(PANEL_MIN, window.innerWidth / 3);
   const panelMax = available === undefined ? 480 : Math.max(panelMin, available - CHAT_MIN - 8);
   const panelBounds = useRef({ min: panelMin, max: panelMax });
@@ -779,7 +820,7 @@ function SessionWorkPage({
     childId: activeChildId,
     hydrationRevision: transcriptView?.hydrationRevision ?? 0,
     cursor: transcriptView?.historyCursor,
-    disabled: connection.deleted || !transcriptView,
+    disabled: connection.deleted || !transcriptView || (isMobile && mobileView !== "chat"),
     publish(page, cursor, revision) {
       const merge = (view: SessionViewState) =>
         view.hydrationRevision === revision && view.historyCursor === cursor
@@ -798,9 +839,10 @@ function SessionWorkPage({
   });
   const readEntry = useCallback(
     (entryId: string) => {
+      if (!activity.current.interactive) return;
       setEntryDetail({ sessionId, childId: activeChildId, entryId, hydration: transcriptView?.hydrationRevision ?? 0 });
     },
-    [sessionId, activeChildId, transcriptView?.hydrationRevision],
+    [sessionId, activeChildId, transcriptView?.hydrationRevision, activity],
   );
   const activeMessages = activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.messages : (activeView?.messages ?? []);
   const activeTools =
@@ -833,7 +875,11 @@ function SessionWorkPage({
   // chrome around it (top bar, panel framing, and where the session name sits).
   const chatHidden = isMobile && mobileView !== "chat";
   const composerDisabled =
-    connection.deleted || accepting || activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName !== undefined;
+    !interactive ||
+    connection.deleted ||
+    accepting ||
+    activeTab !== RESEARCH_ASSISTANT_AGENT ||
+    sessionView.subagentName !== undefined;
 
   useEffect(() => {
     const clearDrag = () => {
@@ -946,6 +992,7 @@ function SessionWorkPage({
 
   const openSubagentTool = useCallback(
     (toolCallId: string, requestedStep?: number) => {
+      if (!activity.current.interactive) return;
       const sourceOwnerSessionId = activeChildId ?? sessionId;
       const sourceTools = activeChildId ? (childViews[activeChildId]?.tools ?? []) : sessionView.tools;
       const tool = sourceTools.find(
@@ -1003,11 +1050,12 @@ function SessionWorkPage({
       setActiveTab(key);
       if (childId) void loadChild(childId);
     },
-    [activeChildId, childViews, sessionView.tools, tabsState.tabs, loadChild, sessionId],
+    [activeChildId, childViews, sessionView.tools, tabsState.tabs, loadChild, sessionId, activity],
   );
 
   const selectAgentTab = useCallback(
     (key: string) => {
+      if (!activity.current.interactive) return;
       if (key === RESEARCH_ASSISTANT_AGENT) {
         setActiveTab(key);
         return;
@@ -1039,7 +1087,7 @@ function SessionWorkPage({
       setActiveTab(childId ? `session:${childId}` : key);
       if (childId) void loadChild(childId);
     },
-    [tabsState.tabs, sessionView, childViews, loadChild, sessionId],
+    [tabsState.tabs, sessionView, childViews, loadChild, sessionId, activity],
   );
 
   const closeAgentTab = useCallback((key: string) => {
@@ -1049,7 +1097,14 @@ function SessionWorkPage({
 
   const startResize = useCallback(
     (event: React.PointerEvent<HTMLElement>) => {
-      if (event.button !== 0 || !event.isPrimary || activeResizeCleanup.current || isMobile || !panelInteractive)
+      if (
+        !activity.current.interactive ||
+        event.button !== 0 ||
+        !event.isPrimary ||
+        activeResizeCleanup.current ||
+        isMobile ||
+        !panelInteractive
+      )
         return;
       const handle = event.currentTarget;
       const panelNode = panelRef.current;
@@ -1195,11 +1250,12 @@ function SessionWorkPage({
       window.addEventListener("blur", blur);
       activeResizeCleanup.current = cancel;
     },
-    [clampPanelWidth, clampedPanelWidth, isMobile, panelInteractive],
+    [clampPanelWidth, clampedPanelWidth, isMobile, panelInteractive, activity],
   );
 
   const resizeWithKeyboard = useCallback(
     (event: React.KeyboardEvent) => {
+      if (!activity.current.interactive) return;
       let next: number | undefined;
       if (event.key === "ArrowLeft") next = clampedPanelWidth + 16;
       else if (event.key === "ArrowRight") next = clampedPanelWidth - 16;
@@ -1211,24 +1267,26 @@ function SessionWorkPage({
       setPanelWidth(Math.round(Math.min(panelMax, Math.max(panelMin, next))));
       setPanelWidthTouched(true);
     },
-    [clampedPanelWidth, panelMax, panelMin],
+    [clampedPanelWidth, panelMax, panelMin, activity],
   );
 
   const send = useCallback(
     async (text: string) => {
-      if (parentOwner.current.deleted) return;
+      if (parentOwner.current.deleted || !activity.current.interactive) return;
       setCommandError(null);
       transcriptRef.current?.scrollToLatest();
       await connection.send(text);
       void refreshTree();
     },
-    [connection.send, refreshTree],
+    [connection.send, refreshTree, activity],
   );
-  const abort = connection.abort;
+  const abort = () => {
+    if (activity.current.interactive) return connection.abort();
+  };
 
   const executeCommand = useCallback(
     (command: SkillCommandDto, args: string) => {
-      if (parentOwner.current.deleted) return;
+      if (parentOwner.current.deleted || !activity.current.interactive) return;
       setCommandError(null);
       if (command.name === "name") {
         setRenameInitialName(args || sessionView.sessionName || "");
@@ -1254,7 +1312,7 @@ function SessionWorkPage({
       }
       void send(args ? `/${command.name} ${args}` : `/${command.name}`);
     },
-    [refreshTree, send, sessionId, sessionView.sessionName],
+    [refreshTree, send, sessionId, sessionView.sessionName, activity],
   );
 
   const messageStructure = structuredMessages.current.messages;
@@ -1265,25 +1323,31 @@ function SessionWorkPage({
 
   const onEditMessage = useCallback(
     async (entryId: string, text: string) => {
+      if (!activity.current.interactive || parentOwner.current.deleted) return;
       const result = await connection.navigateTree(entryId);
-      if (result.cancelled) return;
-      await send(text);
+      if (result.cancelled || parentOwner.current.deleted) return;
+      // The edit was admitted by this owner. It may finish here after a root
+      // switch, without moving any other view's transcript or composer focus.
+      transcriptRef.current?.scrollToLatest();
+      await connection.send(text);
       void refreshTree();
     },
-    [connection.navigateTree, send, refreshTree],
+    [connection.navigateTree, connection.send, refreshTree, activity],
   );
 
   const onSwitchBranch = useCallback(
     async (entryId: string, direction: -1 | 1) => {
+      if (!activity.current.interactive) return;
       const target = tree ? versionTarget(tree.tree, entryId, direction) : undefined;
       if (!target) return;
       await connection.navigateTree(target);
       void refreshTree();
     },
-    [connection.navigateTree, tree, refreshTree],
+    [connection.navigateTree, tree, refreshTree, activity],
   );
 
   const togglePanel = (next: Exclude<Panel, null>) => {
+    if (!activity.current.interactive) return;
     setPanel((current) => (current === next ? null : next));
   };
 
@@ -1305,63 +1369,75 @@ function SessionWorkPage({
             ? t("work.starting")
             : t("work.ready");
 
+  const workActions = (
+    <>
+      <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-v2-text-text-muted min-[820px]:mr-1">
+        <span className={`size-1.5 rounded-full ${statusColor}`} aria-hidden />
+        {!isMobile && statusLabel}
+      </span>
+      {!isMobile && (
+        <>
+          <span className="mx-1 h-4 w-px bg-v2-grey-200" aria-hidden />
+          <WorkTopbarIconButton
+            active={panel === "files"}
+            label={t("work.filesBrowser")}
+            title={t("work.filesBrowser")}
+            onClick={() => togglePanel("files")}
+          >
+            <FileSearch size={15} />
+          </WorkTopbarIconButton>
+          <WorkTopbarIconButton
+            active={panel === "agents"}
+            label={t("work.agentList")}
+            title={t("work.agentList")}
+            onClick={() => togglePanel("agents")}
+          >
+            <Bot size={15} />
+          </WorkTopbarIconButton>
+        </>
+      )}
+    </>
+  );
+
   return (
-    <div className="flex h-full flex-col">
-      <WorkTopbar
-        home={{ active: false, onClick: onBack }}
-        center={
-          <span className="flex min-w-0 items-center gap-1.5">
-            {sessionView.sessionName ? (
-              <span
-                className="max-w-[40%] truncate text-[13px] font-medium text-v2-text-text-base"
-                title={sessionView.sessionName}
-              >
-                {sessionView.sessionName}
+    <div className="flex h-full flex-col" data-work-session={id}>
+      {shell ? (
+        visible && shell.actionsTarget ? (
+          createPortal(workActions, shell.actionsTarget)
+        ) : null
+      ) : (
+        <WorkTopbar
+          home={{ active: false, onClick: onBack }}
+          center={
+            <span className="flex min-w-0 items-center gap-1.5">
+              {sessionView.sessionName ? (
+                <span
+                  className="max-w-[40%] truncate text-[13px] font-medium text-v2-text-text-base"
+                  title={sessionView.sessionName}
+                >
+                  {sessionView.sessionName}
+                </span>
+              ) : null}
+              <span className="max-w-full truncate font-mono text-[12px] text-v2-text-text-muted" title={cwd}>
+                {isMobile ? projectName : cwd}
               </span>
-            ) : null}
-            <span className="max-w-full truncate font-mono text-[12px] text-v2-text-text-muted" title={cwd}>
-              {isMobile ? projectName : cwd}
             </span>
-          </span>
-        }
-        actions={
-          <>
-            <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-v2-text-text-muted min-[820px]:mr-1">
-              <span className={`size-1.5 rounded-full ${statusColor}`} aria-hidden />
-              {!isMobile && statusLabel}
-            </span>
-            {!isMobile && (
-              <>
-                <span className="mx-1 h-4 w-px bg-v2-grey-200" aria-hidden />
-                <WorkTopbarIconButton
-                  active={panel === "files"}
-                  label={t("work.filesBrowser")}
-                  title={t("work.filesBrowser")}
-                  onClick={() => togglePanel("files")}
-                >
-                  <FileSearch size={15} />
-                </WorkTopbarIconButton>
-                <WorkTopbarIconButton
-                  active={panel === "agents"}
-                  label={t("work.agentList")}
-                  title={t("work.agentList")}
-                  onClick={() => togglePanel("agents")}
-                >
-                  <Bot size={15} />
-                </WorkTopbarIconButton>
-              </>
-            )}
-            <WorkTopbarIconButton
-              buttonRef={settingsButtonRef}
-              label={t("home.settings")}
-              title={t("home.settingsTitle")}
-              onClick={onOpenSettings}
-            >
-              <Settings size={15} />
-            </WorkTopbarIconButton>
-          </>
-        }
-      />
+          }
+          actions={
+            <>
+              {workActions}
+              <WorkTopbarIconButton
+                buttonRef={settingsButtonRef}
+                label={t("home.settings")}
+                title={t("home.settingsTitle")}
+                onClick={onOpenSettings}
+              >
+                <Settings size={15} />
+              </WorkTopbarIconButton>
+            </>
+          }
+        />
+      )}
       {connection.deleted && (
         <p role="status" className="border-b border-v2-grey-200 px-4 py-2 text-[13px] text-v2-text-text-muted">
           {t("work.deletedNotice")}
@@ -1376,7 +1452,7 @@ function SessionWorkPage({
         </p>
       )}
       {sessionView.retry ? <RetryBanner retry={sessionView.retry} /> : null}
-      <WorkMobileTabs active={mobileView} onChange={setMobileView} />
+      <WorkMobileTabs active={mobileView} onChange={setMobileView} idPrefix={paneId} filesTabRef={filesTabRef} />
       <div
         ref={rowRef}
         data-work-layout
@@ -1385,130 +1461,133 @@ function SessionWorkPage({
           panelMotionReady ? "transition-[gap] duration-v2-panel ease-v2-panel motion-reduce:transition-none" : ""
         }`}
       >
-        <section
-          id="work-panel-chat"
-          role="tabpanel"
-          aria-labelledby="work-tab-chat"
-          hidden={chatHidden}
-          className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-v2-background-bg-base"
-          onDragEnter={(event) => {
-            if (composerDisabled || !event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE)) return;
-            event.preventDefault();
-            fileDragDepth.current += 1;
-            setFileDragOver(true);
-          }}
-          onDragOver={(event) => {
-            const internal = event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE);
-            if (!internal && !event.dataTransfer.types.includes("Files")) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = internal && !composerDisabled ? "copy" : "none";
-          }}
-          onDragLeave={() => {
-            fileDragDepth.current = Math.max(0, fileDragDepth.current - 1);
-            if (fileDragDepth.current === 0) setFileDragOver(false);
-          }}
-          onDrop={(event) => {
-            const internal = event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE);
-            if (!internal && !event.dataTransfer.types.includes("Files")) return;
-            event.preventDefault();
-            fileDragDepth.current = 0;
-            setFileDragOver(false);
-            if (composerDisabled || !internal) return;
-            const path = readFilePathDrop(event.dataTransfer, cwd);
-            if (path !== null) composerRef.current?.insertPath(path);
-          }}
-        >
-          {fileDragOver && !composerDisabled ? (
-            <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-[10px] border-2 border-dashed border-v2-blue-600 bg-v2-blue-100/60">
-              <span
-                role="status"
-                className="rounded-lg bg-v2-background-bg-base px-4 py-2 text-[13px] font-medium text-v2-blue-600 shadow-sm"
-              >
-                {t("composer.dropFilePath")}
-              </span>
-            </div>
-          ) : null}
-          <div className="shrink-0 px-2">
-            <AgentTabBar
-              tabs={tabsState.tabs}
-              activeKey={activeTab}
-              researchAssistantStatus={
-                sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"
-              }
-              onSelect={selectAgentTab}
-              onClose={closeAgentTab}
-              onStop={() => abort()}
-              trailing={
-                activeTab === RESEARCH_ASSISTANT_AGENT && !sessionView.subagentName ? (
-                  <ContextCapacity
-                    usage={sessionView.contextUsage}
-                    compactionState={sessionView.compactionState}
-                    compactionPolicy={sessionView.compactionPolicy}
-                  />
-                ) : undefined
-              }
-            />
-          </div>
-          {activeChildId && childErrors[activeChildId] ? (
-            <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
-          ) : null}
-          <div className="flex min-h-0 w-full flex-1 flex-col">
-            <TranscriptFileContext value={openTranscriptFile}>
-              <ChatTranscript
-                ref={transcriptRef}
-                messages={activeMessages}
-                tools={activeTools}
-                summaries={activeSummaries}
-                completions={activeCompletions}
-                compactionState={transcriptView?.compactionState}
-                emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
-                pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
-                onViewDetails={openSubagentTool}
-                messageMeta={activeTab === RESEARCH_ASSISTANT_AGENT ? messageMeta : undefined}
-                onEditMessage={
-                  !connection.deleted && activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined
-                }
-                onSwitchBranch={
-                  !connection.deleted && activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined
-                }
-                steers={activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.steers : []}
-                hydrationRevision={
-                  activeTab === RESEARCH_ASSISTANT_AGENT
-                    ? sessionView.hydrationRevision
-                    : (activeView?.hydrationRevision ?? 0)
-                }
-                hydrationScope={
-                  activeTab === RESEARCH_ASSISTANT_AGENT
-                    ? `${sessionId}:root`
-                    : `${sessionId}:${activeChildId ?? activeTab}`
-                }
-                showApiUsageDetails={showApiUsageDetails}
-                apiUsage={sessionView.apiUsage}
-                historyCursor={connection.deleted ? undefined : transcriptView?.historyCursor}
-                historyLoading={history.loading}
-                historyError={history.error}
-                onLoadOlder={history.loadOlder}
-                deferredEntries={transcriptView?.deferredEntries}
-                onReadEntry={connection.deleted ? undefined : readEntry}
-              />
-            </TranscriptFileContext>
-          </div>
-          <footer className="sticky bottom-0 z-10 w-full shrink-0 bg-v2-background-bg-base px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] min-[820px]:pb-5">
-            {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
-              <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
+        <ViewActivityProvider visible={!chatHidden} interactive={!chatHidden}>
+          <section
+            id={`${paneId}-panel-chat`}
+            data-work-pane="chat"
+            role="tabpanel"
+            aria-labelledby={`${paneId}-tab-chat`}
+            hidden={chatHidden}
+            className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-v2-background-bg-base"
+            onDragEnter={(event) => {
+              if (composerDisabled || !event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE)) return;
+              event.preventDefault();
+              fileDragDepth.current += 1;
+              setFileDragOver(true);
+            }}
+            onDragOver={(event) => {
+              const internal = event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE);
+              if (!internal && !event.dataTransfer.types.includes("Files")) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = internal && !composerDisabled ? "copy" : "none";
+            }}
+            onDragLeave={() => {
+              fileDragDepth.current = Math.max(0, fileDragDepth.current - 1);
+              if (fileDragDepth.current === 0) setFileDragOver(false);
+            }}
+            onDrop={(event) => {
+              const internal = event.dataTransfer.types.includes(FILE_PATH_DRAG_TYPE);
+              if (!internal && !event.dataTransfer.types.includes("Files")) return;
+              event.preventDefault();
+              fileDragDepth.current = 0;
+              setFileDragOver(false);
+              if (composerDisabled || !internal) return;
+              const path = readFilePathDrop(event.dataTransfer, cwd);
+              if (path !== null) composerRef.current?.insertPath(path);
+            }}
+          >
+            {fileDragOver && !composerDisabled ? (
+              <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-[10px] border-2 border-dashed border-v2-blue-600 bg-v2-blue-100/60">
+                <span
+                  role="status"
+                  className="rounded-lg bg-v2-background-bg-base px-4 py-2 text-[13px] font-medium text-v2-blue-600 shadow-sm"
+                >
+                  {t("composer.dropFilePath")}
+                </span>
+              </div>
             ) : null}
-            <ChatComposer
-              ref={composerRef}
-              cwd={cwd}
-              disabled={composerDisabled}
-              streaming={activeTab === RESEARCH_ASSISTANT_AGENT && sessionView.isStreaming}
-              onSend={send}
-              onCommand={executeCommand}
-              onAbort={abort}
-              commands={activeTab === RESEARCH_ASSISTANT_AGENT ? commands : []}
-            />
-          </footer>
-        </section>
+            <div className="shrink-0 px-2">
+              <AgentTabBar
+                tabs={tabsState.tabs}
+                activeKey={activeTab}
+                researchAssistantStatus={
+                  sessionView.error !== null ? "error" : sessionView.isStreaming ? "working" : "idle"
+                }
+                onSelect={selectAgentTab}
+                onClose={closeAgentTab}
+                onStop={() => abort()}
+                trailing={
+                  activeTab === RESEARCH_ASSISTANT_AGENT && !sessionView.subagentName ? (
+                    <ContextCapacity
+                      usage={sessionView.contextUsage}
+                      compactionState={sessionView.compactionState}
+                      compactionPolicy={sessionView.compactionPolicy}
+                    />
+                  ) : undefined
+                }
+              />
+            </div>
+            {activeChildId && childErrors[activeChildId] ? (
+              <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
+            ) : null}
+            <div className="flex min-h-0 w-full flex-1 flex-col">
+              <TranscriptFileContext value={openTranscriptFile}>
+                <ChatTranscript
+                  ref={transcriptRef}
+                  messages={activeMessages}
+                  tools={activeTools}
+                  summaries={activeSummaries}
+                  completions={activeCompletions}
+                  compactionState={transcriptView?.compactionState}
+                  emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
+                  pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
+                  onViewDetails={openSubagentTool}
+                  messageMeta={activeTab === RESEARCH_ASSISTANT_AGENT ? messageMeta : undefined}
+                  onEditMessage={
+                    !connection.deleted && activeTab === RESEARCH_ASSISTANT_AGENT ? onEditMessage : undefined
+                  }
+                  onSwitchBranch={
+                    !connection.deleted && activeTab === RESEARCH_ASSISTANT_AGENT ? onSwitchBranch : undefined
+                  }
+                  steers={activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView.steers : []}
+                  hydrationRevision={
+                    activeTab === RESEARCH_ASSISTANT_AGENT
+                      ? sessionView.hydrationRevision
+                      : (activeView?.hydrationRevision ?? 0)
+                  }
+                  hydrationScope={
+                    activeTab === RESEARCH_ASSISTANT_AGENT
+                      ? `${sessionId}:root`
+                      : `${sessionId}:${activeChildId ?? activeTab}`
+                  }
+                  showApiUsageDetails={showApiUsageDetails}
+                  apiUsage={sessionView.apiUsage}
+                  historyCursor={connection.deleted ? undefined : transcriptView?.historyCursor}
+                  historyLoading={history.loading}
+                  historyError={history.error}
+                  onLoadOlder={history.loadOlder}
+                  deferredEntries={transcriptView?.deferredEntries}
+                  onReadEntry={connection.deleted ? undefined : readEntry}
+                />
+              </TranscriptFileContext>
+            </div>
+            <footer className="sticky bottom-0 z-10 w-full shrink-0 bg-v2-background-bg-base px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] min-[820px]:pb-5">
+              {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
+                <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
+              ) : null}
+              <ChatComposer
+                ref={composerRef}
+                cwd={cwd}
+                disabled={composerDisabled}
+                streaming={activeTab === RESEARCH_ASSISTANT_AGENT && sessionView.isStreaming}
+                onSend={send}
+                onCommand={executeCommand}
+                onAbort={abort}
+                commands={activeTab === RESEARCH_ASSISTANT_AGENT ? commands : []}
+              />
+            </footer>
+          </section>
+        </ViewActivityProvider>
 
         <section
           ref={panelRef}
@@ -1538,36 +1617,42 @@ function SessionWorkPage({
             className="absolute inset-y-0 left-[-0.5rem] z-30 hidden h-auto w-2 touch-none cursor-col-resize border-0 transition-colors hover:bg-v2-blue-600/10 focus-visible:bg-v2-blue-600/10 min-[820px]:block"
           />
           <div
-            id="work-panel-files"
+            id={`${paneId}-panel-files`}
+            data-work-pane="files"
             role="tabpanel"
-            aria-labelledby="work-tab-files"
+            aria-labelledby={`${paneId}-tab-files`}
             hidden={filesHidden}
             className={`h-full min-h-0 overflow-hidden min-[820px]:border-l min-[820px]:border-v2-grey-200/70 ${animateFiles ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
-            <FileBrowser
-              key={sessionId}
-              ref={fileBrowserRef}
-              root={cwd}
-              loadEnabled={filesLoadEnabled}
-              sessionId={sessionId}
-              fileWatchLeaseId={connection.fileWatchLeaseId}
-              fileEvents={fileEvents.sessionId === sessionId ? fileEvents.pending : EMPTY_FILE_EVENTS}
-              onFileEventsConsumed={consumeFileEvents}
-            />
+            <ViewActivityProvider visible={!filesHidden} interactive={!filesHidden && (isMobile || panelInteractive)}>
+              <FileBrowser
+                key={sessionId}
+                ref={fileBrowserRef}
+                root={cwd}
+                loadEnabled={filesLoadEnabled}
+                sessionId={sessionId}
+                fileWatchLeaseId={connection.fileWatchLeaseId}
+                fileEvents={fileEvents.sessionId === sessionId ? fileEvents.pending : EMPTY_FILE_EVENTS}
+                onFileEventsConsumed={consumeFileEvents}
+              />
+            </ViewActivityProvider>
           </div>
           <div
-            id="work-panel-agents"
+            id={`${paneId}-panel-agents`}
+            data-work-pane="agents"
             role="tabpanel"
-            aria-labelledby="work-tab-agents"
+            aria-labelledby={`${paneId}-tab-agents`}
             hidden={agentsHidden}
             className={`h-full min-h-0 overflow-hidden min-[820px]:border-l min-[820px]:border-v2-grey-200/70 ${animateAgents ? "animate-v2-fade-in motion-reduce:animate-none" : ""}`}
           >
-            <AgentList
-              cwd={cwd}
-              statusByAgent={statusByAgent}
-              configurationGeneration={configurationGeneration}
-              configurationError={configurationError}
-            />
+            <ViewActivityProvider visible interactive={!agentsHidden && (isMobile || panelInteractive)}>
+              <AgentList
+                cwd={cwd}
+                statusByAgent={statusByAgent}
+                configurationGeneration={configurationGeneration}
+                configurationError={configurationError}
+              />
+            </ViewActivityProvider>
           </div>
         </section>
       </div>

@@ -244,8 +244,9 @@ interface CaseReport {
   passed: boolean;
   error?: string;
 }
-const conversation = (page: Page) => page.getByTestId("transcript-viewport").locator("section[data-scrollable]");
-const composer = (page: Page) => page.locator("[data-chat-composer] textarea");
+const work = (page: Page) => page.locator('[data-session-surface][data-session-active="true"]');
+const conversation = (page: Page) => work(page).getByTestId("transcript-viewport").locator("section[data-scrollable]");
+const composer = (page: Page) => work(page).locator("[data-chat-composer] textarea");
 const row = (page: Page, key: string) => conversation(page).locator(`[data-row-key=${JSON.stringify(key)}]`);
 const settingsControl = (page: Page) => page.locator('[data-component="timeline-detail-control"]');
 const frames = (page: Page) => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
@@ -305,7 +306,7 @@ async function openChildDetails(page: Page, t: Labels, result: CaseReport) {
 }
 
 async function openSettings(page: Page, t: Labels) {
-  await page.getByRole("button", { name: t("home.settings"), exact: true }).click();
+  await page.getByRole("banner").getByRole("button", { name: t("home.settings"), exact: true }).click();
   const modal = page.getByRole("dialog", { name: t("settings.title"), exact: true });
   await modal.getByRole(page.viewportSize()!.width < 820 ? "button" : "tab", { name: t("settings.category.conversation"), exact: true }).click();
   await expect(settingsControl(page)).toBeVisible();
@@ -346,7 +347,7 @@ async function checkCategoryProjection(page: Page, seed: ReturnType<typeof fixtu
   await reveal(page, row(page, seed.anchors[category]));
   if (placement === "hidden") {
     await expect(target).toHaveCount(0);
-    if (category === "thinking") await expect(page.getByText("ANSWER_SURVIVES_HIDDEN_THINKING", { exact: true })).toBeVisible();
+    if (category === "thinking") await expect(work(page).getByText("ANSWER_SURVIVES_HIDDEN_THINKING", { exact: true })).toBeVisible();
     return;
   }
   await reveal(page, target);
@@ -366,7 +367,7 @@ async function checkPreferences(page: Page, t: Labels, seed: ReturnType<typeof f
     await preset(page, t, position);
     const detail = await readDetail(page);
     assert(detail && categories.every((category) => detail[category]));
-    await reveal(page, page.getByText("ANSWER_SURVIVES_HIDDEN_THINKING", { exact: true }));
+    await reveal(page, work(page).getByText("ANSWER_SURVIVES_HIDDEN_THINKING", { exact: true }));
     const shell = conversation(page).locator('[data-activity="bash"]');
     if (position < 2) await expect(shell).toHaveCount(0);
     else if (position >= 3) {
@@ -429,7 +430,7 @@ async function checkPreferences(page: Page, t: Labels, seed: ReturnType<typeof f
   await page.screenshot({ path: join(artifacts, `settings-${result.width}-${result.theme}.png`) });
   await closeSettings(page, t);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByText("ROOT_PRESENTATION_TAIL", { exact: true })).toBeVisible();
+  await expect(work(page).getByText("ROOT_PRESENTATION_TAIL", { exact: true })).toBeVisible();
   assert.deepEqual(await readDetail(page), saved, "Reload must preserve all six category choices");
   await openSettings(page, t);
   await expect(settingsControl(page).getByRole("slider")).toHaveAttribute("aria-valuetext", t("settings.timeline.custom"));
@@ -450,7 +451,7 @@ async function checkDisclosures(page: Page, t: Labels, result: CaseReport) {
   await conversation(page).focus();
   await conversation(page).press("Home");
   // Explicitly load the older real HTTP page, then move far enough to unmount.
-  const older = page.getByRole("button", { name: t("transcript.loadOlder"), exact: true });
+  const older = work(page).getByRole("button", { name: t("transcript.loadOlder"), exact: true });
   for (let count = 0; count < 4 && await older.count(); count++) {
     const response = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/history"));
     await older.click();
@@ -484,7 +485,7 @@ async function checkSummaries(page: Page, t: Labels, seed: ReturnType<typeof fix
   await branch.getByRole("button").first().click();
   await expect(branch.getByText("BRANCH_SUMMARY_PROOF", { exact: true })).toBeVisible();
   await branch.getByRole("button").first().click();
-  const fullLink = page.getByRole("button", { name: t("transcript.fullEntry"), exact: true });
+  const fullLink = work(page).getByRole("button", { name: t("transcript.fullEntry"), exact: true });
   await reveal(page, fullLink);
   const fullResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith(`/history/${seed.oversized}`));
   await fullLink.click();
@@ -499,11 +500,11 @@ async function checkSummaries(page: Page, t: Labels, seed: ReturnType<typeof fix
 
 async function filesPanel(page: Page, t: Labels, open: boolean) {
   if (page.viewportSize()!.width < 820) {
-    await page.getByRole("tab", { name: t(open ? "work.filesTab" : "work.chatTab"), exact: true }).click();
+    await work(page).getByRole("tab", { name: t(open ? "work.filesTab" : "work.chatTab"), exact: true }).click();
   } else {
-    const layout = page.locator("[data-work-layout]");
+    const layout = work(page).locator("[data-work-layout]");
     if ((await layout.getAttribute("data-panel-open") === "true") !== open)
-      await page.getByRole("button", { name: t("work.filesBrowser"), exact: true }).click();
+      await page.getByRole("banner").getByRole("button", { name: t("work.filesBrowser"), exact: true }).click();
     await expect(layout).toHaveAttribute("data-panel-open", String(open));
   }
 }
@@ -518,7 +519,7 @@ async function checkComposer(page: Page, t: Labels, seed: ReturnType<typeof fixt
   page.on("request", observe);
   try {
     await input.fill("/");
-    const menu = page.getByRole("listbox");
+    const menu = work(page).getByRole("listbox");
     await expect(menu.getByRole("group", { name: t("composer.commands"), exact: true })).toBeVisible();
     await expect(menu.getByRole("group", { name: t("composer.skills"), exact: true })).toBeAttached();
     await input.fill("/chat-smoke-skill");
@@ -541,9 +542,9 @@ async function checkComposer(page: Page, t: Labels, seed: ReturnType<typeof fixt
     const entriesResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/entries");
     await input.fill("@notes/");
     assert.equal((await entriesResponse).status(), 200);
-    await page.getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
+    await work(page).getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
     await expect(input).toHaveValue(`"${seed.selectedFile}" `);
-    const selectedChip = page.locator("[data-composer-reference]").filter({ hasText: seed.selectedFile });
+    const selectedChip = work(page).locator("[data-composer-reference]").filter({ hasText: seed.selectedFile });
     await expect(selectedChip).toHaveAttribute("title", seed.selectedFile);
     await selectedChip.getByRole("button").click();
     await expect(selectedChip).toHaveCount(0);
@@ -556,10 +557,10 @@ async function checkComposer(page: Page, t: Labels, seed: ReturnType<typeof fixt
       const url = new URL(response.url());
       return url.pathname === "/api/entries" && url.searchParams.get("path") === seed.cwd;
     });
-    await page.locator("[data-chat-composer]").getByRole("button", { name: t("composer.files"), exact: true }).click();
+    await work(page).locator("[data-chat-composer]").getByRole("button", { name: t("composer.files"), exact: true }).click();
     assert.equal((await toolbarEntries).status(), 200);
-    await page.getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "compact", exact: true }).click();
-    const chips = page.locator("[data-composer-reference]");
+    await work(page).getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "compact", exact: true }).click();
+    const chips = work(page).locator("[data-composer-reference]");
     await expect(chips).toHaveCount(1);
     await expect(chips).toHaveAttribute("title", seed.droppedFile);
     await expect(input).toHaveValue(`"${seed.droppedFile}" README notes`);
@@ -572,11 +573,11 @@ async function checkComposer(page: Page, t: Labels, seed: ReturnType<typeof fixt
     result.measurements.nativeComposerEdits = nativeEdits;
     for (const occurrence of ["first", "second"] as const) {
       await input.fill("A @notes/");
-      await page.getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
+      await work(page).getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
       await expect(input).toHaveValue(`A ${seed.selectedFile} `);
       await input.evaluate((element) => { const textarea = element as HTMLTextAreaElement; textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length); });
       await input.pressSequentially(" B @notes/");
-      await page.getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
+      await work(page).getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
       await expect(input).toHaveValue(`A ${seed.selectedFile}  B ${seed.selectedFile} `);
       await expect(chips).toHaveCount(2);
       assert.deepEqual(await chips.evaluateAll((elements) => elements.map((element) => element.getAttribute("title"))), [seed.selectedFile, seed.selectedFile]);
@@ -624,27 +625,27 @@ async function checkComposer(page: Page, t: Labels, seed: ReturnType<typeof fixt
     await input.fill("Before  after");
     await input.evaluate((element) => { (element as HTMLTextAreaElement).setSelectionRange(7, 7); element.dispatchEvent(new Event("select", { bubbles: true })); });
     await filesPanel(page, t, true);
-    const toggle = page.getByRole("button", { name: t("tabs.toggleTree"), exact: true });
+    const toggle = work(page).getByRole("button", { name: t("tabs.toggleTree"), exact: true });
     if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
-    const source = page.getByRole("treeitem", { name: "compact", exact: true });
+    const source = work(page).getByRole("treeitem", { name: "compact", exact: true });
     await expect(source).toBeVisible();
     const transfer = await page.evaluateHandle(() => new DataTransfer());
     try {
       await source.dispatchEvent("dragstart", { dataTransfer: transfer });
       await filesPanel(page, t, false);
-      await page.locator("#work-panel-chat").dispatchEvent("dragover", { dataTransfer: transfer });
-      await page.locator("#work-panel-chat").dispatchEvent("drop", { dataTransfer: transfer });
+      await work(page).locator('[data-work-pane="chat"]').dispatchEvent("dragover", { dataTransfer: transfer });
+      await work(page).locator('[data-work-pane="chat"]').dispatchEvent("drop", { dataTransfer: transfer });
     } finally { await transfer.dispose(); }
     await expect(input).toHaveValue(`Before ${seed.droppedFile} after`);
-    await expect(page.locator("[data-composer-reference]")).toHaveAttribute("title", seed.droppedFile);
-    await expect(page.getByRole("listbox")).toHaveCount(0);
+    await expect(work(page).locator("[data-composer-reference]")).toHaveAttribute("title", seed.droppedFile);
+    await expect(work(page).getByRole("listbox")).toHaveCount(0);
     assert.deepEqual(writes, [], "Selecting/dropping a file must not send or execute a slash command");
     result.checks.push("distinct command/Skill groups; execute vs insert; @ uses real directory HTTP; exact removable selected/dropped path chips");
   } finally { page.off("request", observe); }
 }
 
 async function checkLayoutAndMath(page: Page, result: CaseReport) {
-  const answer = page.locator('[data-message-body="assistant"]').filter({ hasText: "ROOT_PRESENTATION_TAIL" });
+  const answer = work(page).locator('[data-message-body="assistant"]').filter({ hasText: "ROOT_PRESENTATION_TAIL" });
   await expect(answer).toBeVisible();
   await expect(answer.locator(".katex")).toHaveCount(2);
   await expect(answer.locator(".katex-display")).toHaveCount(1);
@@ -676,10 +677,10 @@ async function checkLive(page: Page, t: Labels, json: Json, pi: Pi, seed: Return
   const releaseLive = provider.arm("live");
   let releaseCompact: (() => void) | undefined;
   try {
-    await page.getByRole("button", { name: t("composer.send"), exact: true }).click();
-    await expect(page.getByText("LIVE_CHAT_START", { exact: false })).toBeVisible();
+    await work(page).getByRole("button", { name: t("composer.send"), exact: true }).click();
+    await expect(work(page).getByText("LIVE_CHAT_START", { exact: false })).toBeVisible();
     assert.equal(provider.requests.length, baseline + 1);
-    await expect(page.locator("[data-work-layout]")).toHaveAttribute("data-panel-open", "false");
+    await expect(work(page).locator("[data-work-layout]")).toHaveAttribute("data-panel-open", "false");
     releaseCompact = provider.arm("compact");
     await composer(page).fill("/compact");
     await composer(page).press("Enter");
@@ -690,7 +691,7 @@ async function checkLive(page: Page, t: Labels, json: Json, pi: Pi, seed: Return
     await expect.poll(() => provider.requests.length).toBe(baseline + 2);
     await expect.poll(async () => (await json<SessionSnapshotDto>(`/api/sessions/${seed.id}/snapshot`)).compactionState).toBe("running");
     await expect(activity).toBeVisible();
-    await expect(page.getByText("NATIVE_COMPACTION_PROOF", { exact: true })).toHaveCount(0);
+    await expect(work(page).getByText("NATIVE_COMPACTION_PROOF", { exact: true })).toHaveCount(0);
     releaseCompact();
     await expect.poll(async () => (await json<SessionSnapshotDto>(`/api/sessions/${seed.id}/snapshot`)).compactionState).toBe("idle");
     await expect(activity).toHaveCount(0);
@@ -820,10 +821,10 @@ async function main() {
         result.measurements.rootAfterHttp = verifyRootBytes(pi, seed);
         const callsBefore: number = provider.requests.length;
         await page.goto(`${origin}/#/work/${seed.id}?cwd=${encodeURIComponent(seed.cwd)}`, { waitUntil: "domcontentloaded" });
-        await expect(page.getByText("ROOT_PRESENTATION_TAIL", { exact: true })).toBeVisible();
+        await expect(work(page).getByText("ROOT_PRESENTATION_TAIL", { exact: true })).toBeVisible();
         await expect(page.locator("html")).toHaveAttribute("data-ui-theme", theme);
-        await expect(page.locator("[data-work-layout]")).toHaveAttribute("data-panel-open", "false");
-        if (width < 820) await expect(page.getByRole("tab", { name: t("work.chatTab"), exact: true })).toHaveAttribute("aria-selected", "true");
+        await expect(work(page).locator("[data-work-layout]")).toHaveAttribute("data-panel-open", "false");
+        if (width < 820) await expect(work(page).getByRole("tab", { name: t("work.chatTab"), exact: true })).toHaveAttribute("aria-selected", "true");
         await checkLayoutAndMath(page, result);
         const workerProof = await page.evaluate(() => (window as unknown as { __chatWorker: { parsed: number; mathParsed: number; failed: number } }).__chatWorker);
         if (markdown === "worker") {
@@ -837,14 +838,14 @@ async function main() {
         await checkSummaries(page, t, seed, result);
         // Open the mapped child from the actual subagent disclosure.
         await openChildDetails(page, t, result);
-        await expect(page.getByText("CHILD_PRESENTATION_TAIL", { exact: true })).toBeVisible();
+        await expect(work(page).getByText("CHILD_PRESENTATION_TAIL", { exact: true })).toBeVisible();
         await expect(composer(page)).toBeDisabled();
         const childSummary = conversation(page).locator('[data-summary-kind="compaction"]');
         await childSummary.getByRole("button").first().click();
         await expect(childSummary.getByText("CHILD_SUMMARY", { exact: true })).toBeVisible();
         await expect(childSummary.locator(".katex-display")).toHaveCount(1);
         await page.screenshot({ path: join(artifacts, `child-${label}.png`) });
-        await page.getByTestId("agent-tab-group").getByRole("button").first().click();
+        await work(page).getByTestId("agent-tab-group").getByRole("button").first().click();
         await expect(composer(page)).toBeEnabled();
         await checkComposer(page, t, seed, result);
         assert.equal(provider.requests.length, callsBefore, "History/settings/commands/files must not invoke a provider");

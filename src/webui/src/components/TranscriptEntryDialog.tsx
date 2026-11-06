@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { TranscriptTimelineEntryDto } from "../../../web/contracts";
 import { getTranscriptEntry } from "../api";
 import { useModalLayer } from "../hooks/useModalLayer";
@@ -20,7 +20,8 @@ export function TranscriptEntryDialog({
 }) {
   const { t } = useI18n();
   const root = useRef<HTMLElement>(null);
-  const { zIndex, dialogProps } = useModalLayer(onClose, root);
+  const { layerProps, dialogProps } = useModalLayer(onClose, root);
+  const titleId = useId();
   const [content, setContent] = useState<{ identity: string; entry: TranscriptTimelineEntryDto }>();
   const identity = JSON.stringify([sessionId, childId ?? null, entryId]);
   const entry = content?.identity === identity ? content.entry : undefined;
@@ -43,16 +44,16 @@ export function TranscriptEntryDialog({
     return () => controller.abort();
   }, [sessionId, childId, entryId, attempt, identity]);
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-black/20 p-4" style={{ zIndex }}>
+    <div className="fixed inset-0 flex items-center justify-center bg-black/20 p-4" {...layerProps}>
       <section
         ref={root}
         role="dialog"
         {...dialogProps}
-        aria-labelledby="transcript-entry-title"
+        aria-labelledby={titleId}
         className="flex h-[min(720px,calc(100vh-32px))] w-full max-w-[900px] flex-col overflow-hidden rounded-xl border border-v2-grey-200 bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]"
       >
         <header className="flex items-center justify-between border-b border-v2-grey-200 px-4 py-3">
-          <h2 id="transcript-entry-title" className="text-[14px] font-semibold">
+          <h2 id={titleId} className="text-[14px] font-semibold">
             {t("transcript.fullEntry")}
           </h2>
           <button

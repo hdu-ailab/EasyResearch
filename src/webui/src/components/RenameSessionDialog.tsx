@@ -11,11 +11,11 @@ export interface RenameSessionDialogProps {
 export function RenameSessionDialog({ currentName, onSave, onClose }: RenameSessionDialogProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLFormElement>(null);
-  const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
+  const { layerProps, dialogProps, isTop } = useModalLayer(onClose, dialogRef);
   const [name, setName] = useState(currentName);
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4" style={{ zIndex }}>
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4" {...layerProps}>
       <form
         ref={dialogRef}
         role="dialog"
@@ -24,6 +24,7 @@ export function RenameSessionDialog({ currentName, onSave, onClose }: RenameSess
         className="w-full max-w-[360px] rounded-[10px] bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
         onSubmit={(event) => {
           event.preventDefault();
+          if (!isTop) return;
           onSave(name.trim());
         }}
       >

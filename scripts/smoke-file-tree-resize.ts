@@ -66,6 +66,8 @@ try {
   try {
     for (const preferences of [{ studioTheme: "light" }, { studioTheme: "dark" }]) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "en-US" });
+    const work = page.locator('[data-session-surface][data-session-active="true"]');
+    const topbar = page.getByRole("banner");
     await installBrowserEventFixture(page.context());
     try {
     await page.addInitScript((value) => localStorage.setItem("easyresearch.webui.preferences", JSON.stringify({ language: "en", ...value })), preferences);
@@ -116,9 +118,9 @@ try {
     });
 
     await page.goto(`${origin}/#/work/file-split-smoke?cwd=%2Fp`);
-    await page.getByRole("button", { name: "Files browser", exact: true }).click();
-    const handle = page.getByRole("separator", { name: "Resize file tree" });
-    const tree = page.locator("[data-files-tree]");
+    await topbar.getByRole("button", { name: "Files browser", exact: true }).click();
+    const handle = work.getByRole("separator", { name: "Resize file tree" });
+    const tree = work.locator("[data-files-tree]");
     await expect(handle).toBeVisible();
     const checkHitArea = async () => {
       const hits = await handle.evaluate((element) => {
@@ -140,7 +142,7 @@ try {
     });
     await checkHitArea();
     await tree.getByText("draft.docx", { exact: true }).click();
-    const frame = page.locator('iframe[title="DOCX document"]');
+    const frame = work.locator('iframe[title="DOCX document"]');
     await expect(frame).toBeVisible();
     await checkHitArea();
     await handle.focus();
@@ -188,9 +190,9 @@ try {
     assert.equal(await page.evaluate(() => document.body.style.userSelect), "text");
     await page.mouse.up();
 
-    const filter = page.getByRole("textbox", { name: "Filter files" });
+    const filter = work.getByRole("textbox", { name: "Filter files" });
     await filter.fill("draft");
-    const toggle = page.getByRole("button", { name: "Toggle file tree" });
+    const toggle = work.getByRole("button", { name: "Toggle file tree" });
     await toggle.click();
     await expect(handle).toHaveCount(0);
     await toggle.click();
@@ -202,7 +204,7 @@ try {
     await page.setViewportSize({ width: 390, height: 844 });
     await expect.poll(() => page.evaluate(() => document.body.style.userSelect)).toBe("text");
     await page.mouse.up();
-    await page.getByRole("tab", { name: "Files", exact: true }).click();
+    await work.getByRole("tab", { name: "Files", exact: true }).click();
     await expect(handle).toHaveCount(0);
     await expect(frame).toBeVisible();
     await toggle.click();
@@ -210,7 +212,7 @@ try {
     assert.equal(await tree.evaluate((element) => element.style.width), "");
     await page.setViewportSize({ width: 1440, height: 900 });
     // Work deliberately closes the desktop aside when entering its mobile layout.
-    await page.getByRole("button", { name: "Files browser", exact: true }).click();
+    await topbar.getByRole("button", { name: "Files browser", exact: true }).click();
     await expect(handle).toBeVisible();
     await expect.poll(width).toBe(preferred);
     await checkHitArea();

@@ -6,6 +6,7 @@ import type { FileEntryDto } from "../../../web/contracts";
 import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
+import { ViewActivityProvider } from "../view-activity";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 
 vi.mock("../api", async (importOriginal) => ({
@@ -44,6 +45,36 @@ async function renderComposer(props: Partial<React.ComponentProps<typeof ChatCom
 }
 
 describe("ChatComposer slash popover", () => {
+  it("aborts and dismisses inactive file suggestions without reopening them on activation", async () => {
+    const pending = Promise.withResolvers<FileEntryDto[]>();
+    vi.mocked(api.listEntries).mockReturnValue(pending.promise);
+    const composer = (active: boolean) => (
+      <ViewActivityProvider visible={active} interactive={active}>
+        <ChatComposer
+          cwd="/p"
+          disabled={false}
+          streaming={false}
+          onSend={() => {}}
+          onAbort={() => {}}
+          commands={commands}
+        />
+      </ViewActivityProvider>
+    );
+    const view = render(composer(true));
+    const input = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(input, { target: { value: "@" } });
+    expect(api.listEntries).toHaveBeenCalledOnce();
+    const signal = vi.mocked(api.listEntries).mock.calls[0]?.[1];
+    view.rerender(composer(false));
+    expect(signal?.aborted).toBe(true);
+    await act(async () => pending.resolve([{ kind: "file", name: "late.txt", path: "/p/late.txt" }]));
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(input).toHaveValue("@");
+    view.rerender(composer(true));
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(api.listEntries).toHaveBeenCalledOnce();
+  });
+
   it.each(["plain draft", "/na", "/ar", "/name draft"])(
     "does not submit or complete %s during IME confirmation, but accepts ordinary Enter",
     async (draft) => {

@@ -1,7 +1,9 @@
 import { AtSign, FileText, Slash, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SkillCommandDto } from "../../../web/contracts";
+import { canFocusElement } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
+import { useViewActivityRef } from "../view-activity";
 import { type ComposerSuggestion, ComposerSuggestions } from "./composer/ComposerSuggestions";
 import {
   type ComposerDraft,
@@ -46,6 +48,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   ref,
 ) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
+  const { visible, interactive } = activity.current;
   const [draft, setDraft] = useState<ComposerDraft>({ text: "", references: [] });
   const { text } = draft;
   const [selectionStart, setSelectionStart] = useState(0);
@@ -64,7 +68,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   // biome-ignore lint/correctness/useExhaustiveDependencies: Remeasure the committed DOM whenever the controlled draft changes.
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
-    if (!textarea) return;
+    if (!textarea || !visible) return;
     const resize = () => {
       if (textarea.clientWidth === 0) return;
       // Reset first so deleting text can shrink; CSS owns the height limits.
@@ -81,7 +85,15 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     });
     observer.observe(textarea);
     return () => observer.disconnect();
-  }, [text]);
+  }, [text, visible]);
+
+  useLayoutEffect(() => {
+    if (interactive) return;
+    insertedCaret.current = null;
+    setPendingFocus(false);
+    setDismissed(true);
+    composing.current = false;
+  }, [interactive]);
 
   useImperativeHandle(
     ref,
@@ -89,15 +101,15 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       setDraft(nextText: string) {
         setDraft({ text: nextText, references: [] });
         setSelectionStart(nextText.length);
-        insertedCaret.current = nextText.length;
-        setDismissed(false);
+        insertedCaret.current = activity.current.interactive ? nextText.length : null;
+        setDismissed(!activity.current.interactive);
       },
       focus() {
-        textareaRef.current?.focus();
+        if (activity.current.interactive && canFocusElement(textareaRef.current)) textareaRef.current.focus();
       },
       insertPath(path: string) {
         const textarea = textareaRef.current;
-        if (disabled || !textarea) return;
+        if (!activity.current.interactive || disabled || !textarea) return;
         const before = textarea.value.slice(0, textarea.selectionStart);
         const after = textarea.value.slice(textarea.selectionEnd);
         const literal = referenceLiteral(path, !before.trim());
@@ -115,34 +127,35 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         setDismissed(true);
       },
     }),
-    [disabled],
+    [disabled, activity],
   );
 
   useLayoutEffect(() => {
     if (insertedCaret.current === null) return;
     const caret = insertedCaret.current;
     insertedCaret.current = null;
-    textareaRef.current?.focus();
+    if (!activity.current.interactive || !canFocusElement(textareaRef.current)) return;
+    textareaRef.current.focus();
     textareaRef.current?.setSelectionRange(caret, caret);
   });
 
   useEffect(() => {
-    if (!pendingFocus || disabled) return;
+    if (!pendingFocus || disabled || !interactive) return;
     setPendingFocus(false);
-    textareaRef.current?.focus();
-  }, [pendingFocus, disabled]);
+    if (canFocusElement(textareaRef.current)) textareaRef.current.focus();
+  }, [pendingFocus, disabled, interactive]);
 
   const slash = useMemo(() => {
-    if (commands.length === 0 || disabled || dismissed) return undefined;
+    if (commands.length === 0 || disabled || dismissed || !interactive) return undefined;
     const query = slashQuery(text, selectionStart);
     return query && !draft.references.some((reference) => reference.start <= query.start && reference.end > query.start)
       ? query
       : undefined;
-  }, [text, selectionStart, commands, disabled, dismissed, draft.references]);
+  }, [text, selectionStart, commands, disabled, dismissed, draft.references, interactive]);
 
   const file = useMemo(
-    () => (cwd && !disabled && !dismissed ? fileQuery(text, selectionStart, cwd) : undefined),
-    [text, selectionStart, cwd, disabled, dismissed],
+    () => (cwd && !disabled && !dismissed && interactive ? fileQuery(text, selectionStart, cwd) : undefined),
+    [text, selectionStart, cwd, disabled, dismissed, interactive],
   );
   const files = useComposerFiles(file?.directory, file?.query ?? "");
 
@@ -199,6 +212,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const selectedIndex = Math.min(activeIndex, Math.max(0, suggestions.length - 1));
   const popover = file ? "files" : slash ? "slash" : undefined;
   const selectSuggestion = (index: number) => {
+    if (!activity.current.interactive) return;
     if (!file) {
       const command = filtered[index];
       if (command) selectSlash(command);
@@ -229,7 +243,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
   const openSuggestions = (trigger: "/" | "@") => {
     const textarea = textareaRef.current;
-    if (!textarea || disabled) return;
+    if (!textarea || disabled || !activity.current.interactive) return;
     if (trigger === "/") {
       const existing = /^(\s*)\/\S*/.exec(text);
       if (existing) insertedCaret.current = existing[0].length;
@@ -253,7 +267,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const submit = () => {
     const literalDraft = protectLeadingReference(draft);
     const trimmed = literalDraft.text.trim();
-    if (!trimmed || disabled) return;
+    if (!trimmed || disabled || !activity.current.interactive) return;
     const commandMatch = /^(\/\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
     const startsWithReference = literalDraft.references.some(
       (reference) => reference.start === literalDraft.text.search(/\S/),
@@ -448,6 +462,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
             aria-label={t("composer.stop")}
             title={t("composer.stopTitle")}
             onClick={() => {
+              if (!activity.current.interactive) return;
               setPendingFocus(true);
               onAbort();
             }}

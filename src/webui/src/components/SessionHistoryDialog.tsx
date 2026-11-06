@@ -1,12 +1,12 @@
 import { Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   SessionTreeDto,
   TreeNavigationOptionsDto,
   TreeNavigationResultDto,
   WebTreeEntryDto,
 } from "../../../web/contracts";
-import { useModalLayer } from "../hooks/useModalLayer";
+import { canFocusElement, useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 import { ActionGlyph } from "./studio/ActionGlyph";
 
@@ -46,7 +46,8 @@ export function SessionHistoryDialog({
 }: SessionHistoryDialogProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLElement>(null);
-  const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
+  const { layerProps, dialogProps, isTop } = useModalLayer(onClose, dialogRef);
+  const titleId = useId();
   const [query, setQuery] = useState(initialQuery);
   const [filterMode, setFilterMode] = useState<HistoryFilterMode>("user-only");
   const [folded, setFolded] = useState<Set<string>>(() => new Set());
@@ -75,10 +76,13 @@ export function SessionHistoryDialog({
       return;
     }
     if (focusTreeSelection.current) {
-      itemRefs.current.get(selectedRow?.entry.id ?? "")?.focus();
-      focusTreeSelection.current = false;
+      const item = itemRefs.current.get(selectedRow?.entry.id ?? "") ?? null;
+      if (isTop && canFocusElement(item)) {
+        item.focus();
+        focusTreeSelection.current = false;
+      }
     }
-  }, [rows, selectedId, selectedRow?.entry.id, value.leafId, value.tree]);
+  }, [rows, selectedId, selectedRow?.entry.id, value.leafId, value.tree, isTop]);
 
   const moveTo = (index: number) => {
     const row = rows[index];
@@ -160,16 +164,16 @@ export function SessionHistoryDialog({
   };
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/25 p-3" style={{ zIndex }}>
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/25 p-3" {...layerProps}>
       <section
         ref={dialogRef}
         role="dialog"
         {...dialogProps}
-        aria-labelledby="history-dialog-title"
+        aria-labelledby={titleId}
         className="flex max-h-[min(760px,calc(100vh-24px))] w-full max-w-[820px] flex-col overflow-hidden rounded-[14px] border border-v2-grey-200 bg-v2-background-bg-base shadow-[var(--v2-elevation-overlay)]"
       >
         <header className="flex shrink-0 items-center gap-3 border-b border-v2-grey-200 px-4 py-3">
-          <h2 id="history-dialog-title" className="text-[14px] font-semibold text-v2-text-text-base">
+          <h2 id={titleId} className="text-[14px] font-semibold text-v2-text-text-base">
             {t("history.title")}
           </h2>
           <span className="font-mono text-[11px] text-v2-text-text-faint">
@@ -321,21 +325,22 @@ function BranchSummaryDialog({
 }) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLElement>(null);
-  const { zIndex, dialogProps } = useModalLayer(onCancel, dialogRef);
+  const { layerProps, dialogProps, isTop } = useModalLayer(onCancel, dialogRef);
+  const titleId = useId();
   const customInputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    if (custom) customInputRef.current?.focus();
-  }, [custom]);
+    if (custom && isTop && canFocusElement(customInputRef.current)) customInputRef.current.focus();
+  }, [custom, isTop]);
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4" style={{ zIndex }}>
+    <div className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4" {...layerProps}>
       <section
         ref={dialogRef}
         role="dialog"
         {...dialogProps}
-        aria-labelledby="branch-summary-title"
+        aria-labelledby={titleId}
         className="w-full max-w-[420px] rounded-[10px] border border-v2-grey-200 bg-v2-background-bg-base p-4 shadow-[var(--v2-elevation-overlay)]"
       >
-        <h2 id="branch-summary-title" className="text-[13px] font-semibold text-v2-text-text-base">
+        <h2 id={titleId} className="text-[13px] font-semibold text-v2-text-text-base">
           {t("history.summaryTitle")}
         </h2>
         {custom ? (

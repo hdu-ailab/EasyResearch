@@ -433,6 +433,7 @@ async function runPackagedSmoke(pkg: DesktopSmokePackage, root: string): Promise
         && state.restartRequested
         && state.oldSidecarExited
         && state.successorVisible
+        && state.sessionTabsRestored
         && state.hidden
       ) {
         successorState = state;

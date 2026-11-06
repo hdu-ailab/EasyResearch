@@ -1,3 +1,4 @@
+import { parseSessionTabs, type SessionTab, snapshotSessionTabs } from "./session-tabs";
 import { getTimelineDetail, parseTimelineDetail, type TimelineDetail } from "./timeline-detail";
 
 export type Language = "en" | "zh-CN";
@@ -14,6 +15,8 @@ export interface WebUiPreferences {
   autoExpandTools: boolean;
   expandSubagentOutput: boolean;
   timelineDetail?: TimelineDetail;
+  /** Startup bookmarks; an open document owns its live tab catalog independently. */
+  sessionTabs?: SessionTab[];
 }
 
 export const CHAT_FONT_MIN = 10;
@@ -50,6 +53,7 @@ export function readPreferences(storage: Pick<Storage, "getItem">, navigatorLang
     studioTheme: "light",
     ...DEFAULT_EXPANSION_PREFERENCES,
     timelineDetail: getTimelineDetail({}),
+    sessionTabs: [],
   });
   try {
     const raw = storage.getItem(STORAGE_KEY);
@@ -67,6 +71,7 @@ export function readPreferences(storage: Pick<Storage, "getItem">, navigatorLang
       filesFontSize: pickFontSize(parsed.filesFontSize, DEFAULT_FILES_FONT_SIZE, FILES_FONT_MIN, FILES_FONT_MAX),
       language,
       studioTheme: parsed.studioTheme === "dark" ? "dark" : "light",
+      sessionTabs: parseSessionTabs(parsed.sessionTabs),
       ...expansion,
       timelineDetail:
         parsed.timelineDetail === undefined
@@ -79,5 +84,8 @@ export function readPreferences(storage: Pick<Storage, "getItem">, navigatorLang
 }
 
 export function writePreferences(storage: Pick<Storage, "setItem">, prefs: WebUiPreferences): void {
-  storage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+  storage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({ ...prefs, ...(prefs.sessionTabs ? { sessionTabs: snapshotSessionTabs(prefs.sessionTabs) } : {}) }),
+  );
 }

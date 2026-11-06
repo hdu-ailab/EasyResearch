@@ -74,6 +74,14 @@ import {
 } from "./smoke-host";
 import { DESKTOP_SMOKE_USER_DATA_ENV } from "./contracts";
 import { verifyDesktopSmokeWorkFiles } from "./smoke-work-files";
+import {
+  clearDesktopSmokeSessionTabsStorage,
+  prepareDesktopSmokeSessionTabs,
+  verifyDesktopSmokeSessionTabs,
+  verifyDesktopSmokeSessionTabsCleared,
+  verifyDesktopSmokeSessionTabsCommitted,
+  type DesktopSmokeSessionTabsReceipt,
+} from "./smoke-session-tabs";
 
 configureSmokeUserData();
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -91,6 +99,7 @@ let smokeRestartContext: {
   bootId: string;
   rendererToken: string;
   workHash: string;
+  sessionTabs: DesktopSmokeSessionTabsReceipt;
 } | undefined;
 let smokeSuccessorFailureInjected = false;
 
@@ -635,17 +644,50 @@ async function installSmokeLifecycle(
         project,
         directory,
       }));
-      smokeRestartContext = {
+      const sessionTabs = await prepareDesktopSmokeSessionTabs({
+        webContents: window.webContents,
+        userDataDir: app.getPath("userData"),
+        origin: handle.ready.origin,
+        hash: workHash,
+        sessionId: prepared.sessionId,
+        cwd: project,
+        transcriptUser: prepared.transcriptUser,
+      });
+      const restartContext = {
         bootId: prepared.bootId,
         rendererToken: handle.rendererToken,
         workHash,
+        sessionTabs,
       };
+      smokeRestartContext = restartContext;
       armSmokeRequest(directory, "restart-request", async () => {
+        await verifyDesktopSmokeSessionTabsCommitted({
+          webContents: window.webContents,
+          userDataDir: app.getPath("userData"),
+          receipt: sessionTabs,
+        });
+        const clearedSessionTabs = await clearDesktopSmokeSessionTabsStorage({
+          webContents: window.webContents,
+          userDataDir: app.getPath("userData"),
+          receipt: sessionTabs,
+        });
+        restartContext.sessionTabs = clearedSessionTabs;
         const restarted = await requestDesktopSmokeRestart({
           origin: handle.ready.origin,
           rendererToken: handle.rendererToken,
           oldBootId: prepared.bootId,
           proxyUrl,
+          fetch: async (input, init) => {
+            if (new URL(input instanceof Request ? input.url : input).pathname === "/api/runtime/restart") {
+              emitSmokeEvent(await verifyDesktopSmokeSessionTabsCleared({
+                webContents: window.webContents,
+                userDataDir: app.getPath("userData"),
+                receipt: clearedSessionTabs,
+                bootId: prepared.bootId,
+              }));
+            }
+            return fetch(input, init);
+          },
         });
         emitSmokeEvent({
           type: "desktop-smoke.restart-api-accepted",
@@ -679,6 +721,13 @@ async function installSmokeLifecycle(
       authenticated: true,
       persistedSessionVisible: true,
     });
+    emitSmokeEvent(await verifyDesktopSmokeSessionTabs({
+      webContents: window.webContents,
+      userDataDir: app.getPath("userData"),
+      receipt: smokeRestartContext.sessionTabs,
+      origin: handle.ready.origin,
+      bootId: successor.bootId,
+    }));
   } catch (error) {
     const message = errorMessage(error);
     writeDesktopLog(`Desktop smoke preflight failed: ${message}`);

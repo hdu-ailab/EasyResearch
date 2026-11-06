@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n/useI18n";
 import { shieldResizeIframes, suppressResizeSelection } from "../resize-iframe-shield";
+import { useViewActivityRef } from "../view-activity";
 
 const TREE_MIN_WIDTH = 180;
 const TREE_DEFAULT_WIDTH = 240;
@@ -28,6 +29,8 @@ interface FileTreeSplitProps {
 // Keeping resize state here lets unchanged tree/preview elements skip drag-frame renders.
 export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTreeSplitProps) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
+  const { visible, interactive } = activity.current;
   const areaRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<TreeDrag | null>(null);
   const [treeWidth, setTreeWidth] = useState(TREE_DEFAULT_WIDTH);
@@ -55,11 +58,19 @@ export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTree
   }, [releaseDrag]);
 
   useLayoutEffect(() => {
-    if (isMobile || !treeOpened) cancelResize();
-  }, [isMobile, treeOpened, cancelResize]);
+    if (!interactive || isMobile || !treeOpened) cancelResize();
+  }, [isMobile, treeOpened, cancelResize, interactive]);
+
+  useLayoutEffect(() => {
+    if (!visible) return;
+    const width = areaRef.current?.clientWidth ?? 0;
+    // Update bounds, not the remembered preferred width, after hidden resizes.
+    if (width > 0) setAreaWidth(width);
+  }, [visible]);
 
   useEffect(() => {
     const observer = new ResizeObserver(([entry]) => {
+      if (!activity.current.visible) return;
       const width = entry?.contentRect.width ?? 0;
       if (width <= 0) cancelResize();
       setAreaWidth(width > 0 ? width : null);
@@ -84,10 +95,18 @@ export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTree
       document.removeEventListener("keydown", keyDown);
       releaseDrag();
     };
-  }, [cancelResize, releaseDrag]);
+  }, [cancelResize, releaseDrag, activity]);
 
   const startResize = (event: React.PointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || !event.isPrimary || dragRef.current || isMobile || !treeOpened || !areaRef.current)
+    if (
+      !activity.current.interactive ||
+      event.button !== 0 ||
+      !event.isPrimary ||
+      dragRef.current ||
+      isMobile ||
+      !treeOpened ||
+      !areaRef.current
+    )
       return;
     const handle = event.currentTarget;
     handle.setPointerCapture(event.pointerId);
@@ -141,6 +160,7 @@ export function FileTreeSplit({ isMobile, treeOpened, tree, children }: FileTree
   };
 
   const resizeWithKeyboard = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (!activity.current.interactive) return;
     if (event.key === "Escape" && dragRef.current) {
       event.preventDefault();
       cancelResize();

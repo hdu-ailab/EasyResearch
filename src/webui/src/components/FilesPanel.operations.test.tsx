@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FILE_UPLOAD_LIMIT, type FileUploadResultDto } from "../../../web/contracts";
 import { ApiError, listEntries, renameFile, uploadFile } from "../api";
 import { FILE_UPLOAD_QUEUE_LIMIT } from "../hooks/useFileUploads";
+import { ViewActivityProvider } from "../view-activity";
 import { FilesPanel } from "./FilesPanel";
 
 vi.mock("../api", async (importOriginal) => ({
@@ -60,6 +61,69 @@ beforeEach(() => {
 });
 
 describe("file management interactions", () => {
+  it("retains an inactive rename draft and finishes an owned pending rename without restoring hidden focus", async () => {
+    const user = userEvent.setup();
+    const complete = vi.fn();
+    const rename = Promise.withResolvers<Awaited<ReturnType<typeof renameFile>>>();
+    vi.mocked(renameFile).mockReturnValue(rename.promise);
+    const panel = (active: boolean) => (
+      <>
+        <button type="button">other view</button>
+        <ViewActivityProvider visible={active} interactive={active}>
+          <FilesPanel root="/p" onOpenFile={vi.fn()} onFileRenamed={complete} />
+        </ViewActivityProvider>
+      </>
+    );
+    const view = render(panel(true));
+    const opener = await screen.findByRole("button", { name: "Actions for paper.md" });
+    await user.click(opener);
+    await user.click(screen.getByRole("menuitem", { name: "Rename file" }));
+    const name = screen.getByRole("textbox", { name: "File name" });
+    fireEvent.change(name, { target: { value: "report.md" } });
+    view.rerender(panel(false));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(name.closest('[role="presentation"]')).toHaveStyle({ visibility: "hidden" });
+    const other = screen.getByRole("button", { name: "other view" });
+    other.focus();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(name).toHaveValue("report.md");
+    view.rerender(panel(true));
+    expect(screen.getByRole("textbox", { name: "File name" })).toBe(name);
+    expect(name).toHaveFocus();
+    fireEvent.submit(name.closest("form")!);
+    expect(renameFile).toHaveBeenCalledWith("/p", paper.path, "report.md");
+    view.rerender(panel(false));
+    other.focus();
+    const restore = vi.spyOn(opener, "focus");
+    const result = { oldPath: paper.path, entry: { ...paper, name: "report.md", path: "/p/report.md" } };
+    vi.mocked(listEntries).mockResolvedValue([folder, result.entry]);
+    await act(async () => rename.resolve(result));
+    expect(complete).toHaveBeenCalledWith(result);
+    expect(other).toHaveFocus();
+    expect(restore).not.toHaveBeenCalled();
+    expect(await screen.findByRole("treeitem", { name: /report.md/ })).toBeInTheDocument();
+    expect(other).toHaveFocus();
+  });
+
+  it("closes an inactive portalled file menu without restoring its old opener", async () => {
+    const panel = (active: boolean) => (
+      <ViewActivityProvider visible={active} interactive={active}>
+        <FilesPanel root="/p" onOpenFile={vi.fn()} />
+      </ViewActivityProvider>
+    );
+    const view = render(panel(true));
+    const opener = await screen.findByRole("button", { name: "Actions for paper.md" });
+    fireEvent.click(opener);
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    const restore = vi.spyOn(opener, "focus");
+    view.rerender(panel(false));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(restore).not.toHaveBeenCalled();
+    view.rerender(panel(true));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
   it("queues multiple root files, reports real progress, and refreshes only after server acceptance", async () => {
     const user = userEvent.setup();
     const view = render(<FilesPanel root="/p" onOpenFile={vi.fn()} />);

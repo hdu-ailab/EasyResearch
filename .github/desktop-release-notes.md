@@ -2,28 +2,30 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.15 highlights
+## 0.1.18 highlights
 
-- Upload multiple files into the Work workspace or a chosen folder, with progress,
-  cancellation and retry. Each file may be up to 1 GiB; existing names are preserved.
-- Download full files and rename files directly from the file tree. Renaming also
-  updates the current view's open file tab.
-- Preview images with zoom controls and play MP4 videos with seeking and fullscreen.
-- Open interactive HTML reports in an isolated preview, including document-relative
-  CSS, scripts and images. Dependencies must be inline or within the report folder;
-  download CDN libraries alongside the report. Source view and download remain
-  available. Browser codec support applies to videos; HTML previews do not host a
-  backend or gain access to the EasyResearch application.
+- OpenCode Web-inspired session tabs replace the top workspace display. Hover a
+  tab for its full session name and workspace; switch between retained drafts,
+  files and Agent views. Closing a tab leaves background Agent work running.
+- Refreshed chat presentation with six activity-category visibility, grouping and
+  disclosure controls, plus five detail presets.
+- Foldable context-compaction summaries and separators, queued/running indicators,
+  and complete Markdown viewing for oversized summaries.
+- Distinct command, Skill and file-reference affordances; `@` file suggestions,
+  removable reference chips and precise keyboard editing. New session views start
+  with the right panel closed.
+- All bundled Agents receive one concise instruction for Web-compatible KaTeX
+  mathematical notation.
 
-## 0.1.15 更新
+## 0.1.18 更新
 
-- Work 文件面板支持多文件上传，可选择工作区或子目录，查看进度、取消和重试。
-  单文件最大 1 GiB，同名文件会提示冲突并保留原文件。
-- 支持直接下载完整文件、重命名文件，并同步更新当前页面已打开的文件标签。
-- 支持图片缩放预览、MP4 播放、进度拖动和全屏。
-- 支持隔离的交互式 HTML 报告预览及相对路径 CSS、脚本和图片，并可查看源码或下载。
-  HTML 依赖须内嵌或置于报告目录及其子目录，CDN 库需下载到本地；视频编码支持取决于
-  浏览器。HTML 预览不提供后端运行环境或主应用访问权限。
+- 顶部工作区展示改为 OpenCode Web 风格的会话标签，悬停显示完整会话名称与工作区；
+  切换时保留草稿、文件和 Agent 视图，关闭标签后后台 Agent 继续执行。
+- 全新聊天样式，支持六类活动的显示、分组和折叠控制，以及五档详细程度预设。
+- 上下文压缩摘要可折叠，带分界线与排队／执行状态；超长摘要可完整查看 Markdown。
+- 命令、Skill 和文件引用分开展示，支持 `@` 文件选择、引用标签及精确键盘编辑；
+  新打开的会话默认收起右侧面板。
+- 每个内置 Agent 增加一行简洁的 KaTeX 数学公式格式指令。
 
 ## Downloads
 
@@ -35,7 +37,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.15
+version=0.1.18
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -43,7 +45,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.15
+version=0.1.18
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 

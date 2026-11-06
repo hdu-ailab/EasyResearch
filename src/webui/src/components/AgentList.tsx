@@ -7,6 +7,7 @@ import { listAgents, listModels, patchAgent, refreshConfigurationResources } fro
 import type { ModelOption } from "../api/parsers";
 import { agentDescription, agentDisplayName, BUILTIN_AGENT_ORDER, type Translate } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
+import { useViewActivityRef } from "../view-activity";
 import { SearchableSelect } from "./SearchableSelect";
 import { ThinkingLevelSelect, thinkingLevelsForModel } from "./ThinkingLevelSelect";
 
@@ -30,6 +31,8 @@ export const AgentList = memo(function AgentList({
   configurationError,
 }: AgentListProps) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
+  const { visible } = activity.current;
   const [roster, setRoster] = useState<AgentDto[] | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -57,6 +60,7 @@ export const AgentList = memo(function AgentList({
   );
 
   const refreshManually = async () => {
+    if (!activity.current.interactive) return;
     const owner = ++request.current;
     setBusy(true);
     try {
@@ -74,13 +78,15 @@ export const AgentList = memo(function AgentList({
   useEffect(() => {
     // The revision triggers a refetch; the APIs remain the data authority.
     void configurationGeneration;
+    if (!visible) return;
     void refresh();
     return () => {
       request.current += 1;
     };
-  }, [configurationGeneration, refresh]);
+  }, [configurationGeneration, refresh, visible]);
 
   const applyPatch = async (name: string, patch: AgentConfigurationPatch) => {
+    if (!activity.current.interactive) return;
     setBusy(true);
     try {
       const saved = await patchAgent(name, patch);

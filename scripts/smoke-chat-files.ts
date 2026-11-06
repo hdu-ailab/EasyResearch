@@ -24,6 +24,8 @@ try {
       try {
         await context.addInitScript((value) => localStorage.setItem("easyresearch.webui.preferences", JSON.stringify({ language: "en", ...value })), preferences);
         const page = await context.newPage();
+        const work = page.locator('[data-session-surface][data-session-active="true"]');
+        const topbar = page.getByRole("banner");
         const errors: string[] = [];
         const unexpected: string[] = [];
         const reads: string[] = [];
@@ -83,8 +85,8 @@ try {
         });
         const url = `${origin}/#/work/file-smoke?cwd=%2Fpapers`;
         await page.goto(url);
-        const chat = page.getByRole("tabpanel", { name: "Chat", exact: true });
-        const files = page.getByRole("tabpanel", { name: "Files", exact: true });
+        const chat = work.locator('[data-work-pane="chat"]');
+        const files = work.locator('[data-work-pane="files"]');
         const relative = chat.getByRole("button", { name: "results/table.txt", exact: true });
         await expect(relative).toBeVisible();
         await expect(chat.locator(".katex")).toBeVisible();
@@ -92,29 +94,29 @@ try {
         assert.deepEqual(reads, [], "Recognition must not probe or read files");
         const draft = chat.getByRole("textbox", { name: /message/i });
         await draft.fill("preserved draft");
-        if (!mobile) await expect(page.getByRole("button", { name: "Files browser", exact: true })).toHaveAttribute("aria-pressed", "false");
+        if (!mobile) await expect(topbar.getByRole("button", { name: "Files browser", exact: true })).toHaveAttribute("aria-pressed", "false");
         await relative.focus();
         await relative.press("Enter");
         await expect(files).toBeVisible();
         await expect(files.getByText("preview:/papers/results/table.txt", { exact: true })).toBeVisible();
-        if (mobile) await expect(page.getByRole("tab", { name: "Files", exact: true })).toBeFocused();
-        if (mobile) await page.getByRole("tab", { name: "Chat", exact: true }).click();
+        if (mobile) await expect(work.getByRole("tab", { name: "Files", exact: true })).toBeFocused();
+        if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
         await relative.click();
         await expect(files.getByRole("tab", { name: "table.txt", exact: true })).toHaveCount(1);
         await files.getByRole("button", { name: "Close table.txt", exact: true }).click();
-        if (mobile) await page.getByRole("tab", { name: "Chat", exact: true }).click();
+        if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
         await relative.click();
         await expect(files.getByText("preview:/papers/results/table.txt", { exact: true })).toBeVisible();
-        if (mobile) await page.getByRole("tab", { name: "Chat", exact: true }).click();
-        else await page.getByRole("button", { name: "Agent list", exact: true }).click();
+        if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
+        else await topbar.getByRole("button", { name: "Agent list", exact: true }).click();
         await chat.getByRole("button", { name: "/shared/report.txt", exact: true }).click();
         await expect(files.getByText("preview:/shared/report.txt", { exact: true })).toBeVisible();
         for (const [label, content] of [["notes", "preview:/papers/notes/my draft.txt"], ["missing.txt", "File not found"]] as const) {
-          if (mobile) await page.getByRole("tab", { name: "Chat", exact: true }).click();
+          if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
           await chat.getByRole("button", { name: label, exact: true }).click();
           await expect(files.getByText(content, { exact: label !== "missing.txt" })).toBeVisible();
         }
-        if (mobile) await page.getByRole("tab", { name: "Chat", exact: true }).click();
+        if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
         await expect(draft).toHaveValue("preserved draft");
         await expect(chat.locator("pre button")).toHaveCount(0);
         assert.equal(page.url(), url);

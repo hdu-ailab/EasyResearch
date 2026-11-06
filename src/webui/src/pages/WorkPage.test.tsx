@@ -8,8 +8,9 @@ import { I18nProvider } from "../i18n/I18nProvider";
 import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import { completionEntry } from "../testing/subagentCompletion";
-import { hydrateTranscript, observerFor } from "../testing/transcriptTest";
+import { fireTranscriptGrowth, hydrateTranscript, metricStub, observerFor } from "../testing/transcriptTest";
 import { TIMELINE_CATEGORIES } from "../timeline-detail";
+import { ViewActivityProvider } from "../view-activity";
 import { WorkPage } from "./WorkPage";
 
 const fileQueueProbe = vi.hoisted(() => ({ pending: 0 }));
@@ -73,6 +74,7 @@ vi.mock("../api", async (importOriginal) => {
     patchProviderTimeoutSettings: vi.fn(),
     getApiUsageStatistics: vi.fn(),
     renameSession: vi.fn(),
+    replaceFileWatchDirectories: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -454,6 +456,434 @@ describe("WorkPage", () => {
     });
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
     stubEvents();
+  });
+
+  it("retains two actual Work owners' drafts, files, child disclosure and unpinned scroll while background events continue", async () => {
+    const handlers = new Map<string, Parameters<typeof api.connectSessionEvents>[1]>();
+    const releases = new Map<string, ReturnType<typeof vi.fn>>();
+    vi.mocked(api.connectSessionEvents).mockImplementation((id, handler) => {
+      handlers.set(id, handler);
+      const release = vi.fn();
+      releases.set(id, release);
+      return release;
+    });
+    const rootSnapshot = (id: string) => ({
+      ...snapshotValue,
+      runtimeConfigurationGeneration: 0,
+      fileWatchLeaseId: `lease-${id}`,
+      compactionPolicy: { triggerPercent: 70, enabled: true },
+      session: { ...snapshotValue.session, id, cwd: id === "s1" ? "/p" : "/q", sessionName: `root ${id}` },
+      subagents: [],
+    });
+    vi.mocked(api.getSnapshot).mockImplementation(async (id) => rootSnapshot(id) as never);
+    let backgroundFileAdded = false;
+    vi.mocked(api.replaceFileWatchDirectories).mockClear();
+    vi.mocked(api.listEntries).mockImplementation(async (path) =>
+      path === "/p/data"
+        ? [
+            {
+              kind: "file",
+              name: backgroundFileAdded ? "background.txt" : "data.txt",
+              path: `${path}/${backgroundFileAdded ? "background.txt" : "data.txt"}`,
+            },
+          ]
+        : [
+            { kind: "file", name: "notes.md", path: `${path}/notes.md` },
+            ...(path === "/p" ? [{ kind: "directory" as const, name: "data", path: "/p/data" }] : []),
+          ],
+    );
+    vi.mocked(api.readFileContent).mockImplementation(async (path) => ({
+      path,
+      content: `preview ${path}`,
+      byteCount: 20,
+      binary: false,
+      truncated: false,
+    }));
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child-one", cwd: "/p", sessionName: "easyresearch:search" },
+      subagents: [],
+      timeline: [
+        {
+          kind: "message",
+          entryId: "child-answer",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "own child reasoning" },
+              { type: "text", text: "own child answer" },
+            ],
+          },
+        },
+      ],
+    } as never);
+    const metadata = vi.fn();
+    const views = (selected: string, firstOpen = true) => (
+      <>
+        {[
+          ["s1", "/p"],
+          ["s2", "/q"],
+        ]
+          .filter(([id]) => firstOpen || id !== "s1")
+          .map(([id, cwd]) => (
+            <ViewActivityProvider key={id} visible={selected === id} interactive={selected === id}>
+              <div
+                style={{ visibility: selected === id ? "visible" : "hidden" }}
+                inert={selected !== id}
+                aria-hidden={selected !== id || undefined}
+              >
+                <WorkPage
+                  id={id!}
+                  cwd={cwd!}
+                  onBack={() => {}}
+                  onOpenSettings={() => {}}
+                  onSessionMetadata={metadata}
+                />
+              </div>
+            </ViewActivityProvider>
+          ))}
+      </>
+    );
+    const view = render(views("s1"));
+    const first = view.container.querySelector<HTMLElement>('[data-work-session="s1"]')!;
+    const second = view.container.querySelector<HTMLElement>('[data-work-session="s2"]')!;
+    await waitFor(() =>
+      expect(metadata).toHaveBeenCalledWith({ id: "s2", cwd: "/q", name: "root s2", status: "ready" }),
+    );
+    act(() => {
+      for (const id of ["s1", "s2"]) handlers.get(id)?.onEvent({ type: "snapshot", ...rootSnapshot(id) });
+    });
+    const inputA = within(first).getByRole("textbox", { name: "Message" });
+    fireEvent.change(inputA, { target: { value: "draft A" } });
+    fireEvent.click(within(first).getByRole("button", { name: "Files browser" }));
+    fireEvent.click(await within(first).findByRole("treeitem", { name: "data" }));
+    await within(first).findByRole("treeitem", { name: "data.txt" });
+    fireEvent.click(await within(first).findByRole("treeitem", { name: "notes.md" }));
+    await within(first).findByText("preview /p/notes.md");
+    act(() => {
+      handlers.get("s1")?.onEvent({
+        type: "tool_execution_start",
+        toolCallId: "one",
+        toolName: "subagent",
+        args: { agent: "search", task: "read" },
+      });
+      handlers
+        .get("s1")
+        ?.onEvent(supervisorEvent({ toolCallId: "one", agentId: "search_0", childSessionId: "child-one" }));
+    });
+    fireEvent.click(await within(first).findByRole("button", { name: "Agent search_0" }));
+    await within(first).findByText("own child answer");
+    fireEvent.click(within(first).getByRole("button", { name: /Thinking/ }));
+    expect(within(first).getByText("own child reasoning")).toBeVisible();
+    const scroll = within(first).getByLabelText("Conversation");
+    act(() => metricStub(scroll, { clientHeight: 200, scrollHeight: 1000, scrollTop: 400 }));
+    fireEvent.wheel(scroll, { deltaY: -80 });
+    fireEvent.scroll(scroll);
+    view.rerender(views("s2"));
+    hydrateTranscript(second);
+    const inputB = within(second).getByRole("textbox", { name: "Message" });
+    fireEvent.change(inputB, { target: { value: "draft B" } });
+    inputB.focus();
+    fireEvent.click(within(second).getByRole("button", { name: "Files browser" }));
+    fireEvent.click(await within(second).findByRole("treeitem", { name: "notes.md" }));
+    await within(second).findByText("preview /q/notes.md");
+    inputB.focus();
+    vi.mocked(api.readFileContent).mockResolvedValueOnce({
+      path: "/p/notes.md",
+      content: "background file revision",
+      byteCount: 24,
+      binary: false,
+      truncated: false,
+    });
+    backgroundFileAdded = true;
+    act(() => {
+      handlers
+        .get("s1")
+        ?.onEvent({ type: "file.watcher.updated", properties: { file: "/p/notes.md", event: "change" } });
+      handlers
+        .get("s1")
+        ?.onEvent({ type: "file.watcher.updated", properties: { file: "/p/data/background.txt", event: "add" } });
+      handlers.get("s1")?.onEvent({ type: "session_info_changed", name: "" });
+    });
+    fireTranscriptGrowth(first);
+    await waitFor(() => expect(within(first).getByText("background file revision")).toBeInTheDocument());
+    await waitFor(() => expect(within(first).getByText("background.txt")).toBeInTheDocument());
+    const ownLease = vi
+      .mocked(api.replaceFileWatchDirectories)
+      .mock.calls.filter(([id]) => id === "s1")
+      .at(-1);
+    expect(ownLease?.[1]).toBe("lease-s1");
+    expect(ownLease?.[3]).toEqual(["/p", "/p/data"]);
+    expect(inputB).toHaveFocus();
+    expect(scroll.scrollTop).toBe(400);
+    await waitFor(() => expect(metadata).toHaveBeenCalledWith({ id: "s1", cwd: "/p", name: "", status: "ready" }));
+    expect(metadata.mock.calls.some(([value]) => value.name === "easyresearch:search")).toBe(false);
+    expect(releases.get("s1")).not.toHaveBeenCalled();
+    expect(api.listAgents).toHaveBeenCalledWith("/q");
+    vi.mocked(api.listAgents).mockClear();
+    view.rerender(views("s1"));
+    expect(inputA).toHaveValue("draft A");
+    expect(inputB).toHaveValue("draft B");
+    expect(within(first).getByRole("button", { name: "Agent search_0" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(first).getByText("own child reasoning")).toBeVisible();
+    expect(within(first).getByRole("tab", { name: "notes.md" })).toHaveAttribute("aria-selected", "true");
+    expect(within(first).getByRole("treeitem", { name: "data" })).toHaveAttribute("aria-expanded", "true");
+    expect(within(first).getByRole("treeitem", { name: "background.txt" })).toBeVisible();
+    expect(scroll.scrollTop).toBe(400);
+    await waitFor(() => expect(api.listAgents).toHaveBeenCalledWith("/p"));
+    for (const root of [first, second]) {
+      for (const tab of root.querySelectorAll<HTMLElement>("[data-work-tab]")) {
+        const pane = root.querySelector(`[data-work-pane="${tab.dataset.workTab}"]`)!;
+        expect(tab.getAttribute("aria-controls")).toBe(pane.id);
+        expect(pane.getAttribute("aria-labelledby")).toBe(tab.id);
+        expect(view.container.querySelectorAll(`[id="${tab.id}"]`)).toHaveLength(1);
+      }
+    }
+    view.rerender(views("s2", false));
+    expect(releases.get("s1")).toHaveBeenCalledOnce();
+    expect(releases.get("s2")).not.toHaveBeenCalled();
+    expect(api.abortSession).not.toHaveBeenCalled();
+    expect(api.stopSession).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "reconciles both retained resizers on activation without clamping away preferred widths (touched=%s)",
+    async (touched) => {
+      vi.stubGlobal("innerWidth", 1600);
+      vi.mocked(api.getSnapshot).mockImplementation(
+        async (id) =>
+          ({
+            ...snapshotValue,
+            session: { ...snapshotValue.session, id, cwd: id === "s1" ? "/p" : "/q" },
+          }) as never,
+      );
+      const views = (selected: string) => (
+        <>
+          {[
+            ["s1", "/p"],
+            ["s2", "/q"],
+          ].map(([id, cwd]) => (
+            <ViewActivityProvider key={id} visible={selected === id} interactive={selected === id}>
+              <div
+                style={{ visibility: selected === id ? "visible" : "hidden" }}
+                inert={selected !== id}
+                aria-hidden={selected !== id || undefined}
+              >
+                <WorkPage id={id!} cwd={cwd!} onBack={() => {}} onOpenSettings={() => {}} />
+              </div>
+            </ViewActivityProvider>
+          ))}
+        </>
+      );
+      const view = render(views("s1"));
+      const first = view.container.querySelector<HTMLElement>('[data-work-session="s1"]')!;
+      const second = view.container.querySelector<HTMLElement>('[data-work-session="s2"]')!;
+      await within(first).findByText("starting research");
+      fireEvent.click(within(first).getByRole("button", { name: "Files browser" }));
+      const outer = within(first).getByRole("separator", { name: "Resize panel" });
+      const inner = within(first).getByRole("separator", { name: "Resize file tree" });
+      const row = first.querySelector<HTMLElement>("[data-work-layout]")!;
+      const area = inner.parentElement!;
+      const outerObserver = observerFor(row)!;
+      const innerObserver = observerFor(area)!;
+      let outerWidth = 1600;
+      let innerWidth = 900;
+      row.style.paddingLeft = "8px";
+      row.style.paddingRight = "8px";
+      Object.defineProperty(row, "clientWidth", { configurable: true, get: () => outerWidth + 16 });
+      Object.defineProperty(area, "clientWidth", { configurable: true, get: () => innerWidth });
+      act(() => {
+        outerObserver.__fire(outerWidth);
+        innerObserver.__fire(innerWidth);
+      });
+      if (touched) fireEvent.keyDown(outer, { key: "End" });
+      fireEvent.keyDown(inner, { key: "End" });
+      expect(outer).toHaveAttribute("aria-valuenow", touched ? "1192" : "800");
+      expect(inner).toHaveAttribute("aria-valuenow", "660");
+      view.rerender(views("s2"));
+      within(second).getByRole("textbox", { name: "Message" }).focus();
+      const focus = vi.spyOn(HTMLElement.prototype, "focus");
+      try {
+        outerWidth = 900;
+        innerWidth = 500;
+        vi.stubGlobal("innerWidth", 900);
+        fireEvent(window, new Event("resize"));
+        act(() => {
+          outerObserver.__fire(outerWidth);
+          innerObserver.__fire(innerWidth);
+        });
+        expect(inner).toHaveAttribute("aria-valuemax", "660");
+        // No second ResizeObserver notification: visibility itself preserves the box.
+        view.rerender(views("s1"));
+        expect(outer).toHaveAttribute("aria-valuemax", "492");
+        expect(outer).toHaveAttribute("aria-valuenow", touched ? "492" : "450");
+        expect(inner).toHaveAttribute("aria-valuemax", "260");
+        expect(area.querySelector("[data-files-tree]")).toHaveStyle({ width: "260px" });
+        expect(focus).not.toHaveBeenCalled();
+        view.rerender(views("s2"));
+        outerWidth = 1600;
+        innerWidth = 900;
+        vi.stubGlobal("innerWidth", 1600);
+        fireEvent(window, new Event("resize"));
+        act(() => {
+          outerObserver.__fire(outerWidth);
+          innerObserver.__fire(innerWidth);
+        });
+        view.rerender(views("s1"));
+        expect(outer).toHaveAttribute("aria-valuenow", touched ? "1192" : "800");
+        expect(inner).toHaveAttribute("aria-valuenow", "660");
+        outerWidth = 1200;
+        innerWidth = 700;
+        vi.stubGlobal("innerWidth", 1200);
+        fireEvent(window, new Event("resize"));
+        act(() => {
+          outerObserver.__fire(outerWidth);
+          innerObserver.__fire(innerWidth);
+        });
+        expect(outer).toHaveAttribute("aria-valuenow", touched ? "792" : "600");
+        expect(inner).toHaveAttribute("aria-valuemax", "460");
+        expect(inner).toHaveAttribute("aria-valuenow", "460");
+        expect(focus).not.toHaveBeenCalled();
+      } finally {
+        focus.mockRestore();
+      }
+    },
+  );
+
+  it("portals only the visible embedded Work actions and emits hydrated root metadata without token churn", async () => {
+    const slot = document.createElement("div");
+    document.body.append(slot);
+    const metadata = vi.fn();
+    const deleted = vi.fn();
+    const settingsRef = createRef<HTMLButtonElement>();
+    const work = (visible: boolean, interactive = visible) => (
+      <ViewActivityProvider visible={visible} interactive={interactive}>
+        <WorkPage
+          id="s1"
+          cwd="/p"
+          onBack={() => {}}
+          onOpenSettings={() => {}}
+          settingsButtonRef={settingsRef}
+          shell={{ actionsTarget: slot }}
+          onSessionMetadata={metadata}
+          onSessionDeleted={deleted}
+        />
+      </ViewActivityProvider>
+    );
+    try {
+      const view = render(work(true));
+      expect(metadata).not.toHaveBeenCalled();
+      await waitFor(() => expect(metadata).toHaveBeenCalledWith({ id: "s1", cwd: "/p", name: "", status: "ready" }));
+      expect(settingsRef.current).toBeNull();
+      expect(screen.queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
+      expect(within(slot).getByRole("button", { name: "Files browser" })).toBeVisible();
+      expect(view.container.querySelector("header")).toBeNull();
+      metadata.mockClear();
+      emitInAct({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: " more", contentIndex: 0 },
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      expect(metadata).not.toHaveBeenCalled();
+      view.rerender(work(false));
+      expect(slot).toBeEmptyDOMElement();
+      expect(unsubscribeFn).not.toHaveBeenCalled();
+      emitInAct({ type: "session_info_changed", name: "Renamed in background" });
+      await waitFor(() =>
+        expect(metadata).toHaveBeenLastCalledWith({
+          id: "s1",
+          cwd: "/p",
+          name: "Renamed in background",
+          status: "ready",
+        }),
+      );
+      emitInAct({ type: "session_info_changed", name: "" });
+      await waitFor(() =>
+        expect(metadata).toHaveBeenLastCalledWith({ id: "s1", cwd: "/p", name: "", status: "ready" }),
+      );
+      view.rerender(work(true, false));
+      fireEvent.click(within(slot).getByRole("button", { name: "Files browser" }));
+      expect(view.container.querySelector("[data-work-layout]")).toHaveAttribute("data-panel-open", "false");
+      emitInAct({ type: "session_deleted", sessionId: "s1" });
+      expect(deleted).toHaveBeenCalledWith("s1");
+    } finally {
+      slot.remove();
+    }
+  });
+
+  it("cancels outer and inner resize leases plus pending pagination when the retained root deactivates", async () => {
+    const page = deferred<Awaited<ReturnType<typeof api.getTranscriptPage>>>();
+    vi.mocked(api.getSnapshot).mockResolvedValue({ ...snapshotValue, history: { cursor: "older" } } as never);
+    vi.mocked(api.getTranscriptPage).mockReturnValue(page.promise);
+    const work = (active: boolean) => (
+      <ViewActivityProvider visible={active} interactive={active}>
+        <WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />
+      </ViewActivityProvider>
+    );
+    const view = renderFiles(work(true));
+    await screen.findByText("starting research");
+    fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+    expect(api.getTranscriptPage).toHaveBeenCalledOnce();
+    const signal = vi.mocked(api.getTranscriptPage).mock.calls[0]?.[3];
+    act(() => panelObserver().__fire(1200));
+    const outer = screen.getByRole("separator", { name: /resize panel/i });
+    const inner = screen.getByRole("separator", { name: /resize file tree/i });
+    startPanelResize(outer, 880, 1);
+    startPanelResize(inner, 500, 2);
+    expect(document.querySelectorAll("[data-resize-iframe-shield]")).toHaveLength(2);
+    expect(document.body.style.userSelect).toBe("none");
+    view.rerender(work(false));
+    expect(document.querySelectorAll("[data-resize-iframe-shield]")).toHaveLength(0);
+    expect(view.container.querySelector("[data-resize-snapshot]")).toBeNull();
+    expect(document.body.style.userSelect).not.toBe("none");
+    expect(signal?.aborted).toBe(true);
+    await act(async () =>
+      page.resolve({
+        timeline: [{ kind: "message", entryId: "older-row", message: { role: "user", content: "late history" } }],
+        history: {},
+        inlineUsage: [],
+      } as never),
+    );
+    expect(screen.queryByText("late history")).not.toBeInTheDocument();
+    const scroll = screen.getByLabelText("Conversation");
+    fireEvent.wheel(scroll, { deltaY: -90 });
+    fireEvent.scroll(scroll);
+    expect(api.getTranscriptPage).toHaveBeenCalledOnce();
+    expect(unsubscribeFn).not.toHaveBeenCalled();
+    expect(api.abortSession).not.toHaveBeenCalled();
+    view.rerender(work(true));
+    expect(screen.getByRole("button", { name: "Load earlier messages" })).toBeEnabled();
+  });
+
+  it("suspends the mobile Chat pane inside a visible root without losing its unpinned measurements", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    vi.mocked(api.getSnapshot).mockResolvedValue({ ...snapshotValue, history: { cursor: "older" } } as never);
+    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    const scroll = screen.getByLabelText("Conversation");
+    const input = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(input, { target: { value: "mobile draft" } });
+    act(() => metricStub(scroll, { clientHeight: 200, scrollHeight: 1000, scrollTop: 400 }));
+    fireEvent.wheel(scroll, { deltaY: -70 });
+    fireEvent.scroll(scroll);
+    const files = screen.getByRole("tab", { name: "Files" });
+    fireEvent.click(files);
+    expect(files).toHaveFocus();
+    fireTranscriptGrowth(view.container);
+    act(() =>
+      observerFor(scroll)?.__fireEntries([
+        { target: scroll, borderBoxSize: [{ inlineSize: 0, blockSize: 0 }] } as unknown as ResizeObserverEntry,
+      ]),
+    );
+    fireEvent.wheel(scroll, { deltaY: -70 });
+    expect(api.getTranscriptPage).not.toHaveBeenCalled();
+    expect(scroll.scrollTop).toBe(400);
+    expect(files).toHaveFocus();
+    fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
+    expect(screen.getByText("starting research")).toBeVisible();
+    expect(scroll.scrollTop).toBe(400);
+    expect(input).toHaveValue("mobile draft");
   });
 
   it("loads older root history and reads oversized entries only on explicit demand", async () => {
@@ -3911,7 +4341,7 @@ describe("WorkPage", () => {
       const chat = screen.getByRole("tabpanel", { name: "Chat" });
       const local = await within(chat).findByRole("button", { name: "manuscript/draft.md" });
       const outside = within(chat).getByRole("button", { name: "shared notes" });
-      const files = document.getElementById("work-panel-files")!;
+      const files = document.querySelector<HTMLElement>('[data-work-pane="files"]')!;
       const draft = screen.getByRole("textbox", { name: /message/i });
       fireEvent.change(draft, { target: { value: "Keep this draft" } });
       expect(files).not.toBeVisible();
@@ -4841,8 +5271,8 @@ describe("WorkPage", () => {
       render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
       const chat = screen.getByRole("tabpanel", { name: "Chat" });
       const row = chat.parentElement;
-      const files = document.getElementById("work-panel-files");
-      const agents = document.getElementById("work-panel-agents");
+      const files = document.querySelector('[data-work-pane="files"]');
+      const agents = document.querySelector('[data-work-pane="agents"]');
       expect(row).toHaveAttribute("data-panel-open", "false");
       expect(files).toHaveAttribute("hidden");
       expect(agents).toHaveAttribute("hidden");
@@ -4853,8 +5283,8 @@ describe("WorkPage", () => {
       expect(files).toHaveAttribute("hidden");
       expect(agents).toHaveAttribute("hidden");
       expect(chat).toBeVisible();
-      expect(document.getElementById("work-panel-files")).toBe(files);
-      expect(document.getElementById("work-panel-agents")).toBe(agents);
+      expect(document.querySelector('[data-work-pane="files"]')).toBe(files);
+      expect(document.querySelector('[data-work-pane="agents"]')).toBe(agents);
     },
   );
 
@@ -4875,8 +5305,8 @@ describe("WorkPage", () => {
     hydrateTranscript(view.container);
     await screen.findByText("starting research");
     expect(screen.getByRole("tabpanel", { name: "Chat" }).parentElement).toHaveAttribute("data-panel-open", "false");
-    expect(document.getElementById("work-panel-files")).toHaveAttribute("hidden");
-    expect(document.getElementById("work-panel-agents")).toHaveAttribute("hidden");
+    expect(document.querySelector('[data-work-pane="files"]')).toHaveAttribute("hidden");
+    expect(document.querySelector('[data-work-pane="agents"]')).toHaveAttribute("hidden");
     expect(screen.getByRole("tabpanel", { name: "Chat" })).toBeVisible();
   });
 
@@ -4884,7 +5314,7 @@ describe("WorkPage", () => {
     const user = userEvent.setup();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
-    const files = document.getElementById("work-panel-files");
+    const files = document.querySelector('[data-work-pane="files"]');
     await user.click(screen.getByRole("button", { name: "Files browser" }));
     const filter = screen.getByRole("textbox", { name: "Filter files" });
     await user.type(filter, "notes");
@@ -4892,7 +5322,7 @@ describe("WorkPage", () => {
     expect(screen.getByRole("region", { name: "Agent list" })).toBeVisible();
     expect(files).toHaveAttribute("hidden");
     await user.click(screen.getByRole("button", { name: "Files browser" }));
-    expect(document.getElementById("work-panel-files")).toBe(files);
+    expect(document.querySelector('[data-work-pane="files"]')).toBe(files);
     expect(screen.getByRole("textbox", { name: "Filter files" })).toBe(filter);
     expect(filter).toHaveValue("notes");
     expect(api.listEntries).toHaveBeenCalledExactlyOnceWith("/p");
@@ -4980,7 +5410,7 @@ describe("WorkPage", () => {
     await screen.findByText("starting research");
     const region = screen.getByRole("region", { name: /file browser/i });
     expect(region.className).not.toContain("overflow-hidden");
-    const wrapper = region.querySelector("#work-panel-files");
+    const wrapper = region.querySelector('[data-work-pane="files"]');
     expect(wrapper?.className).toContain("overflow-hidden");
     const handle = screen.getByRole("separator", { name: /resize panel/i });
     expect(region.contains(handle)).toBe(true);
@@ -4992,7 +5422,7 @@ describe("WorkPage", () => {
     renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const filesRegion = screen.getByRole("region", { name: /file browser/i });
-    const filesWrapper = filesRegion.querySelector("#work-panel-files");
+    const filesWrapper = filesRegion.querySelector('[data-work-pane="files"]');
     expect(filesWrapper).toBeTruthy();
     expect(filesWrapper).not.toHaveClass("animate-v2-fade-in");
     expect(filesRegion.className).not.toContain("transition-[width,opacity]");

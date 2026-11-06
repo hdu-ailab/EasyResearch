@@ -27,7 +27,7 @@ export function FileRenameDialog({
   const close = () => {
     if (!inFlight.current) onClose();
   };
-  const { zIndex, dialogProps } = useModalLayer(close, form);
+  const { layerProps, dialogProps, isTop } = useModalLayer(close, form);
   useLayoutEffect(() => {
     live.current = true;
     return () => {
@@ -35,7 +35,7 @@ export function FileRenameDialog({
     };
   }, []);
   const submit = async () => {
-    if (inFlight.current || !name.trim()) return;
+    if (!isTop || inFlight.current || !name.trim()) return;
     inFlight.current = true;
     setPending(true);
     setError(null);
@@ -56,7 +56,7 @@ export function FileRenameDialog({
     <div
       role="presentation"
       className="fixed inset-0 flex items-center justify-center bg-v2-grey-1200/20 p-4"
-      style={{ zIndex }}
+      {...layerProps}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) close();
       }}

@@ -1,0 +1,200 @@
+.er-session-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 0%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.er-session-tabs-strip {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  padding: 3px;
+}
+
+.er-session-tabs-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.er-session-tab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  width: clamp(112px, 13vw, 192px);
+  height: 30px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-v2-text-text-muted);
+  box-shadow: inset 0 0 0 1px transparent;
+  transition:
+    background-color 120ms,
+    color 120ms,
+    box-shadow 120ms;
+}
+
+.er-session-tab:hover {
+  background: var(--color-v2-background-bg-layer);
+}
+.er-session-tab[data-active="true"] {
+  color: var(--color-v2-text-text-base);
+  background: var(--color-v2-background-bg-layer);
+  box-shadow: inset 0 -2px var(--color-v2-blue-500);
+}
+.er-session-tab[data-dragging="true"] {
+  opacity: 0.6;
+}
+.er-session-tab[data-drop-target="true"] {
+  outline: 1px solid var(--color-v2-blue-500);
+}
+
+.er-session-tab-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 5px 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+.er-session-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.er-session-tab-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-v2-text-text-faint);
+  opacity: 0.5;
+}
+.er-session-tab-dot[data-status="running"],
+.er-session-tab-dot[data-status="loading"] {
+  background: var(--color-v2-blue-500);
+  opacity: 1;
+}
+.er-session-tab-dot[data-status="error"] {
+  background: var(--color-v2-status-error);
+  opacity: 1;
+}
+
+.er-session-tab-close,
+.er-session-tabs-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 5px;
+  color: var(--color-v2-text-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.er-session-tab-close {
+  width: 24px;
+  height: 26px;
+  margin-right: 2px;
+  opacity: 0;
+}
+.er-session-tabs-new {
+  width: 28px;
+  height: 30px;
+}
+.er-session-tab:hover .er-session-tab-close,
+.er-session-tab:focus-within .er-session-tab-close {
+  opacity: 1;
+}
+.er-session-tab-close:hover,
+.er-session-tabs-new:hover {
+  color: var(--color-v2-text-text-base);
+  background: var(--color-v2-background-bg-layer-2);
+}
+.er-session-tab-select:active,
+.er-session-tab-close:active,
+.er-session-tabs-new:active {
+  background: var(--color-v2-background-bg-layer-2);
+}
+.er-session-tabs button:focus-visible {
+  outline: 2px solid var(--color-v2-blue-500);
+  outline-offset: -2px;
+}
+
+.er-session-tabs[data-disabled="true"] button {
+  cursor: default;
+}
+.er-session-tabs[data-disabled="true"] .er-session-tab:hover {
+  background: transparent;
+}
+.er-session-tabs[data-disabled="true"] .er-session-tab[data-active="true"] {
+  background: var(--color-v2-background-bg-layer);
+}
+.er-session-tabs button:disabled:hover {
+  background: transparent;
+}
+
+.er-session-tab-tooltip {
+  position: fixed;
+  z-index: 80;
+  pointer-events: auto;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(480px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 12px;
+  border: 1px solid var(--color-v2-grey-300);
+  border-radius: 8px;
+  background: var(--color-v2-background-bg-base);
+  color: var(--color-v2-text-text-base);
+  box-shadow: 0 6px 20px #0002;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.er-session-tab-tooltip-name {
+  font-weight: 600;
+}
+.er-session-tab-tooltip-cwd {
+  margin-top: 4px;
+  color: var(--color-v2-text-text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .er-session-tab-close {
+    opacity: 1;
+    min-width: 28px;
+    height: 30px;
+  }
+  .er-session-tab {
+    min-height: 34px;
+  }
+  .er-session-tabs-new {
+    min-width: 32px;
+    min-height: 34px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .er-session-tab {
+    transition: none;
+  }
+}

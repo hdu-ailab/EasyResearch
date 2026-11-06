@@ -1,9 +1,26 @@
-import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
+import {
+  elementScroll,
+  measureElement,
+  observeElementOffset,
+  observeElementRect,
+  useVirtualizer,
+} from "@tanstack/react-virtual";
 import { BookOpen, ChevronLeft, ChevronRight, Copy, Pencil } from "lucide-react";
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  memo,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ApiUsageStatisticsDto, ApiUsageTotalsDto, CompactionStateDto } from "../../../web/contracts";
 import { isScrollKeyTarget, normalizeWheelDelta, scrollKey, scrollKeyOwner } from "../hooks/scrollGesture";
 import { useAutoScroll } from "../hooks/useAutoScroll";
+import { canFocusElement } from "../hooks/useModalLayer";
 import { useScrollGesture } from "../hooks/useScrollGesture";
 import { agentDisplayName } from "../i18n/agents";
 import type { MessageKey } from "../i18n/messages";
@@ -38,6 +55,7 @@ import {
   TranscriptActivity,
 } from "./TranscriptActivityRows";
 import "./chat-transcript.css";
+import { useViewActivityRef } from "../view-activity";
 
 export interface ChatTranscriptProps {
   messages: SessionMessageView[];
@@ -103,9 +121,10 @@ function EditMessageDraft({
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composing = useRef(false);
+  const activity = useViewActivityRef();
   useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
+    if (activity.current.interactive && canFocusElement(textareaRef.current)) textareaRef.current.focus();
+  }, [activity]);
   return (
     <div className="flex w-full max-w-[85%] flex-col items-end gap-1.5">
       <textarea
@@ -548,6 +567,8 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   ref,
 ) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
+  const { visible } = activity.current;
   const { preferences } = usePreferences();
   const detail = useMemo(() => getTimelineDetail(preferences), [preferences]);
   const hint = emptyHint ?? t("transcript.sendToStart");
@@ -672,7 +693,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
         scrollStateFrame.current = null;
         const target = scrollStateEl.current;
         scrollStateEl.current = null;
-        if (!target) return;
+        if (!target || !activity.current.visible) return;
         const max = target.scrollHeight - target.clientHeight;
         const distance = max - target.scrollTop;
         const overflow = max > 1;
@@ -686,7 +707,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
         );
       });
     },
-    [jumpThreshold],
+    [jumpThreshold, activity],
   );
 
   const rowKey = useCallback((entry: PresentationEntry | undefined, index: number) => {
@@ -694,6 +715,8 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     return "kind" in entry && entry.kind === "pending" ? "pending" : entry.key;
   }, []);
 
+  const reportRect = useRef<((rect: { width: number; height: number }) => void) | null>(null);
+  const reportOffset = useRef<((offset: number, scrolling: boolean) => void) | null>(null);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: entries.length,
     getScrollElement: () => scrollRef.current,
@@ -706,7 +729,25 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     paddingStart: historyCursor ? 64 : 32,
     paddingEnd: 64,
     initialOffset: () => (shouldAnchorBottom() ? Number.MAX_SAFE_INTEGER : 0),
+    observeElementRect: (instance, callback) => {
+      reportRect.current = callback;
+      return observeElementRect(instance, (rect) => {
+        if (activity.current.visible && rect.height > 0) callback(rect);
+      });
+    },
+    observeElementOffset: (instance, callback) => {
+      reportOffset.current = callback;
+      return observeElementOffset(instance, (offset, scrolling) => {
+        if (activity.current.visible) callback(offset, scrolling);
+      });
+    },
+    measureElement: (element, entry, instance) => {
+      const cached = instance.itemSizeCache.get(instance.options.getItemKey(instance.indexFromElement(element)));
+      if (!activity.current.visible) return cached ?? ROW_ESTIMATE;
+      return measureElement(element, entry, instance) || cached || ROW_ESTIMATE;
+    },
     scrollToFn: (offset, options, instance) => {
+      if (!activity.current.visible) return;
       // Expose the computed range before core writes an anchor correction so the browser does not clamp it to the old height.
       const content = contentRef.current;
       if (content) content.style.height = `${instance.getTotalSize()}px`;
@@ -727,12 +768,12 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   };
 
   const loadOlder = useCallback(() => {
-    if (!historyCursor || historyLoading || !onLoadOlder) return;
+    if (!activity.current.interactive || !historyCursor || historyLoading || !onLoadOlder) return;
     // The virtualizer's key-based anchorTo:"end" already preserves prepends,
     // including later size measurements. An absolute scroll here races that
     // correction; only pause live following before publishing the older page.
     void onLoadOlder(pauseAutoScroll);
-  }, [historyCursor, historyLoading, onLoadOlder, pauseAutoScroll]);
+  }, [historyCursor, historyLoading, onLoadOlder, pauseAutoScroll, activity]);
 
   const measureRow = useCallback(
     (element: HTMLDivElement | null) => {
@@ -772,11 +813,12 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   );
 
   const resumeScroll = useCallback(() => {
+    if (!activity.current.interactive) return;
     autoScrollResume();
     virtualizer.scrollToEnd();
     const el = scrollRef.current;
     if (el) scheduleScrollState(el);
-  }, [autoScrollResume, scheduleScrollState, virtualizer]);
+  }, [autoScrollResume, scheduleScrollState, virtualizer, activity]);
 
   useImperativeHandle(
     ref,
@@ -785,6 +827,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
         resumeScroll();
       },
       beginResizeSnapshot() {
+        if (!activity.current.interactive) return;
         const content = contentRef.current;
         if (!content) return;
         const width = Math.round(content.getBoundingClientRect().width);
@@ -799,22 +842,24 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
         delete content.dataset.resizeSnapshot;
       },
     }),
-    [resumeScroll],
+    [resumeScroll, activity],
   );
 
   const handleScroll = useCallback(
     (event: React.UIEvent<HTMLDivElement>) => {
+      if (!activity.current.interactive) return;
       scheduleScrollState(event.currentTarget);
       if (!hasScrollGesture()) return;
       handleAutoScroll();
       markScrollGesture(event.currentTarget);
       if (event.currentTarget.scrollTop < 160 && !historyError) loadOlder();
     },
-    [handleAutoScroll, hasScrollGesture, markScrollGesture, scheduleScrollState, historyError, loadOlder],
+    [handleAutoScroll, hasScrollGesture, markScrollGesture, scheduleScrollState, historyError, loadOlder, activity],
   );
 
   const handleWheel = useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
+      if (!activity.current.interactive) return;
       const root = event.currentTarget;
       const delta = normalizeWheelDelta({
         deltaY: event.deltaY,
@@ -831,11 +876,12 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
       )
         loadOlder();
     },
-    [markBoundaryWheel, historyError, loadOlder],
+    [markBoundaryWheel, historyError, loadOlder, activity],
   );
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!activity.current.interactive) return;
       const key = scrollKey(event);
       if (!key) return;
       const root = scrollRef.current;
@@ -872,7 +918,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
           break;
       }
     },
-    [markScrollGesture],
+    [markScrollGesture, activity],
   );
 
   const bindScrollRef = useCallback(
@@ -896,10 +942,22 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   // to the bottom on its first render (initialOffset only shapes the first
   // virtual range, not the real scroll position).
   useEffect(() => {
-    if (entries.length === 0) return;
+    if (!visible || entries.length === 0) return;
     if (!shouldAnchorBottom() || hasScrollGesture()) return;
     virtualizer.scrollToEnd();
-  }, [entries.length, hasScrollGesture, shouldAnchorBottom, virtualizer]);
+  }, [entries.length, hasScrollGesture, shouldAnchorBottom, virtualizer, visible]);
+
+  // Keep the virtualizer enabled: disabling it destroys row measurements. Re-admit
+  // geometry on return, preserving unpinned reading intent and the native offset.
+  useLayoutEffect(() => {
+    const root = scrollRef.current;
+    if (!visible || !root) return;
+    const { width, height } = root.getBoundingClientRect();
+    if (height > 0) reportRect.current?.({ width, height });
+    reportOffset.current?.(root.scrollTop, false);
+    contentRef.current?.querySelectorAll<HTMLDivElement>("[data-index]").forEach(virtualizer.measureElement);
+    scheduleScrollState(root);
+  }, [visible, virtualizer, scheduleScrollState]);
 
   return (
     <div className="er-chat-transcript flex min-h-0 flex-1 flex-col">
@@ -933,9 +991,11 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
           aria-label={t("transcript.conversation")}
           onScroll={handleScroll}
           onWheel={handleWheel}
-          onPointerDown={(event) => markScrollGesture(event.target)}
+          onPointerDown={(event) => {
+            if (activity.current.interactive) markScrollGesture(event.target);
+          }}
           onPointerMove={(event) => {
-            if (event.buttons === 1) markScrollGesture(event.target);
+            if (activity.current.interactive && event.buttons === 1) markScrollGesture(event.target);
           }}
           onKeyDown={handleKeyDown}
           onClick={handleInteraction}

@@ -4,6 +4,7 @@ import { readFileContent } from "../api";
 import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
 import { useI18n } from "../i18n/useI18n";
+import { useViewActivityRef } from "../view-activity";
 import { FilesPanel } from "./FilesPanel";
 import { type FileTab, FileTabs } from "./FileTabs";
 import { FileTreeSplit } from "./FileTreeSplit";
@@ -45,6 +46,28 @@ function FileBrowserScope({
   onFileEventsConsumed,
 }: FileBrowserProps) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
+  const browserRef = useRef<HTMLDivElement>(null);
+  const { visible } = activity.current;
+  useEffect(() => {
+    if (visible) return;
+    browserRef.current?.querySelectorAll("video").forEach((video) => {
+      video.pause();
+    });
+    const releaseOwnedFullscreen = async () => {
+      if (activity.current.visible) return;
+      const fullscreen = document.fullscreenElement;
+      if (fullscreen && browserRef.current?.contains(fullscreen)) await document.exitFullscreen?.();
+    };
+    const onFullscreenChange = () => {
+      // Fullscreen admission may finish after this pane was hidden. Browser
+      // rejection must not escape, and every attempt rechecks the current owner.
+      void releaseOwnedFullscreen().catch(() => {});
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    onFullscreenChange();
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, [visible, activity]);
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [contents, setContents] = useState<Record<string, FileContentDto>>({});
@@ -227,7 +250,7 @@ function FileBrowserScope({
   );
 
   return (
-    <div className="flex h-full min-w-0 flex-col bg-v2-background-bg-base">
+    <div ref={browserRef} className="flex h-full min-w-0 flex-col bg-v2-background-bg-base">
       <FileTabs
         tabs={tabs}
         active={isMobile && treeOpened ? null : activeTab}

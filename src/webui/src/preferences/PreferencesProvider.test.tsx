@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readDesktopPreferenceBlob, writeDesktopPreferenceBlob } from "../../../desktop/preferences-store";
 import { STORAGE_KEY } from "../preferences";
@@ -121,6 +122,7 @@ describe("PreferencesProvider", () => {
       autoExpandTools: true,
       expandSubagentOutput: false,
       timelineDetail: getTimelineDetail({}),
+      sessionTabs: [],
     });
   });
 
@@ -182,6 +184,7 @@ describe("PreferencesProvider", () => {
           studioTheme,
           autoExpandTools: true,
           timelineDetail: getTimelineDetail(JSON.parse(oldBlob)),
+          sessionTabs: [],
         });
         first.unmount();
 
@@ -281,6 +284,42 @@ describe("PreferencesProvider", () => {
 
     expect(screen.getByTestId("tools-expanded").textContent).toBe("true");
     expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it("keeps startup-owned tabs local while applying external appearance and chat preferences", async () => {
+    const original = [{ id: "original", cwd: "/original", name: "Original" }];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessionTabs: original }));
+    function StartupOwner() {
+      const { preferences } = usePreferences();
+      const [tabs] = useState(() => preferences.sessionTabs ?? []);
+      return <output aria-label="startup tabs">{JSON.stringify(tabs)}</output>;
+    }
+    render(
+      <PreferencesProvider>
+        <Probe />
+        <StartupOwner />
+      </PreferencesProvider>,
+    );
+    const owner = screen.getByLabelText("startup tabs");
+    const external = [{ id: "external", cwd: "/external" }];
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ sessionTabs: external, studioTheme: "dark", autoExpandTools: true }),
+    );
+    const mirror = vi.fn();
+    window.easyresearchDesktop = { platform: "linux", version: "test", persistWebUiPreferences: mirror };
+    act(() => window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY })));
+    expect(owner.textContent).toBe(JSON.stringify(original));
+    expect(screen.getByTestId("theme")).toHaveTextContent("dark");
+    expect(screen.getByTestId("tools-expanded")).toHaveTextContent("true");
+    expect(mirror).not.toHaveBeenCalled();
+    await userEvent.setup().click(screen.getByRole("button", { name: "use light" }));
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toMatchObject({
+      sessionTabs: external,
+      studioTheme: "light",
+    });
+    expect(owner.textContent).toBe(JSON.stringify(original));
+    expect(mirror).toHaveBeenCalledOnce();
   });
 
   it("keeps same-tab state when persistence throws", async () => {

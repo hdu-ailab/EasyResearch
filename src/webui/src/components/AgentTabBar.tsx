@@ -2,9 +2,11 @@ import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useLayoutEffect, useRef } from "react";
 import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
+import { canFocusElement } from "../hooks/useModalLayer";
 import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { childTabLabel, type SubagentTabState } from "../subagent-tabs";
+import { useViewActivityRef } from "../view-activity";
 import { ActionGlyph } from "./studio/ActionGlyph";
 
 export type AgentStatus = "idle" | "working" | "error";
@@ -39,17 +41,23 @@ export function AgentTabBar({
   trailing,
 }: AgentTabBarProps) {
   const { t } = useI18n();
+  const activity = useViewActivityRef();
   const researchAssistantFocused = activeKey === RESEARCH_ASSISTANT_AGENT;
   const tabButtons = useRef(new Map<string, HTMLButtonElement>());
   const focusedInvocation = useRef<string | null>(null);
 
   useLayoutEffect(() => {
+    if (!activity.current.interactive) {
+      focusedInvocation.current = null;
+      return;
+    }
     const active = tabs.find((tab) => tab.key === activeKey);
     if (!active) return;
     const invocation = JSON.stringify([active.ownerSessionId, active.toolCallId, active.step]);
     if (focusedInvocation.current !== invocation || document.activeElement !== document.body) return;
-    tabButtons.current.get(activeKey)?.focus();
-  }, [activeKey, tabs]);
+    const button = tabButtons.current.get(activeKey) ?? null;
+    if (canFocusElement(button)) button.focus();
+  }, [activeKey, tabs, activity]);
 
   return (
     <div className="er-agent-tabs flex shrink-0 items-start gap-2 px-3 py-2">
@@ -61,7 +69,9 @@ export function AgentTabBar({
           type="button"
           aria-pressed={researchAssistantFocused}
           aria-label={`${t("work.agentChip")} ${agentDisplayName(t, RESEARCH_ASSISTANT_AGENT)}`}
-          onClick={() => onSelect(RESEARCH_ASSISTANT_AGENT)}
+          onClick={() => {
+            if (activity.current.interactive) onSelect(RESEARCH_ASSISTANT_AGENT);
+          }}
           onFocus={() => {
             focusedInvocation.current = null;
           }}
@@ -101,7 +111,9 @@ export function AgentTabBar({
                 }}
                 aria-pressed={focused}
                 aria-label={`${t("work.agentChip")} ${label}`}
-                onClick={() => onSelect(tab.key)}
+                onClick={() => {
+                  if (activity.current.interactive) onSelect(tab.key);
+                }}
                 onFocus={() => {
                   focusedInvocation.current = invocation;
                 }}
@@ -120,6 +132,7 @@ export function AgentTabBar({
                   aria-label={actionLabel}
                   title={actionLabel}
                   onClick={() => {
+                    if (!activity.current.interactive) return;
                     if (tab.running) onStop(tab.toolCallId);
                     if (tab.retained) onClose(tab.key);
                   }}

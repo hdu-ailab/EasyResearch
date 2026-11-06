@@ -1,9 +1,11 @@
-import { type RefObject, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, type RefObject, useLayoutEffect, useRef, useState } from "react";
+import { useViewActivityRef } from "../view-activity";
 
 interface ModalEntry {
   z: number;
   onClose: () => void;
   root: () => HTMLElement | null;
+  active: () => boolean;
   restoreFocus: HTMLElement | null;
   isTop: boolean;
   setIsTop: (isTop: boolean) => void;
@@ -12,6 +14,11 @@ interface ModalEntry {
 export interface ModalLayerResult {
   zIndex: number;
   isTop: boolean;
+  layerProps: {
+    style: CSSProperties;
+    "aria-hidden": true | undefined;
+    inert: true | undefined;
+  };
   dialogProps: {
     "aria-modal": true | undefined;
     "aria-hidden": true | undefined;
@@ -25,6 +32,7 @@ let nextZ = 50;
 function topModal(): ModalEntry | null {
   let top: ModalEntry | null = null;
   for (const entry of openModals) {
+    if (!entry.active()) continue;
     if (!top || entry.z > top.z) top = entry;
   }
   return top;
@@ -64,6 +72,13 @@ export function hasModalAbove(root: HTMLElement | null): boolean {
   const entry = registeredModal(root);
   const top = topModal();
   return entry !== null && top !== null && top.z > entry.z;
+}
+
+/** Focus from asynchronous Work completions cannot escape the active modal or enter an inert view. */
+export function canFocusElement(element: HTMLElement | null): element is HTMLElement {
+  if (!element?.isConnected || element.closest('[hidden], [aria-hidden="true"], [inert]')) return false;
+  const root = topModal()?.root();
+  return !root || root.contains(element);
 }
 
 export function requestModalCloseAbove(root: HTMLElement | null): boolean {
@@ -128,6 +143,7 @@ function focusableElements(root: HTMLElement): HTMLElement[] {
 }
 
 function focusFirst(root: HTMLElement): void {
+  if (!root.isConnected || root.closest('[hidden], [aria-hidden="true"], [inert]')) return;
   const first = focusableElements(root)[0];
   if (first) {
     first.focus({ preventScroll: true });
@@ -154,18 +170,25 @@ export function useModalLayer<T extends HTMLElement = HTMLElement>(
   onClose: () => void,
   rootRef?: RefObject<T | null>,
 ): ModalLayerResult {
+  const activity = useViewActivityRef();
+  const active = activity.current.interactive;
   const [z] = useState(() => ++nextZ);
   const [isTop, setIsTop] = useState(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
   useLayoutEffect(() => {
-    const active = document.activeElement;
+    if (!active) {
+      setIsTop(false);
+      return;
+    }
+    const opener = document.activeElement;
     const entry: ModalEntry = {
       z,
       onClose: () => onCloseRef.current(),
       root: () => rootRef?.current ?? null,
-      restoreFocus: active instanceof HTMLElement && active !== document.body ? active : null,
+      active: () => activity.current.interactive,
+      restoreFocus: opener instanceof HTMLElement && opener !== document.body ? opener : null,
       isTop: false,
       setIsTop,
     };
@@ -176,7 +199,7 @@ export function useModalLayer<T extends HTMLElement = HTMLElement>(
       document.addEventListener("focusin", onFocusIn);
     }
     const root = entry.root();
-    if (root && !root.contains(document.activeElement)) focusFirst(root);
+    if (root && entry.isTop && !root.contains(document.activeElement)) focusFirst(root);
     return () => {
       const wasTop = topModal() === entry;
       openModals.delete(entry);
@@ -185,22 +208,28 @@ export function useModalLayer<T extends HTMLElement = HTMLElement>(
         document.removeEventListener("keydown", onKeyDown);
         document.removeEventListener("focusin", onFocusIn);
       }
-      if (!wasTop) return;
+      if (!wasTop || !activity.current.interactive) return;
       const remaining = topModal();
       const remainingRoot = remaining?.root() ?? null;
-      if (entry.restoreFocus?.isConnected && (!remainingRoot || remainingRoot.contains(entry.restoreFocus))) {
+      if (canFocusElement(entry.restoreFocus) && (!remainingRoot || remainingRoot.contains(entry.restoreFocus))) {
         entry.restoreFocus.focus({ preventScroll: true });
       } else if (remainingRoot) {
         focusFirst(remainingRoot);
       }
     };
-  }, [rootRef, z]);
+  }, [rootRef, z, active, activity]);
 
   return {
     zIndex: z,
-    isTop,
-    dialogProps: isTop
-      ? { "aria-modal": true, "aria-hidden": undefined, inert: undefined }
-      : { "aria-modal": undefined, "aria-hidden": true, inert: true },
+    isTop: active && isTop,
+    layerProps: {
+      style: { zIndex: z, visibility: active ? undefined : "hidden" },
+      "aria-hidden": active ? undefined : true,
+      inert: active ? undefined : true,
+    },
+    dialogProps:
+      active && isTop
+        ? { "aria-modal": true, "aria-hidden": undefined, inert: undefined }
+        : { "aria-modal": undefined, "aria-hidden": true, inert: true },
   };
 }

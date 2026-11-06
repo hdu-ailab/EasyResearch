@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import packageJson from "../../../../package.json";
-import type { ActiveSessionDto, SessionSummaryDto } from "../../../web/contracts";
+import type { ActiveSessionDto, SessionSummaryDto, StatusDto } from "../../../web/contracts";
 import {
   checkForUpdate,
   createSession,
@@ -20,19 +20,50 @@ import { HomeWorkspace } from "../components/HomeWorkspace";
 import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { Topbar } from "../components/Topbar";
 import { WorkspaceDialog, type WorkspaceDialogProps } from "../components/WorkspaceDialog";
+import type { HomeCatalogMutation } from "../hooks/useSessionShell";
 import { useI18n } from "../i18n/useI18n";
+import { useViewActivity } from "../view-activity";
 import { buildHomeProjectGroups } from "./home-view-model";
 
 export interface HomePageProps {
   onOpenSession: (session: { id: string; cwd: string }) => void;
   onOpenSettings: () => void;
   settingsButton: React.ReactNode;
+  embedded?: boolean;
+  onUpdateAvailable?(version: string | null): void;
+  onStatusRequest?(): (status: StatusDto) => void;
+  onCatalogMutationStart?(): HomeCatalogMutation;
+  onSessionOpenStart?(id: string): () => boolean;
 }
 
 const MONITOR_POLL_MS = 5000;
 
-export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
+export function HomePage({
+  onOpenSession,
+  settingsButton,
+  embedded = false,
+  onUpdateAvailable,
+  onStatusRequest,
+  onCatalogMutationStart,
+  onSessionOpenStart,
+}: HomePageProps) {
   const { t } = useI18n();
+  const { interactive } = useViewActivity();
+  const activity = useRef({ interactive, epoch: 0 });
+  if (activity.current.interactive !== interactive)
+    activity.current = { interactive, epoch: activity.current.epoch + 1 };
+  const callbacks = useRef({ onUpdateAvailable, onStatusRequest, onCatalogMutationStart, onSessionOpenStart });
+  callbacks.current = { onUpdateAvailable, onStatusRequest, onCatalogMutationStart, onSessionOpenStart };
+  const openingRequest = useRef(0);
+  const openingOwner = useCallback(() => {
+    const request = ++openingRequest.current;
+    const epoch = activity.current.epoch;
+    return () =>
+      mounted.current &&
+      activity.current.interactive &&
+      activity.current.epoch === epoch &&
+      openingRequest.current === request;
+  }, []);
   const [status, setStatus] = useState<{
     sessions: SessionSummaryDto[];
     activeSessions: ActiveSessionDto[];
@@ -54,33 +85,52 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
     cwd: string;
     mode: WorkspaceDialogProps["mode"];
     sessionId?: string;
+    mutation?: HomeCatalogMutation;
+    ownsSelection?: () => boolean;
+    ownsTab?: () => boolean;
   } | null>(null);
-  const reportFailure = useCallback((failure: unknown, sessionId?: string) => {
-    if (!mounted.current) return;
-    const cwd = workspaceMissingCwd(failure);
-    if (cwd) setWorkspaceDialog({ cwd, mode: "missing", sessionId });
-    else setError(failure instanceof Error ? failure.message : String(failure));
-  }, []);
+  const reportFailure = useCallback(
+    (failure: unknown, ownsSelection: () => boolean, sessionId?: string, ownsTab: () => boolean = () => true) => {
+      if (!ownsSelection() || !ownsTab()) return;
+      const cwd = workspaceMissingCwd(failure);
+      if (cwd)
+        setWorkspaceDialog({
+          cwd,
+          mode: "missing",
+          sessionId,
+          mutation: callbacks.current.onCatalogMutationStart?.(),
+          ownsSelection,
+          ownsTab,
+        });
+      else setError(failure instanceof Error ? failure.message : String(failure));
+    },
+    [],
+  );
   const selectProject = useCallback(
     async (cwd: string | null) => {
       const request = ++selectionRequest.current;
+      const ownsSelection = openingOwner();
       setSelectedCwd(cwd);
       if (cwd === null) return;
       try {
         await validateWorkspace(cwd);
       } catch (failure) {
-        if (request === selectionRequest.current) reportFailure(failure);
+        reportFailure(failure, () => request === selectionRequest.current && ownsSelection());
       }
     },
-    [reportFailure],
+    [reportFailure, openingOwner],
   );
 
   const refresh = useCallback(() => {
     const request = ++statusRequest.current;
+    const publish = callbacks.current.onStatusRequest?.();
     setError(null);
     listStatus()
       .then((next) => {
-        if (request === statusRequest.current) setStatus(next);
+        if (request === statusRequest.current) {
+          setStatus(next);
+          publish?.(next);
+        }
       })
       .catch((e: unknown) => {
         if (request === statusRequest.current) setError(e instanceof Error ? e.message : String(e));
@@ -101,7 +151,10 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
     let active = true;
     checkForUpdate()
       .then((result) => {
-        if (active) setLatestVersion(result.latestVersion);
+        if (active) {
+          setLatestVersion(result.latestVersion);
+          callbacks.current.onUpdateAvailable?.(result.latestVersion);
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -116,42 +169,48 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
 
   const startSession = useCallback(
     async (cwd: string) => {
+      const ownsSelection = openingOwner();
       setCreating(true);
       setError(null);
       try {
         const dto = await createSession(cwd);
-        onOpenSession({ id: dto.id, cwd: dto.cwd });
+        if (ownsSelection()) onOpenSession({ id: dto.id, cwd: dto.cwd });
       } catch (e) {
-        reportFailure(e);
+        reportFailure(e, ownsSelection);
       } finally {
         setCreating(false);
       }
     },
-    [onOpenSession, reportFailure],
+    [onOpenSession, reportFailure, openingOwner],
   );
 
   const openHistory = useCallback(
     async (session: SessionSummaryDto) => {
+      const ownsSelection = openingOwner();
+      const ownsTab = callbacks.current.onSessionOpenStart?.(session.id) ?? (() => true);
       try {
         const dto = await openSession(session.path);
-        onOpenSession({ id: dto.id, cwd: dto.cwd });
+        if (dto.id !== session.id) throw new Error("The opened session does not match the requested session");
+        if (ownsSelection() && ownsTab()) onOpenSession({ id: dto.id, cwd: dto.cwd });
       } catch (e) {
-        reportFailure(e, session.id);
+        reportFailure(e, ownsSelection, session.id, ownsTab);
       }
     },
-    [onOpenSession, reportFailure],
+    [onOpenSession, reportFailure, openingOwner],
   );
 
   const openActive = useCallback(
     async (session: ActiveSessionDto) => {
+      const ownsSelection = openingOwner();
+      const ownsTab = callbacks.current.onSessionOpenStart?.(session.id) ?? (() => true);
       try {
         await touchSession(session.id);
-        onOpenSession({ id: session.id, cwd: session.cwd });
+        if (ownsSelection() && ownsTab()) onOpenSession({ id: session.id, cwd: session.cwd });
       } catch (e) {
-        reportFailure(e, session.id);
+        reportFailure(e, ownsSelection, session.id, ownsTab);
       }
     },
-    [onOpenSession, reportFailure],
+    [onOpenSession, reportFailure, openingOwner],
   );
 
   const disconnectActive = useCallback(
@@ -178,28 +237,32 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <Topbar
-        home={{ active: true }}
-        leading={
-          <span className="shrink-0 rounded-md border border-v2-grey-300 bg-v2-background-bg-base px-1 py-0.5 font-mono text-[10px] text-v2-text-text-faint min-[360px]:px-1.5 min-[360px]:text-[11px]">
-            v{packageJson.version}
-          </span>
-        }
-        center={
-          latestVersion ? (
-            <span
-              role="status"
-              title={`${t("home.updateAvailable")} v${latestVersion}`}
-              className="truncate text-[12px] font-medium text-v2-text-text-accent"
-            >
-              {t("home.updateAvailable")} <span className="font-mono">v{latestVersion}</span>
+      {!embedded && (
+        <Topbar
+          home={{ active: true }}
+          leading={
+            <span className="shrink-0 rounded-md border border-v2-grey-300 bg-v2-background-bg-base px-1 py-0.5 font-mono text-[10px] text-v2-text-text-faint min-[360px]:px-1.5 min-[360px]:text-[11px]">
+              v{packageJson.version}
             </span>
-          ) : (
-            <span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">{t("home.workspace")}</span>
-          )
-        }
-        actions={settingsButton}
-      />
+          }
+          center={
+            latestVersion ? (
+              <span
+                role="status"
+                title={`${t("home.updateAvailable")} v${latestVersion}`}
+                className="truncate text-[12px] font-medium text-v2-text-text-accent"
+              >
+                {t("home.updateAvailable")} <span className="font-mono">v{latestVersion}</span>
+              </span>
+            ) : (
+              <span className="hidden truncate text-[13px] text-v2-text-text-muted sm:inline">
+                {t("home.workspace")}
+              </span>
+            )
+          }
+          actions={settingsButton}
+        />
+      )}
       <main className="er-home-main min-h-0 flex-1 overflow-y-auto bg-v2-background-bg-base">
         <div className="flex min-h-full w-full flex-col">
           {error && (
@@ -227,8 +290,12 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
             onRenameSession={(session: ActiveSessionDto | SessionSummaryDto) => setRenamingSession(session)}
             onRenameHistory={(session) => setRenamingSession(session)}
             onDeleteSession={setDeletingSession}
-            onRenameWorkspace={(cwd) => setWorkspaceDialog({ cwd, mode: "rename" })}
-            onDeleteWorkspace={(cwd) => setWorkspaceDialog({ cwd, mode: "delete" })}
+            onRenameWorkspace={(cwd) =>
+              setWorkspaceDialog({ cwd, mode: "rename", mutation: callbacks.current.onCatalogMutationStart?.() })
+            }
+            onDeleteWorkspace={(cwd) =>
+              setWorkspaceDialog({ cwd, mode: "delete", mutation: callbacks.current.onCatalogMutationStart?.() })
+            }
             disconnectingSessionId={disconnectingSessionId}
           />
         </div>
@@ -252,10 +319,13 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
           onClose={() => setWorkspaceDialog(null)}
           onComplete={async (result, deleted) => {
             if (!mounted.current) return;
+            const ownsSelection = workspaceDialog.ownsSelection ?? (() => false);
+            const canRecover = ownsSelection() && (workspaceDialog.ownsTab?.() ?? true);
             statusRequest.current += 1;
             selectionRequest.current += 1;
             const ids = new Set(result.sessionIds);
             const oldCwd = workspaceDialog.cwd;
+            workspaceDialog.mutation?.workspace(oldCwd, result, deleted);
             setStatus(
               (current) =>
                 current && {
@@ -272,12 +342,19 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
             );
             setSelectedCwd((current) => (current === oldCwd ? (deleted ? null : result.cwd) : current));
             refresh();
-            if (!deleted && workspaceDialog.sessionId) {
+            if (!deleted && workspaceDialog.sessionId && canRecover) {
               try {
                 const next = await resumeRelocatedSession(workspaceDialog.sessionId, result.cwd);
-                if (mounted.current) onOpenSession({ id: next.id, cwd: next.cwd });
+                const accepted =
+                  workspaceDialog.mutation?.recovered?.(workspaceDialog.sessionId, {
+                    id: next.id,
+                    cwd: next.cwd,
+                    name: next.sessionName,
+                    status: next.status,
+                  }) ?? true;
+                if (accepted && ownsSelection()) onOpenSession({ id: next.id, cwd: next.cwd });
               } catch (failure) {
-                if (mounted.current) setError(failure instanceof Error ? failure.message : String(failure));
+                if (ownsSelection()) setError(failure instanceof Error ? failure.message : String(failure));
               }
             }
           }}
@@ -291,10 +368,14 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
           onClose={() => setRenamingSession(null)}
           onSave={(name) => {
             const session = renamingSession;
+            const mutation = callbacks.current.onCatalogMutationStart?.();
             setRenamingSession(null);
             setError(null);
             renameSession(session.id, name)
-              .then(refresh)
+              .then(() => {
+                mutation?.renamed(session.id, name);
+                refresh();
+              })
               .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
           }}
         />
@@ -305,8 +386,10 @@ export function HomePage({ onOpenSession, settingsButton }: HomePageProps) {
           session={deletingSession}
           onClose={() => setDeletingSession(null)}
           onDelete={async (force) => {
+            const mutation = callbacks.current.onCatalogMutationStart?.();
             statusRequest.current += 1;
             await deleteSession(deletingSession.id, force);
+            mutation?.deleted(deletingSession.id);
             // Invalidate every pre-success poll before removing either projection.
             statusRequest.current += 1;
             setStatus(

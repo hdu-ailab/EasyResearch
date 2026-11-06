@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useViewActivityRef } from "../view-activity";
 
 export interface UseAutoScrollOptions {
   /** While true the scroll area is actively being written to (streaming). */
@@ -35,6 +36,7 @@ const SETTLING_MS = 300;
  * window so the browser's async `scroll` events are not mistaken for the user.
  */
 export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollController {
+  const activity = useViewActivityRef();
   const { working, bottomThreshold = 10, overflowAnchor = "dynamic" } = options;
   const onUserInteractedRef = useRef(options.onUserInteracted);
   onUserInteractedRef.current = options.onUserInteracted;
@@ -91,7 +93,7 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
   const scrollToBottomNow = useCallback(
     (behavior: ScrollBehavior) => {
       const el = scrollElement;
-      if (!el) return;
+      if (!el || !activity.current.visible) return;
       markAuto(el);
       if (behavior === "smooth") {
         el.scrollTo({ top: el.scrollHeight, behavior });
@@ -99,11 +101,12 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
       }
       el.scrollTop = el.scrollHeight;
     },
-    [markAuto, scrollElement],
+    [markAuto, scrollElement, activity],
   );
 
   const scrollToBottom = useCallback(
     (force: boolean) => {
+      if (!activity.current.visible) return;
       if (!force && !active()) return;
       if (force && userScrolledRef.current) setUserScrolled(false);
 
@@ -118,7 +121,7 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
       }
       scrollToBottomNow("auto");
     },
-    [active, distanceFromBottom, markAuto, scrollElement, scrollToBottomNow, setUserScrolled],
+    [active, distanceFromBottom, markAuto, scrollElement, scrollToBottomNow, setUserScrolled, activity],
   );
 
   // An explicit history prepend may start from a page that does not overflow yet.
@@ -129,6 +132,7 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
   }, [setUserScrolled]);
 
   const stop = useCallback(() => {
+    if (!activity.current.interactive) return;
     const el = scrollElement;
     if (!el) return;
     if (!canScroll(el)) {
@@ -136,7 +140,7 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
       return;
     }
     pause();
-  }, [canScroll, scrollElement, setUserScrolled, pause]);
+  }, [canScroll, scrollElement, setUserScrolled, pause, activity]);
 
   const handleWheel = useCallback(
     (event: WheelEvent) => {
@@ -151,6 +155,7 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
   );
 
   const handleScroll = useCallback(() => {
+    if (!activity.current.interactive) return;
     const el = scrollElement;
     if (!el) return;
 
@@ -170,7 +175,17 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
     }
 
     stop();
-  }, [bottomThreshold, canScroll, distanceFromBottom, isAuto, scrollElement, scrollToBottom, setUserScrolled, stop]);
+  }, [
+    bottomThreshold,
+    canScroll,
+    distanceFromBottom,
+    isAuto,
+    scrollElement,
+    scrollToBottom,
+    setUserScrolled,
+    stop,
+    activity,
+  ]);
 
   const handleInteraction = useCallback(() => {
     if (!active()) return;
@@ -191,6 +206,7 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
     const content = contentElement;
     if (!content) return;
     const observer = new ResizeObserver(() => {
+      if (!activity.current.visible) return;
       const el = scrollElement;
       if (el && !canScroll(el)) {
         if (userScrolledRef.current) setUserScrolled(false);
@@ -202,7 +218,7 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [active, canScroll, contentElement, scrollElement, scrollToBottom, setUserScrolled]);
+  }, [active, canScroll, contentElement, scrollElement, scrollToBottom, setUserScrolled, activity]);
 
   // Working transitions: force to bottom on start; keep a settling window on end.
   useEffect(() => {
@@ -251,9 +267,10 @@ export function useAutoScroll(options: UseAutoScrollOptions): AutoScrollControll
   }, []);
 
   const resume = useCallback(() => {
+    if (!activity.current.interactive) return;
     if (userScrolledRef.current) setUserScrolled(false);
     scrollToBottom(true);
-  }, [scrollToBottom, setUserScrolled]);
+  }, [scrollToBottom, setUserScrolled, activity]);
 
   return {
     scrollRef: setScrollRef,

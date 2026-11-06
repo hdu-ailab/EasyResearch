@@ -6,6 +6,8 @@ import { expect, it, vi } from "vitest";
 import type { startDesktopSidecar, DesktopSidecarExit, DesktopSidecarHandle } from "./sidecar";
 import * as mainSupport from "./main-support";
 import * as smokeHost from "./smoke-host";
+import { readDesktopPreferenceBlob, writeDesktopPreferenceBlob } from "./preferences-store";
+import { STORAGE_KEY } from "../webui/src/preferences";
 
 it.each([
   { scenario: "verified renderer", noSandbox: false, sandbox: true, noNewPrivs: 1, accepted: true },
@@ -20,6 +22,19 @@ it.each([
   let quit = false;
   let stopped = false;
   let uiChecks = 0;
+  let rendererPreferenceWrites = 0;
+  const project = join(root, "project");
+  const descriptor = { id: "smoke-session", cwd: project, name: "Security fixture" };
+  const transcriptUser = "Renderer security fixture prompt.";
+  const initialPreferences = JSON.stringify({
+    chatFontSize: 13, filesFontSize: 12, language: "en", studioTheme: "light",
+    autoExpandThinking: false, autoExpandTools: false, expandSubagentOutput: false,
+    sessionTabs: [descriptor],
+  });
+  writeDesktopPreferenceBlob(join(root, "user-data"), initialPreferences);
+  const ipcMain = new EventEmitter();
+  const restartPolling = vi.spyOn(globalThis, "setInterval");
+  const clearPolling = vi.spyOn(globalThis, "clearInterval");
   let resolveUi!: (value: [boolean, boolean]) => void;
   const uiReady = new Promise<[boolean, boolean]>((resolve) => { resolveUi = resolve; });
   let resolveExit!: (exit: DesktopSidecarExit) => void;
@@ -58,20 +73,58 @@ it.each([
       isDestroyed(): boolean;
       getURL(): string;
       getOSProcessId(): number;
-      executeJavaScript(): Promise<[boolean, boolean]>;
+      executeJavaScript(code: string): Promise<unknown>;
     };
 
     constructor(private readonly options: { webPreferences: Record<string, unknown> }) {
       super();
+      const storage = new Map([[STORAGE_KEY, initialPreferences]]);
+      const localStorage = {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => { storage.set(key, value); },
+        removeItem: (key: string) => { storage.delete(key); },
+      };
+      // This host-boundary test models an already hydrated fixture document.
+      // Real Work/resolver/DOM hydration is covered by the Web integration suite.
+      const attributes = (values: Record<string, string>) => ({
+        getAttribute: (name: string) => values[name] ?? null,
+        hasAttribute: (name: string) => Object.hasOwn(values, name),
+      });
+      const tab = attributes({
+        "data-session-tab-id": descriptor.id, role: "tab", "aria-selected": "true", "aria-label": descriptor.name,
+      });
+      const surface = {
+        ...attributes({ "data-session-surface": descriptor.id, "data-session-active": "true" }),
+        querySelector: (selector: string) => selector === "[data-chat-composer] textarea" ? { disabled: false } : null,
+        querySelectorAll: (selector: string) => selector === '[data-message-body="user"]' ? [{ textContent: transcriptUser }] : [],
+      };
+      const document = {
+        querySelector: (selector: string) => selector === "#root" ? { childElementCount: 1 } : null,
+        querySelectorAll: (selector: string) => selector === "[data-session-tab-id]" ? [tab]
+          : selector === "[data-session-surface]" ? [surface] : [],
+      };
       this.webContents = Object.assign(new EventEmitter(), {
         session: { webRequest: { onBeforeSendHeaders() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {} },
         setWindowOpenHandler() {},
         isDestroyed: () => this.destroyed,
         getURL: () => this.url,
         getOSProcessId: () => rendererPid,
-        executeJavaScript: () => {
-          uiChecks++;
-          return uiReady;
+        executeJavaScript: async (code: string) => {
+          const fetch = async (path: string) => {
+            if (path !== "/api/status") throw new Error("Unexpected fixture renderer request");
+            uiChecks++;
+            const [, authenticated] = await uiReady;
+            return { ok: authenticated };
+          };
+          // Execute the real serialized smoke probes rather than returning one
+          // readiness tuple for unrelated renderer operations or mocking them out.
+          return new Function("document", "fetch", "location", "localStorage", "window", `return ${code}`)(
+            document, fetch, new URL(this.url), localStorage,
+            { easyresearchDesktop: { persistWebUiPreferences: (raw: string | null) => {
+              rendererPreferenceWrites++;
+              ipcMain.emit(mainSupport.DESKTOP_PREFERENCES_WRITE_CHANNEL, { sender: this.webContents }, raw);
+            } } },
+          );
         },
       });
     }
@@ -104,14 +157,14 @@ it.each([
       HOME: root,
       EASYRESEARCH_CODING_AGENT_DIR: join(root, "agent"),
       EASYRESEARCH_DESKTOP_SMOKE_DIR: root,
-      EASYRESEARCH_DESKTOP_SMOKE_PROJECT: join(root, "project"),
+      EASYRESEARCH_DESKTOP_SMOKE_PROJECT: project,
       EASYRESEARCH_DESKTOP_SMOKE_SESSION_PATH: join(root, "session.jsonl"),
       EASYRESEARCH_DESKTOP_SMOKE_AGENT: "smoke-agent",
       EASYRESEARCH_DESKTOP_SMOKE_PROXY: "http://127.0.0.1:43210",
     },
   });
   vi.doMock("electron", () => ({
-    app, BrowserWindow: Window, Tray, ipcMain: new EventEmitter(),
+    app, BrowserWindow: Window, Tray, ipcMain,
     Menu: { buildFromTemplate: (items: unknown) => items },
     nativeImage: { createFromPath: () => ({ isEmpty: () => false }) },
     dialog: { showMessageBox: async () => ({ response: 1 }), showErrorBox() {} },
@@ -150,7 +203,12 @@ it.each([
         throw new Error("Unexpected namespace identity");
       },
     }),
-    prepareDesktopSmokeWork: async () => ({ sessionId: "smoke-session", bootId: "smoke-boot" }),
+    prepareDesktopSmokeWork: async (
+      options: Parameters<typeof smokeHost.prepareDesktopSmokeWork>[0],
+    ): Promise<Awaited<ReturnType<typeof smokeHost.prepareDesktopSmokeWork>>> => {
+      options.onStateVisible?.();
+      return { sessionId: descriptor.id, bootId: "smoke-boot", transcriptUser };
+    },
   }));
   vi.resetModules();
   try {
@@ -161,7 +219,14 @@ it.each([
 
     if (fixture.accepted) {
       await vi.waitFor(() => expect(events()).toContainEqual({ type: "desktop-smoke.window-loaded" }));
+      // Restart polling is armed only after the real tab fixture's stable
+      // renderer/IPC/disk verification finishes. Own that work before teardown.
+      await vi.waitFor(() => {
+        expect(events().filter((event) => event.type === "desktop-smoke.failure")).toEqual([]);
+        expect(restartPolling).toHaveBeenCalled();
+      }, { timeout: 3_000 });
       const observed = events();
+      expect(observed.filter((event) => event.type === "desktop-smoke.failure")).toEqual([]);
       expect(observed).toContainEqual({
         type: "desktop-smoke.renderer-security",
         osSandboxed: true, sandbox: true, contextIsolation: true, nodeIntegration: false,
@@ -170,6 +235,11 @@ it.each([
         .toBeLessThan(observed.findIndex((event) => event.type === "desktop-smoke.window-loaded"));
       expect(stopped).toBe(false);
       expect(quit).toBe(false);
+      expect(rendererPreferenceWrites).toBe(1);
+      const saved = JSON.parse(readDesktopPreferenceBlob(join(root, "user-data"))!) as { sessionTabs: Array<{ id: string; cwd: string; name?: string }> };
+      expect(saved.sessionTabs.at(-1)).toEqual(descriptor);
+      expect(saved.sessionTabs[0]?.id).not.toBe(descriptor.id);
+      expect(saved.sessionTabs[0]?.cwd).toBe(project);
     } else {
       await vi.waitFor(() => expect(events()).toContainEqual(expect.objectContaining({
         type: "desktop-smoke.failure", message: expect.stringMatching(/renderer.*(?:security|sandbox)/i),
@@ -178,11 +248,17 @@ it.each([
       expect(stopped).toBe(true);
       expect(events().map((event) => event.type)).not.toContain("desktop-smoke.renderer-security");
       expect(events().map((event) => event.type)).not.toContain("desktop-smoke.window-loaded");
+      expect(rendererPreferenceWrites).toBe(0);
+      expect(restartPolling).not.toHaveBeenCalled();
     }
   } finally {
     resolveUi([true, true]);
     app.emit("before-quit", { preventDefault() {} });
     await vi.waitFor(() => expect(quit).toBe(true));
+    const pollingHandle = restartPolling.mock.results[0]?.value;
+    if (pollingHandle !== undefined) expect(clearPolling).toHaveBeenCalledWith(pollingHandle);
+    restartPolling.mockRestore();
+    clearPolling.mockRestore();
     for (const name of ["electron", "./update", "./main-support", "./sidecar", "./smoke-host", "./smoke-work-files"]) vi.doUnmock(name);
     vi.resetModules();
     vi.unstubAllGlobals();

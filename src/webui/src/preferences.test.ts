@@ -83,6 +83,7 @@ describe("readPreferences", () => {
       autoExpandTools: false,
       expandSubagentOutput: false,
       timelineDetail: getTimelineDetail({}),
+      sessionTabs: [],
     });
     expect(readPreferences(fakeStorage(), nav("en-US")).language).toBe("en");
   });
@@ -126,6 +127,7 @@ describe("readPreferences", () => {
         autoExpandTools: false,
         expandSubagentOutput: true,
       }),
+      sessionTabs: [],
     });
   });
 
@@ -150,6 +152,7 @@ describe("readPreferences", () => {
       autoExpandTools: false,
       expandSubagentOutput: true,
       timelineDetail: getTimelineDetail({ autoExpandThinking: true, expandSubagentOutput: true }),
+      sessionTabs: [],
     });
   });
 
@@ -177,6 +180,7 @@ describe("readPreferences", () => {
       autoExpandTools: false,
       expandSubagentOutput: false,
       timelineDetail: getTimelineDetail({}),
+      sessionTabs: [],
     });
   });
 
@@ -226,6 +230,41 @@ describe("readPreferences", () => {
 });
 
 describe("writePreferences", () => {
+  it("normalizes only optional bookmarks and preserves category and appearance settings", () => {
+    const sessionTabs = [{ id: "root", cwd: "C:\\研究 项目", name: "Research" }];
+    const storage = fakeStorage({
+      [STORAGE_KEY]: JSON.stringify({
+        sessionTabs: [null, ...sessionTabs],
+        timelineDetail: TIMELINE_PRESETS[2].value,
+        studioTheme: "dark",
+        chatFontSize: 18,
+      }),
+    });
+    const prefs = readPreferences(storage, nav("en"));
+    expect(prefs).toMatchObject({
+      sessionTabs,
+      timelineDetail: TIMELINE_PRESETS[2].value,
+      studioTheme: "dark",
+      chatFontSize: 18,
+    });
+    writePreferences(storage, prefs);
+    expect(readPreferences(storage, nav("en"))).toEqual(prefs);
+    storage.setItem(STORAGE_KEY, JSON.stringify({ ...prefs, sessionTabs: { invalid: true } }));
+    expect(readPreferences(storage, nav("en"))).toEqual({ ...prefs, sessionTabs: [] });
+  });
+
+  it("serializes descriptor-only bounded bookmarks through the existing key", () => {
+    const storage = fakeStorage();
+    const prefs = readPreferences(storage, nav("en"));
+    const sessionTabs = [{ id: "root", cwd: "/workspace", name: "Research", status: "running", draft: "private" }];
+    writePreferences(storage, { ...prefs, sessionTabs });
+    expect(Object.keys(storage.data)).toEqual([STORAGE_KEY]);
+    expect(JSON.parse(storage.getItem(STORAGE_KEY)!)).toEqual({
+      ...prefs,
+      sessionTabs: [{ id: "root", cwd: "/workspace", name: "Research" }],
+    });
+  });
+
   it("stores the full blob under the single key", () => {
     const storage = fakeStorage();
     writePreferences(storage, {
