@@ -197,6 +197,8 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState, pref
     isStreaming: (preferLive ? live : snapshot).isStreaming || activeMessageKey !== undefined,
     error: (preferLive ? live : snapshot).error,
     retry: (preferLive ? live : snapshot).retry,
+    // Child history has no live compaction field; only native events/settlement own it.
+    compactionState: live.compactionState,
     nextOrder: ordered.length,
     activeMessageKey,
     messageStructureRevision: Math.max(snapshot.messageStructureRevision, live.messageStructureRevision) + 1,
@@ -208,10 +210,6 @@ const PANEL_DEFAULT = 320;
 const CHAT_MIN = 400;
 
 const CONVERSATION_FIRST_BREAKPOINT = 820;
-
-function defaultPanel(): Panel {
-  return typeof window !== "undefined" && window.innerWidth >= CONVERSATION_FIRST_BREAKPOINT ? "files" : null;
-}
 
 export function WorkPage(props: WorkPageProps) {
   return <SessionWorkPage key={`${props.id}\0${props.cwd}`} {...props} />;
@@ -236,7 +234,7 @@ function SessionWorkPage({
   // Keep sequences monotonic across snapshots so a late acknowledgement cannot drop newer events.
   const fileEventSequence = useRef(0);
   const fileEventsEnabled = useRef(false);
-  const [panel, setPanel] = useState<Panel>(defaultPanel);
+  const [panel, setPanel] = useState<Panel>(null);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < CONVERSATION_FIRST_BREAKPOINT);
   const [mobileView, setMobileView] = useState<WorkView>("chat");
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT);
@@ -382,6 +380,9 @@ function SessionWorkPage({
               ),
               activeMessageKey: undefined,
               isStreaming: false,
+              // Reconnect loses native operation continuity. Child history has no
+              // live compaction field: discard old activity until a fresh start.
+              compactionState: "idle",
               messageStructureRevision:
                 view.messageStructureRevision + (messages.length === view.messages.length ? 0 : 1),
             };
@@ -425,7 +426,7 @@ function SessionWorkPage({
         if (event.event?.type !== "timeline_entry_appended" || event.event.entry.kind !== "subagent-completion")
           return current;
         const childView = current[childSessionId] ?? { ...emptyView, subagentName: event.agent };
-        return { ...current, [childSessionId]: reduceSessionEvent(childView, event.event) };
+        return { ...current, [childSessionId]: reduceSessionEvent(childView, event.event, "child") };
       }
       let next = current;
       if (event.ownerSessionId !== rootSessionId) {
@@ -458,11 +459,15 @@ function SessionWorkPage({
             : childView;
         next = {
           ...next,
-          [childSessionId]: reduceSessionEvent(streamingView, event.event as Parameters<typeof reduceSessionEvent>[1]),
+          [childSessionId]: reduceSessionEvent(
+            streamingView,
+            event.event as Parameters<typeof reduceSessionEvent>[1],
+            "child",
+          ),
         };
       }
       if (event.status !== "working" && next[childSessionId]) {
-        next = { ...next, [childSessionId]: terminateSessionRun(next[childSessionId]) };
+        next = { ...next, [childSessionId]: terminateSessionRun(next[childSessionId], false, "child") };
       }
       return next;
     });
@@ -909,7 +914,7 @@ function SessionWorkPage({
                   !refresh || (childRevisions.current.get(childId) ?? 0) > startRevision,
                 )
               : seeded;
-            if (childWorking.current.get(childId) === false) merged = terminateSessionRun(merged);
+            if (childWorking.current.get(childId) === false) merged = terminateSessionRun(merged, false, "child");
             return {
               ...current,
               [childId]: { ...merged, hydrationRevision: seeded.hydrationRevision },
@@ -1455,6 +1460,7 @@ function SessionWorkPage({
                 tools={activeTools}
                 summaries={activeSummaries}
                 completions={activeCompletions}
+                compactionState={transcriptView?.compactionState}
                 emptyHint={activeTab === RESEARCH_ASSISTANT_AGENT ? undefined : t("work.noMessagesYet")}
                 pending={pendingOutput && activeTab === RESEARCH_ASSISTANT_AGENT}
                 onViewDetails={openSubagentTool}
@@ -1493,6 +1499,7 @@ function SessionWorkPage({
             ) : null}
             <ChatComposer
               ref={composerRef}
+              cwd={cwd}
               disabled={composerDisabled}
               streaming={activeTab === RESEARCH_ASSISTANT_AGENT && sessionView.isStreaming}
               onSend={send}

@@ -2,10 +2,10 @@ import { toJsxRuntime } from "hast-util-to-jsx-runtime";
 import { type ComponentProps, Fragment, type ReactNode } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 import { defaultUrlTransform } from "react-markdown";
-import { MermaidDiagram } from "../MermaidDiagram";
 import { recordMarkdownRuntimeMetric } from "./client";
 import { LruCache } from "./lru";
 import type { MarkdownWorkerBlock } from "./protocol";
+import { TranscriptCode } from "./TranscriptCode";
 import { TranscriptFileLink } from "./TranscriptFileLink";
 
 export interface PreparedMarkdownBlock {
@@ -20,19 +20,6 @@ export interface CachedMarkdown {
 }
 
 const completed = new LruCache<string, CachedMarkdown>(200, () => recordMarkdownRuntimeMetric("evictions"));
-
-function TranscriptCode({ className, children, ...props }: ComponentProps<"code">) {
-  const language = className?.match(/language-(\w+)/)?.[1];
-  if (language === "mermaid") {
-    const source = String(children ?? "").replace(/\n$/, "");
-    return <MermaidDiagram source={source} />;
-  }
-  return (
-    <code className={className} {...props}>
-      {children}
-    </code>
-  );
-}
 
 function TranscriptImage({ src, alt, ...props }: ComponentProps<"img">) {
   const safe = typeof src === "string" ? defaultUrlTransform(src) : undefined;

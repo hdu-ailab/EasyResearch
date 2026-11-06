@@ -483,6 +483,7 @@ try {
           const streamCount = requests.filter(
             (key) => key === `GET /api/sessions/${session.id}/events`,
           ).length;
+          await page.getByRole("button", { name: "Files browser", exact: true }).click();
           await page.getByRole("tree").getByText("draft.md", { exact: true }).click();
           const outer = page.getByRole("separator", { name: "Resize panel", exact: true });
           const treeHandle = page.getByRole("separator", { name: "Resize file tree" });

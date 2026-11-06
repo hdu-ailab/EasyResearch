@@ -1,10 +1,21 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { FileEntryDto } from "../../../web/contracts";
+import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
+
+vi.mock("../api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api")>()),
+  listEntries: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.mocked(api.listEntries).mockReset().mockResolvedValue([]);
+});
 
 const commands = [
   { name: "arxiv", description: "arXiv metadata", source: "skill" as const },
@@ -155,14 +166,14 @@ describe("ChatComposer slash popover", () => {
     expect(input.value).toBe("");
   });
 
-  it("navigates with ArrowDown and escapes", async () => {
+  it("navigates across command and Skill groups with ArrowDown", async () => {
     const { user } = await renderComposer();
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
     await user.click(input);
     await user.keyboard("/");
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Enter}");
-    expect(input.value).toBe("/drawio ");
+    expect(input.value).toBe("/arxiv ");
   });
 
   it("moves command selection to Home and End", async () => {
@@ -171,10 +182,10 @@ describe("ChatComposer slash popover", () => {
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
     await user.click(input);
     await user.keyboard("/{End}");
-    expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("/name");
+    expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("/drawio");
     await user.keyboard("{Home}");
-    expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("/arxiv");
-    await user.keyboard("{End}{Enter}");
+    expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("/name");
+    await user.keyboard("{Enter}");
     expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: "name" }), "");
   });
 
@@ -209,6 +220,520 @@ describe("ChatComposer slash popover", () => {
     await user.keyboard("write a summary");
     await user.keyboard("{Enter}");
     expect(onSend).toHaveBeenCalledWith("write a summary");
+  });
+
+  it("labels executable commands separately from editable Skills", async () => {
+    const { user } = await renderComposer();
+    await user.type(screen.getByRole("textbox"), "/");
+    expect(within(screen.getByRole("group", { name: "Commands" })).getByRole("option")).toHaveTextContent("/name");
+    expect(within(screen.getByRole("group", { name: "Skills" })).getAllByRole("option")).toHaveLength(2);
+  });
+
+  it("Escape dismisses suggestions without changing the draft or caret", async () => {
+    const { user } = await renderComposer();
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await user.type(input, "/ar");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input).toHaveValue("/ar");
+    expect(input.selectionStart).toBe(3);
+    await user.keyboard("x");
+    expect(screen.getByRole("option")).toHaveTextContent("/arxiv");
+  });
+
+  it.each([false, true])(
+    "keeps arguments and the suffix caret when completing a Skill (collision=%s)",
+    async (collision) => {
+      const onSend = vi.fn();
+      const { user } = await renderComposer({
+        onSend,
+        commands: [{ name: "arxiv", source: "skill", requiresPrefix: collision }],
+      });
+      const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+      const prefix = collision ? "/skill:ar" : "/ar";
+      fireEvent.change(input, { target: { value: `${prefix} 1706.03762\nkeep this suffix` } });
+      input.focus();
+      input.setSelectionRange(prefix.length, prefix.length);
+      fireEvent.select(input);
+      await user.keyboard("{Enter}");
+      const invocation = collision ? "/skill:arxiv" : "/arxiv";
+      expect(input).toHaveValue(`${invocation} 1706.03762\nkeep this suffix`);
+      expect(input.selectionStart).toBe(invocation.length + 1);
+      expect(onSend).not.toHaveBeenCalled();
+      await user.keyboard("{Enter}");
+      expect(onSend).toHaveBeenCalledWith(`${invocation} 1706.03762\nkeep this suffix`);
+    },
+  );
+
+  it("selected commands retain arguments after the slash token", async () => {
+    const onCommand = vi.fn();
+    const { user } = await renderComposer({ onCommand });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "/na New name" } });
+    input.focus();
+    input.setSelectionRange(3, 3);
+    fireEvent.select(input);
+    await user.click(screen.getByRole("option", { name: /\/name/ }));
+    expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: "name" }), "New name");
+  });
+
+  it("preserves Shift+Enter while suggestions are open", async () => {
+    const onCommand = vi.fn();
+    const { user } = await renderComposer({ onCommand });
+    const input = screen.getByRole("textbox");
+    await user.type(input, "/na");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(input).toHaveValue("/na\n");
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it("scrolls keyboard selection into view and accepts a touch-style click", async () => {
+    const scroll = vi.fn();
+    const { user } = await renderComposer();
+    await user.type(screen.getByRole("textbox"), "/");
+    const options = screen.getAllByRole("option");
+    options.at(-1)!.scrollIntoView = scroll;
+    await user.keyboard("{End}");
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    fireEvent.click(options.at(-1)!);
+    expect(screen.getByRole("textbox")).toHaveValue("/drawio ");
+  });
+
+  it("opens Commands from the toolbar while keeping a populated draft as Skill arguments", async () => {
+    const onSend = vi.fn();
+    const { user } = await renderComposer({ onSend });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await user.type(input, "1706.03762");
+    await user.click(screen.getByRole("button", { name: "Commands" }));
+    await user.click(screen.getByRole("option", { name: /\/arxiv/ }));
+    expect(input).toHaveValue("/arxiv 1706.03762");
+    expect(input.selectionStart).toBe("/arxiv ".length);
+    expect(input).toHaveFocus();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatComposer file references", () => {
+  it.each([
+    { path: "/name draft/file.md", cwd: "/name draft", commands: [], method: "drop" },
+    { path: "/name draft/file.md", cwd: "/name draft", commands: [], method: "suggestion" },
+    {
+      path: "/skill:arxiv refs/paper.md",
+      cwd: "/skill:arxiv refs",
+      commands: [{ name: "arxiv", source: "skill" as const }],
+      method: "drop",
+    },
+    {
+      path: "/skill:arxiv refs/paper.md",
+      cwd: "/skill:arxiv refs",
+      commands: [{ name: "arxiv", source: "skill" as const }],
+      method: "suggestion",
+    },
+  ])(
+    "preserves literal file intent for $path via $method independently of command discovery",
+    async ({ path, cwd, commands: availableCommands, method }) => {
+      const ref = createRef<ChatComposerHandle>();
+      const onSend = vi.fn();
+      const onCommand = vi.fn();
+      vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", path, name: path.split("/").at(-1)! }]);
+      const { user } = await renderComposer({ ref, cwd, commands: availableCommands, onSend, onCommand });
+      const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+      if (method === "drop") act(() => ref.current?.insertPath(path));
+      else {
+        await user.type(input, "@");
+        await user.click(await screen.findByRole("option", { name: path.split("/").at(-1)! }));
+      }
+      expect(input).toHaveValue(`"${path}" `);
+      expect(screen.getByRole("list", { name: "File references" })).toHaveTextContent(path);
+      // Copying the real textarea representation also preserves Pi-safe intent.
+      input.select();
+      const copied = await user.copy();
+      expect(copied?.getData("text/plain")).toBe(`"${path}" `);
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(onCommand).not.toHaveBeenCalled();
+      const submitted = onSend.mock.calls[0]![0] as string;
+      expect(submitted).toBe(`"${path}"`);
+      expect(submitted.startsWith("/")).toBe(false);
+      expect(submitted.startsWith("/skill:")).toBe(false);
+    },
+  );
+
+  it.each([
+    { value: "README notes", start: 0, end: 0, expected: '"/p/a" README notes' },
+    { value: "Readme notes", start: 4, end: 4, expected: "Read /p/a me notes" },
+    { value: "Read OLDplease", start: 5, end: 8, expected: "Read /p/a please" },
+  ])("Files toolbar preserves the unselected suffix in $value", async ({ value, start, end, expected }) => {
+    vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "a", path: "/p/a" }]);
+    const { user } = await renderComposer({ cwd: "/p" });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await user.type(input, value);
+    input.setSelectionRange(start, end);
+    fireEvent.select(input);
+    await user.click(screen.getByRole("button", { name: "Files" }));
+    await user.click(await screen.findByRole("option", { name: "a" }));
+    expect(input).toHaveValue(expected);
+    expect(input).toHaveFocus();
+  });
+
+  it.each([
+    { annotated: 0, deleted: 0 },
+    { annotated: 0, deleted: 1 },
+    { annotated: 1, deleted: 0 },
+    { annotated: 1, deleted: 1 },
+  ])(
+    "textarea deletion of duplicate $deleted keeps only the actual annotated occurrence $annotated",
+    async ({ annotated, deleted }) => {
+      const ref = createRef<ChatComposerHandle>();
+      const { user } = await renderComposer({ ref });
+      const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+      act(() => ref.current?.setDraft("Read /p/a /p/a"));
+      const referenceStart = annotated === 0 ? 5 : 10;
+      input.setSelectionRange(referenceStart, referenceStart + 4);
+      fireEvent.select(input);
+      act(() => ref.current?.insertPath("/p/a"));
+      const start = deleted === 0 ? 5 : 9;
+      const end = deleted === 0 ? 10 : 14;
+      const expected = input.value.slice(0, start) + input.value.slice(end);
+      input.setSelectionRange(start, end);
+      fireEvent.select(input);
+      await user.keyboard("{Backspace}");
+      expect(input).toHaveValue(expected);
+      if (annotated === deleted) expect(screen.queryByRole("button", { name: "Remove reference /p/a" })).toBeNull();
+      else {
+        await user.click(screen.getByRole("button", { name: "Remove reference /p/a" }));
+        expect(input).toHaveValue(expected.replace("/p/a", ""));
+      }
+    },
+  );
+
+  it.each(["cut", "paste"] as const)("keeps duplicate reference ownership through native %s", async (operation) => {
+    const ref = createRef<ChatComposerHandle>();
+    const { user } = await renderComposer({ ref });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    act(() => ref.current?.setDraft("Read /p/a /p/a"));
+    input.setSelectionRange(10, 14);
+    act(() => ref.current?.insertPath("/p/a"));
+    input.setSelectionRange(5, 9);
+    fireEvent.select(input);
+    if (operation === "cut") await user.cut();
+    else await user.paste("replacement");
+    expect(input).toHaveValue(operation === "cut" ? "Read  /p/a " : "Read replacement /p/a ");
+    await user.click(screen.getByRole("button", { name: "Remove reference /p/a" }));
+    expect(input).toHaveValue(operation === "cut" ? "Read   " : "Read replacement  ");
+  });
+
+  it("tracks composition replacement ranges while preserving a later duplicate reference", async () => {
+    const ref = createRef<ChatComposerHandle>();
+    const { user } = await renderComposer({ ref });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    act(() => ref.current?.setDraft("Read /p/a /p/a"));
+    input.setSelectionRange(10, 14);
+    act(() => ref.current?.insertPath("/p/a"));
+    input.setSelectionRange(5, 9);
+    fireEvent.compositionStart(input);
+    for (const text of ["中", "中文"]) {
+      fireEvent(
+        input,
+        new InputEvent("beforeinput", {
+          bubbles: true,
+          inputType: "insertCompositionText",
+          isComposing: true,
+          data: text,
+        }),
+      );
+      fireEvent.input(input, {
+        target: { value: `Read ${text} /p/a `, selectionStart: 5 + text.length, selectionEnd: 5 + text.length },
+        inputType: "insertCompositionText",
+        isComposing: true,
+        data: text,
+      });
+    }
+    fireEvent.compositionEnd(input);
+    expect(input).toHaveValue("Read 中文 /p/a ");
+    expect(input.selectionStart).toBe(7);
+    await user.click(screen.getByRole("button", { name: "Remove reference /p/a" }));
+    expect(input).toHaveValue("Read 中文  ");
+  });
+
+  it.each(["historyUndo", "historyRedo", "missing-beforeinput"])(
+    "preserves native text/caret and discards unverified annotations on %s",
+    async (inputType) => {
+      const ref = createRef<ChatComposerHandle>();
+      await renderComposer({ ref });
+      const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+      act(() => ref.current?.setDraft("Read /p/a /p/a"));
+      input.setSelectionRange(5, 9);
+      act(() => ref.current?.insertPath("/p/a"));
+      if (inputType !== "missing-beforeinput")
+        fireEvent(input, new InputEvent("beforeinput", { bubbles: true, inputType }));
+      fireEvent.input(input, { target: { value: "Read /p/a", selectionStart: 5, selectionEnd: 5 }, inputType });
+      expect(input).toHaveValue("Read /p/a");
+      expect(input.selectionStart).toBe(5);
+      expect(screen.queryByRole("button", { name: "Remove reference /p/a" })).toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    "owns only a non-cancelled native edit across the beforeinput microtask checkpoint (cancelled=%s)",
+    async (cancelled) => {
+      const ref = createRef<ChatComposerHandle>();
+      const { user } = await renderComposer({ ref });
+      const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+      act(() => ref.current?.setDraft("Read /p/a /p/a"));
+      input.setSelectionRange(10, 14);
+      act(() => ref.current?.insertPath("/p/a"));
+      input.setSelectionRange(5, 10);
+      const before = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "deleteByCut" });
+      if (cancelled) before.preventDefault();
+      fireEvent(input, before);
+      await Promise.resolve();
+      fireEvent.input(input, {
+        target: { value: "Read /p/a ", selectionStart: 5, selectionEnd: 5 },
+        inputType: "deleteByCut",
+      });
+      expect(input).toHaveValue("Read /p/a ");
+      if (cancelled) expect(screen.queryByRole("button", { name: "Remove reference /p/a" })).toBeNull();
+      else {
+        await user.click(screen.getByRole("button", { name: "Remove reference /p/a" }));
+        expect(input).toHaveValue("Read  ");
+      }
+    },
+  );
+
+  it.each(["/name", "/compact"])(
+    "keeps a dropped root file %s literal through caret movement and submission",
+    async (path) => {
+      const ref = createRef<ChatComposerHandle>();
+      const onSend = vi.fn();
+      const onCommand = vi.fn();
+      const { user } = await renderComposer({
+        ref,
+        cwd: "/",
+        onSend,
+        onCommand,
+        commands: [{ name: path.slice(1), source: "extension" }],
+      });
+      const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+      act(() => ref.current?.insertPath(path));
+      expect(input).toHaveValue(`"${path}" `);
+      input.setSelectionRange(3, 3);
+      fireEvent.select(input);
+      expect(screen.queryByRole("listbox")).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Send" }));
+      expect(onCommand).not.toHaveBeenCalled();
+      expect(onSend).toHaveBeenCalledWith(`"${path}"`);
+      expect(onSend.mock.calls[0]![0]).not.toMatch(/^\//);
+      await user.type(input, `${path}{Enter}`);
+      expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: path.slice(1) }), "");
+    },
+  );
+
+  it("quotes a selected root file and removes its entire literal while keeping its exact path chip", async () => {
+    vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "name", path: "/name" }]);
+    const onCommand = vi.fn();
+    const { user } = await renderComposer({ cwd: "/", onCommand });
+    const input = screen.getByRole("textbox");
+    await user.type(input, "@na");
+    await user.click(await screen.findByRole("option", { name: "name" }));
+    expect(input).toHaveValue('"/name" ');
+    expect(screen.getByRole("list", { name: "File references" })).toHaveTextContent("/name");
+    await user.click(screen.getByRole("button", { name: "Remove reference /name" }));
+    expect(input).toHaveValue(" ");
+    expect(screen.queryByRole("list", { name: "File references" })).toBeNull();
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it("quotes a leading spaced root filename whose first token is a Pi command", async () => {
+    const ref = createRef<ChatComposerHandle>();
+    const onSend = vi.fn();
+    const onCommand = vi.fn();
+    const { user } = await renderComposer({ ref, cwd: "/", onSend, onCommand });
+    act(() => ref.current?.insertPath("/name with spaces"));
+    expect(screen.getByRole("textbox")).toHaveValue('"/name with spaces" ');
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSend).toHaveBeenCalledWith('"/name with spaces"');
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it("preserves file intent when editing away the text before a reference", async () => {
+    const ref = createRef<ChatComposerHandle>();
+    const onSend = vi.fn();
+    const onCommand = vi.fn();
+    const { user } = await renderComposer({ ref, cwd: "/", onSend, onCommand });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    act(() => ref.current?.setDraft("Read "));
+    act(() => ref.current?.insertPath("/name"));
+    expect(input).toHaveValue("Read /name ");
+    input.setSelectionRange(0, 5);
+    fireEvent.select(input);
+    await user.keyboard("{Backspace}");
+    expect(input).toHaveValue('"/name" ');
+    expect(input.selectionStart).toBe(0);
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSend).toHaveBeenCalledWith('"/name"');
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it("opens Files from the toolbar at the saved selection", async () => {
+    vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
+    const { user } = await renderComposer({ cwd: "/p" });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await user.type(input, "Read OLD please");
+    input.setSelectionRange(5, 8);
+    fireEvent.select(input);
+    await user.click(screen.getByRole("button", { name: "Files" }));
+    await user.click(await screen.findByRole("option", { name: "notes.md" }));
+    expect(input).toHaveValue("Read /p/notes.md please");
+    expect(screen.getByRole("list", { name: "File references" })).toHaveTextContent("/p/notes.md");
+  });
+
+  it("lists only requested directories, navigates folders and inserts exact text without sending", async () => {
+    const onSend = vi.fn();
+    const onCommand = vi.fn();
+    vi.mocked(api.listEntries).mockImplementation(async (path) =>
+      path === "/p"
+        ? [
+            { kind: "directory", name: "results", path: "/p/results" },
+            { kind: "file", name: "notes.md", path: "/p/notes.md" },
+          ]
+        : [{ kind: "file", name: "table 1.csv", path: "/p/results/table 1.csv" }],
+    );
+    const { user } = await renderComposer({ cwd: "/p", onSend, onCommand });
+    expect(api.listEntries).not.toHaveBeenCalled();
+    const input = screen.getByRole("textbox");
+    await user.type(input, "Compare @res");
+    expect(api.listEntries).toHaveBeenCalledExactlyOnceWith("/p", expect.any(AbortSignal));
+    await user.click(await screen.findByRole("option", { name: "results" }));
+    expect(input).toHaveValue("Compare @/p/results/");
+    await user.click(await screen.findByRole("option", { name: "table 1.csv" }));
+    expect(input).toHaveValue("Compare /p/results/table 1.csv ");
+    expect(screen.getByText("/p/results/table 1.csv")).toBeVisible();
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onCommand).not.toHaveBeenCalled();
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledWith("Compare /p/results/table 1.csv");
+    expect(screen.queryByText("/p/results/table 1.csv")).toBeNull();
+  });
+
+  it("completes a typed subdirectory at the caret without reading the root or replacing the suffix", async () => {
+    vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "plot.svg", path: "/p/results/plot.svg" }]);
+    const { user } = await renderComposer({ cwd: "/p" });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Read @results/pl then compare" } });
+    input.focus();
+    input.setSelectionRange(16, 16);
+    fireEvent.select(input);
+    await user.click(await screen.findByRole("option", { name: "plot.svg" }));
+    expect(api.listEntries).toHaveBeenCalledExactlyOnceWith("/p/results", expect.any(AbortSignal));
+    expect(input).toHaveValue("Read /p/results/plot.svg then compare");
+    expect(input.selectionStart).toBe("Read /p/results/plot.svg".length);
+    expect(input).toHaveFocus();
+  });
+
+  it("navigates a directory with spaces while preserving a draft suffix", async () => {
+    vi.mocked(api.listEntries).mockImplementation(async (path) =>
+      path === "/p"
+        ? [{ kind: "directory", name: "my results", path: "/p/my results" }]
+        : [{ kind: "file", name: "plot.svg", path: "/p/my results/plot.svg" }],
+    );
+    const { user } = await renderComposer({ cwd: "/p" });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Read @my then compare" } });
+    input.focus();
+    input.setSelectionRange(8, 8);
+    fireEvent.select(input);
+    await user.click(await screen.findByRole("option", { name: "my results" }));
+    await user.click(await screen.findByRole("option", { name: "plot.svg" }));
+    expect(input).toHaveValue("Read /p/my results/plot.svg then compare");
+  });
+
+  it("aborts superseded directory requests and ignores late results after Escape and unmount", async () => {
+    const requests: { path: string; signal?: AbortSignal; resolve: (entries: FileEntryDto[]) => void }[] = [];
+    vi.mocked(api.listEntries).mockImplementation(
+      (path, signal) => new Promise((resolve) => requests.push({ path, signal, resolve })),
+    );
+    const { user, unmount } = await renderComposer({ cwd: "/p" });
+    const input = screen.getByRole("textbox");
+    await user.type(input, "@");
+    expect(requests).toHaveLength(1);
+    fireEvent.change(input, { target: { value: "@results/" } });
+    expect(requests[0]!.signal?.aborted).toBe(true);
+    expect(requests[1]!.path).toBe("/p/results");
+    await act(async () => requests[1]!.resolve([{ kind: "file", path: "/p/results/new.md", name: "new.md" }]));
+    await act(async () => requests[0]!.resolve([{ kind: "file", path: "/p/old.md", name: "old.md" }]));
+    expect(screen.queryByRole("option", { name: "old.md" })).toBeNull();
+    expect(screen.getByRole("option", { name: "new.md" })).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(input).toHaveValue("@results/");
+    expect(requests[1]!.signal?.aborted).toBe(true);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await user.keyboard("n");
+    expect(requests).toHaveLength(3);
+    unmount();
+    expect(requests[2]!.signal?.aborted).toBe(true);
+    await act(async () => requests[2]!.resolve([]));
+  });
+
+  it("removes only the selected inserted range and follows edits before duplicate paths", async () => {
+    const ref = createRef<ChatComposerHandle>();
+    const { user } = await renderComposer({ ref });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    act(() => ref.current?.setDraft("already /p/notes.md; read "));
+    act(() => ref.current?.insertPath("/p/notes.md"));
+    act(() => ref.current?.insertPath("/p/notes.md"));
+    input.setSelectionRange(0, 0);
+    fireEvent.select(input);
+    await user.keyboard("Please ");
+    const removals = screen.getAllByRole("button", { name: /\/p\/notes.md/ });
+    await user.click(removals[0]!);
+    expect(input).toHaveValue("Please already /p/notes.md; read  /p/notes.md ");
+    expect(screen.getAllByRole("button", { name: /\/p\/notes.md/ })).toHaveLength(1);
+    fireEvent.change(input, { target: { value: input.value.replace(/notes.md $/, "edited.md ") } });
+    expect(screen.queryByRole("button", { name: /\/p\/notes.md/ })).toBeNull();
+    expect(input.value).toContain("/p/edited.md");
+  });
+
+  it("does not interpret email addresses or traverse outside the session cwd", async () => {
+    const { user } = await renderComposer({ cwd: "/p" });
+    const input = screen.getByRole("textbox");
+    await user.type(input, "person@example.com");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    fireEvent.change(input, { target: { value: "@../" } });
+    expect(api.listEntries).not.toHaveBeenCalled();
+    expect(screen.queryByRole("option")).toBeNull();
+  });
+
+  it("aborts file suggestions when the composer is disabled", async () => {
+    let signal: AbortSignal | undefined;
+    vi.mocked(api.listEntries).mockImplementation((_path, nextSignal) => {
+      signal = nextSignal;
+      return new Promise(() => {});
+    });
+    const user = userEvent.setup();
+    function Harness() {
+      const [disabled, setDisabled] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setDisabled(true)}>
+            Disable
+          </button>
+          <ChatComposer cwd="/p" disabled={disabled} streaming={false} onSend={() => {}} onAbort={() => {}} />
+        </>
+      );
+    }
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <Harness />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    await user.type(screen.getByRole("textbox"), "@");
+    await user.click(screen.getByRole("button", { name: "Disable" }));
+    expect(signal?.aborted).toBe(true);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("textbox")).toHaveValue("@");
   });
 });
 
@@ -248,12 +773,7 @@ describe("ChatComposer single running-state button (ADR-083)", () => {
     expect(input).toHaveFocus();
     expect(input).toHaveStyle({ outline: "none" });
     const shell = input.closest("form");
-    expect(shell).toHaveClass(
-      "rounded-[22px]",
-      "max-w-[920px]",
-      "border-v2-grey-200",
-      "focus-within:border-v2-grey-400",
-    );
+    expect(shell).toHaveClass("rounded-xl", "max-w-[920px]", "border-v2-grey-200", "focus-within:border-v2-grey-400");
     expect(shell).toContainElement(screen.getByRole("button", { name: /send/i }));
     expect(shell?.className).not.toContain("has-[textarea:focus-visible]:outline");
     expect(shell?.className).not.toContain("focus-within:border-v2-blue-600");

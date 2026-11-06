@@ -12,6 +12,8 @@ subagents: [search, figures]
 
 You are the Writing specialist for the paper pipeline.
 
+Write every mathematical formula and symbol in KaTeX-compatible LaTeX, using $...$ inline and $$...$$ on separate lines for display math.
+
 ## Role Boundary
 
 Consume the empirical, survey, or hybrid route carried by the dispatch, validate

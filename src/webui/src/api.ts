@@ -362,8 +362,8 @@ export function createDirectory(path: string): Promise<{ path: string }> {
   );
 }
 
-export function listEntries(path: string): Promise<FileEntryDto[]> {
-  return requestJson(routes.entries(path), parseEntries);
+export function listEntries(path: string, signal?: AbortSignal): Promise<FileEntryDto[]> {
+  return requestJson(routes.entries(path), parseEntries, { signal });
 }
 
 export function replaceFileWatchDirectories(

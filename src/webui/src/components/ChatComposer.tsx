@@ -1,10 +1,24 @@
-import { Square } from "lucide-react";
+import { AtSign, FileText, Slash, Square, X } from "lucide-react";
 import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SkillCommandDto } from "../../../web/contracts";
 import { useI18n } from "../i18n/useI18n";
+import { type ComposerSuggestion, ComposerSuggestions } from "./composer/ComposerSuggestions";
+import {
+  type ComposerDraft,
+  directoryTrigger,
+  fileQuery,
+  protectLeadingReference,
+  referenceLiteral,
+  replaceDraftRange,
+  slashInvocation,
+  slashQuery,
+} from "./composer/draft";
+import { useComposerFiles } from "./composer/useComposerFiles";
+import { useDraftInput } from "./composer/useDraftInput";
 import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface ChatComposerProps {
+  cwd?: string;
   disabled: boolean;
   streaming: boolean;
   onSend: (text: string) => void;
@@ -21,8 +35,6 @@ export interface ChatComposerHandle {
   focus(): void;
 }
 
-const SLASH_PREFIX = /^(\s*)\/(\S*)$/;
-
 /**
  * Chat composer. The Send button turns into Stop while the agent is
  * streaming (opencode prompt-input behavior); multiline input preserved.
@@ -30,19 +42,23 @@ const SLASH_PREFIX = /^(\s*)\/(\S*)$/;
  * `/<name>` form unless a command collision requires Pi's `/skill:<name>` form.
  */
 export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer(
-  { disabled, streaming, onSend, onCommand, onAbort, commands = [] },
+  { cwd, disabled, streaming, onSend, onCommand, onAbort, commands = [] },
   ref,
 ) {
   const { t } = useI18n();
-  const [text, setText] = useState("");
+  const [draft, setDraft] = useState<ComposerDraft>({ text: "", references: [] });
+  const { text } = draft;
   const [selectionStart, setSelectionStart] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [dismissed, setDismissed] = useState(false);
   /** Set on submit/stop; the effect below restores focus once the composer is
    * (re)enabled, covering the disable-then-enable send cycle (ADR-083). */
   const [pendingFocus, setPendingFocus] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const draftInput = useDraftInput(textareaRef);
   const composing = useRef(false);
   const insertedCaret = useRef<number | null>(null);
+  const referenceId = useRef(0);
   const commandListId = `composer-commands-${useId().replaceAll(":", "")}`;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: Remeasure the committed DOM whenever the controlled draft changes.
@@ -71,13 +87,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     ref,
     () => ({
       setDraft(nextText: string) {
-        setText(nextText);
+        setDraft({ text: nextText, references: [] });
         setSelectionStart(nextText.length);
-        requestAnimationFrame(() => {
-          const textarea = textareaRef.current;
-          textarea?.focus();
-          textarea?.setSelectionRange(nextText.length, nextText.length);
-        });
+        insertedCaret.current = nextText.length;
+        setDismissed(false);
       },
       focus() {
         textareaRef.current?.focus();
@@ -87,11 +100,19 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         if (disabled || !textarea) return;
         const before = textarea.value.slice(0, textarea.selectionStart);
         const after = textarea.value.slice(textarea.selectionEnd);
-        const insertion = `${before && !/\s$/.test(before) ? " " : ""}${path}${/^\s/.test(after) ? "" : " "}`;
+        const literal = referenceLiteral(path, !before.trim());
+        const insertion = `${before && !/\s$/.test(before) ? " " : ""}${literal}${/^\s/.test(after) ? "" : " "}`;
         insertedCaret.current = before.length + insertion.length;
-        setText(before + insertion + after);
+        const start = before.length + (before && !/\s$/.test(before) ? 1 : 0);
+        const reference = { id: ++referenceId.current, path, start, end: start + literal.length };
+        const end = textarea.selectionEnd;
+        setDraft((current) => {
+          const next = replaceDraftRange(current, before.length, end, insertion);
+          return { ...next, references: [...next.references, reference] };
+        });
         setSelectionStart(insertedCaret.current);
         setActiveIndex(0);
+        setDismissed(true);
       },
     }),
     [disabled],
@@ -112,34 +133,43 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   }, [pendingFocus, disabled]);
 
   const slash = useMemo(() => {
-    const prefix = text.slice(0, selectionStart);
-    const match = SLASH_PREFIX.exec(prefix);
-    if (!match || commands.length === 0 || disabled) return undefined;
-    return { prefixLength: match[0].length, query: (match[2] ?? "").toLowerCase() };
-  }, [text, selectionStart, commands, disabled]);
+    if (commands.length === 0 || disabled || dismissed) return undefined;
+    const query = slashQuery(text, selectionStart);
+    return query && !draft.references.some((reference) => reference.start <= query.start && reference.end > query.start)
+      ? query
+      : undefined;
+  }, [text, selectionStart, commands, disabled, dismissed, draft.references]);
+
+  const file = useMemo(
+    () => (cwd && !disabled && !dismissed ? fileQuery(text, selectionStart, cwd) : undefined),
+    [text, selectionStart, cwd, disabled, dismissed],
+  );
+  const files = useComposerFiles(file?.directory, file?.query ?? "");
 
   const filtered = useMemo(() => {
     if (!slash) return [];
-    return commands.filter((command) => {
-      const invocation = slashInvocation(command, commands).slice(1).toLowerCase();
-      const name = command.name.toLowerCase();
-      return invocation.startsWith(slash.query) || invocation.includes(slash.query) || name.includes(slash.query);
-    });
+    return commands
+      .filter((command) => {
+        const invocation = slashInvocation(command, commands).slice(1).toLowerCase();
+        const name = command.name.toLowerCase();
+        return invocation.startsWith(slash.query) || invocation.includes(slash.query) || name.includes(slash.query);
+      })
+      .sort((a, b) => Number(a.source === "skill") - Number(b.source === "skill"));
   }, [slash, commands]);
 
   const insertSlash = (command: SkillCommandDto) => {
     if (slash === undefined) return;
-    const before = text.slice(0, selectionStart - slash.prefixLength);
-    const after = text.slice(selectionStart);
+    const after = text.slice(slash.end);
     const invocation = slashInvocation(command, commands);
-    const next = `${before}${invocation} ${after}`;
-    setText(next);
-    setSelectionStart(next.length);
-    requestAnimationFrame(() => textareaRef.current?.focus());
+    const insertion = invocation + (/^\s/.test(after) ? "" : " ");
+    setDraft((current) => replaceDraftRange(current, slash.start, slash.end, insertion));
+    insertedCaret.current = slash.start + invocation.length + 1;
+    setSelectionStart(insertedCaret.current);
+    setDismissed(true);
   };
 
   const executeCommand = (command: SkillCommandDto, args: string) => {
-    setText("");
+    setDraft({ text: "", references: [] });
     setSelectionStart(0);
     setPendingFocus(true);
     if (onCommand) {
@@ -155,14 +185,80 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       insertSlash(command);
       return;
     }
-    executeCommand(command, "");
+    executeCommand(command, slash?.args ?? "");
+  };
+
+  const suggestions: ComposerSuggestion[] = file
+    ? files.entries.map((entry) => ({ id: entry.path, kind: entry.kind, label: entry.name }))
+    : filtered.map((command) => ({
+        id: `${command.source}:${command.name}`,
+        kind: command.source === "skill" ? "skill" : "command",
+        label: slashInvocation(command, commands),
+        description: command.description,
+      }));
+  const selectedIndex = Math.min(activeIndex, Math.max(0, suggestions.length - 1));
+  const popover = file ? "files" : slash ? "slash" : undefined;
+  const selectSuggestion = (index: number) => {
+    if (!file) {
+      const command = filtered[index];
+      if (command) selectSlash(command);
+      return;
+    }
+    const entry = files.entries[index];
+    if (!entry) return;
+    const directory = entry.kind === "directory";
+    const literal = referenceLiteral(entry.path, !text.slice(0, file.start).trim());
+    const insertion = directory
+      ? directoryTrigger(entry.path)
+      : literal + (/^\s/.test(text.slice(file.end)) ? "" : " ");
+    const reference = {
+      id: ++referenceId.current,
+      path: entry.path,
+      start: file.start,
+      end: file.start + literal.length,
+    };
+    setDraft((current) => {
+      const next = replaceDraftRange(current, file.start, file.end, insertion);
+      return directory ? next : { ...next, references: [...next.references, reference] };
+    });
+    insertedCaret.current = file.start + insertion.length - (directory && insertion.startsWith('@"') ? 1 : 0);
+    setSelectionStart(insertedCaret.current);
+    setActiveIndex(0);
+    setDismissed(!directory);
+  };
+
+  const openSuggestions = (trigger: "/" | "@") => {
+    const textarea = textareaRef.current;
+    if (!textarea || disabled) return;
+    if (trigger === "/") {
+      const existing = /^(\s*)\/\S*/.exec(text);
+      if (existing) insertedCaret.current = existing[0].length;
+      else {
+        setDraft((current) => replaceDraftRange(current, 0, 0, text ? "/ " : "/"));
+        insertedCaret.current = 1;
+      }
+    } else {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const prefix = `${start && !/\s/.test(text.charAt(start - 1)) ? " " : ""}@`;
+      const insertion = prefix + (text.slice(end) && !/^\s/.test(text.slice(end)) ? " " : "");
+      setDraft((current) => replaceDraftRange(current, start, end, insertion));
+      insertedCaret.current = start + prefix.length;
+    }
+    setSelectionStart(insertedCaret.current);
+    setActiveIndex(0);
+    setDismissed(false);
   };
 
   const submit = () => {
-    const trimmed = text.trim();
+    const literalDraft = protectLeadingReference(draft);
+    const trimmed = literalDraft.text.trim();
     if (!trimmed || disabled) return;
     const commandMatch = /^(\/\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
-    if (commandMatch) {
+    const startsWithReference = literalDraft.references.some(
+      (reference) => reference.start === literalDraft.text.search(/\S/),
+    );
+    if (commandMatch && !startsWithReference) {
       const command = commands.find(
         (candidate) => candidate.source !== "skill" && slashInvocation(candidate, commands) === commandMatch[1],
       );
@@ -171,7 +267,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         return;
       }
     }
-    setText("");
+    setDraft({ text: "", references: [] });
     setSelectionStart(0);
     setPendingFocus(true);
     onSend(trimmed);
@@ -185,102 +281,129 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   return (
     <form
       data-chat-composer
-      className="relative mx-auto flex w-full max-w-[920px] items-end rounded-[22px] border border-v2-grey-200 bg-v2-background-bg-deep p-2 shadow-[0_4px_20px_-12px_rgba(15,23,42,0.2)] transition-colors focus-within:border-v2-grey-400"
+      className="relative mx-auto flex w-full max-w-[920px] flex-col rounded-xl border border-v2-grey-200 bg-v2-background-bg-deep p-2 shadow-[0_4px_20px_-12px_rgba(15,23,42,0.2)] transition-colors focus-within:border-v2-grey-400"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setDismissed(true);
+      }}
       onSubmit={(e) => {
         e.preventDefault();
         submit();
       }}
     >
-      {slash && filtered.length > 0 ? (
-        <div
+      {popover ? (
+        <ComposerSuggestions
           id={commandListId}
-          role="listbox"
-          aria-label={t("composer.slashHint")}
-          className="absolute inset-x-0 bottom-full z-20 mb-2 max-h-64 overflow-y-auto rounded-lg border border-v2-grey-200 bg-v2-background-bg-base p-1 shadow-lg"
-        >
-          {filtered.map((command, index) => (
-            <button
-              key={`${command.source}:${command.name}`}
-              id={`${commandListId}-option-${index}`}
-              type="button"
-              role="option"
-              tabIndex={-1}
-              aria-selected={index === activeIndex}
-              className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] ${
-                index === activeIndex ? "bg-v2-grey-100 text-v2-text-text-base" : "text-v2-text-text-muted"
-              }`}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                selectSlash(command);
-              }}
-              onMouseEnter={() => setActiveIndex(index)}
-            >
-              <span className="shrink-0 font-mono text-v2-blue-600">{slashInvocation(command, commands)}</span>
-              {command.description ? (
-                <span className="truncate text-[12px] text-v2-text-text-faint">{command.description}</span>
-              ) : null}
-            </button>
-          ))}
-        </div>
+          surface={popover}
+          items={suggestions}
+          activeIndex={selectedIndex}
+          status={file ? files.status : undefined}
+          onActive={setActiveIndex}
+          onSelect={selectSuggestion}
+        />
       ) : null}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 w-full flex-col">
+        {draft.references.length ? (
+          <ul className="flex flex-wrap gap-1.5 px-2 pt-1" aria-label={t("composer.references")}>
+            {draft.references.map((reference) => (
+              <li
+                key={reference.id}
+                data-composer-reference
+                className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-v2-grey-200 bg-v2-background-bg-base py-1 pr-1 pl-2 text-[12px] text-v2-text-text-muted"
+                title={reference.path}
+              >
+                <FileText size={13} className="shrink-0" aria-hidden />
+                <span className="truncate">{reference.path}</span>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  className="flex size-6 shrink-0 items-center justify-center rounded hover:bg-v2-grey-100 disabled:opacity-50"
+                  aria-label={`${t("composer.removeReference")} ${reference.path}`}
+                  onClick={() => {
+                    setDraft((current) => replaceDraftRange(current, reference.start, reference.end, ""));
+                    insertedCaret.current = reference.start;
+                    setSelectionStart(reference.start);
+                    setDismissed(true);
+                  }}
+                >
+                  <X size={12} aria-hidden />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <textarea
           ref={textareaRef}
           className="max-h-[160px] min-h-[76px] w-full resize-none bg-transparent px-3 py-2 text-[14px] leading-6 text-v2-text-text-base placeholder:text-v2-text-text-faint disabled:opacity-60"
           style={{ outline: "none" }}
           aria-label={t("composer.message")}
           aria-autocomplete="list"
-          aria-controls={slash && filtered.length > 0 ? commandListId : undefined}
+          aria-controls={popover ? commandListId : undefined}
           aria-activedescendant={
-            slash && filtered.length > 0
-              ? `${commandListId}-option-${Math.min(activeIndex, filtered.length - 1)}`
-              : undefined
+            popover && suggestions.length > 0 ? `${commandListId}-option-${selectedIndex}` : undefined
           }
           placeholder={t("composer.placeholder")}
           rows={2}
           value={text}
           disabled={disabled}
           onChange={(e) => {
-            setText(e.target.value);
-            setSelectionStart(e.target.selectionStart);
+            const nextText = e.target.value;
+            const edited = draftInput.apply(draft, nextText, e.nativeEvent);
+            const next = composing.current ? edited : protectLeadingReference(edited);
+            const leading = edited.references.find((reference) => reference.start === nextText.search(/\S/));
+            let caret = e.target.selectionStart;
+            if (next !== edited && leading) {
+              caret += (caret > leading.start ? 1 : 0) + (caret >= leading.end ? 1 : 0);
+              insertedCaret.current = caret;
+            }
+            setDraft(next);
+            setSelectionStart(caret);
             setActiveIndex(0);
+            setDismissed(false);
           }}
-          onSelect={(e) => setSelectionStart(e.currentTarget.selectionStart)}
+          onSelect={(e) => {
+            if (selectionStart !== e.currentTarget.selectionStart) {
+              setSelectionStart(e.currentTarget.selectionStart);
+              setActiveIndex(0);
+              setDismissed(false);
+            }
+          }}
           onCompositionStart={() => {
             composing.current = true;
+            draftInput.startComposition();
           }}
           onCompositionEnd={() => {
             composing.current = false;
+            draftInput.endComposition();
           }}
           onBlur={() => {
             composing.current = false;
+            draftInput.endComposition();
           }}
           onKeyDown={(e) => {
             // Safari may end composition before its confirmation keydown (229).
             if (composing.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
-            if (slash && filtered.length > 0) {
-              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                e.preventDefault();
-                setActiveIndex(
-                  (current) => (current + (e.key === "ArrowDown" ? 1 : -1) + filtered.length) % filtered.length,
-                );
-                return;
-              }
-              if (e.key === "Home" || e.key === "End") {
-                e.preventDefault();
-                setActiveIndex(e.key === "Home" ? 0 : filtered.length - 1);
-                return;
-              }
+            if (popover) {
               if (e.key === "Escape") {
                 e.preventDefault();
                 setActiveIndex(0);
-                setText(text.slice(0, selectionStart - slash.prefixLength) + text.slice(selectionStart));
+                setDismissed(true);
                 return;
               }
-              if (e.key === "Enter") {
+              if (suggestions.length > 0 && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                 e.preventDefault();
-                const command = filtered[Math.min(activeIndex, filtered.length - 1)];
-                if (command) selectSlash(command);
+                setActiveIndex(
+                  (selectedIndex + (e.key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length,
+                );
+                return;
+              }
+              if (suggestions.length > 0 && (e.key === "Home" || e.key === "End")) {
+                e.preventDefault();
+                setActiveIndex(e.key === "Home" ? 0 : suggestions.length - 1);
+                return;
+              }
+              if (e.key === "Enter" && !e.shiftKey && (file || suggestions.length > 0)) {
+                e.preventDefault();
+                selectSuggestion(selectedIndex);
                 return;
               }
             }
@@ -291,12 +414,37 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           }}
         />
       </div>
-      <div className="flex shrink-0 items-center gap-1 p-1">
+      <div className="flex w-full shrink-0 items-center gap-1 px-1 pt-1">
+        <button
+          type="button"
+          aria-label={t("composer.commands")}
+          title={t("composer.commands")}
+          disabled={disabled || !commands.length}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => openSuggestions("/")}
+          className="flex size-8 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100 disabled:opacity-40"
+        >
+          <Slash size={15} aria-hidden />
+        </button>
+        {cwd ? (
+          <button
+            type="button"
+            aria-label={t("composer.files")}
+            title={t("composer.files")}
+            disabled={disabled}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => openSuggestions("@")}
+            className="flex size-8 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100 disabled:opacity-40"
+          >
+            <AtSign size={15} aria-hidden />
+          </button>
+        ) : null}
+        <span className="flex-1" />
         {showStop ? (
           <button
             type="button"
             data-composer-action
-            className="flex size-9 items-center justify-center rounded-full bg-v2-blue-600 text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-blue-600"
+            className="flex size-8 items-center justify-center rounded-lg bg-v2-text-text-base text-v2-background-bg-base transition-opacity hover:opacity-80"
             aria-label={t("composer.stop")}
             title={t("composer.stopTitle")}
             onClick={() => {
@@ -312,7 +460,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           <button
             type="submit"
             data-composer-action
-            className="flex size-9 items-center justify-center rounded-full bg-v2-blue-600 text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-blue-600 disabled:opacity-40 disabled:hover:opacity-40"
+            className="flex size-8 items-center justify-center rounded-lg bg-v2-text-text-base text-v2-background-bg-base transition-opacity hover:opacity-80 disabled:opacity-40 disabled:hover:opacity-40"
             aria-label={t("composer.send")}
             title={t("composer.send")}
             disabled={disabled || !canSend}
@@ -340,11 +488,3 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     </form>
   );
 });
-
-function slashInvocation(command: SkillCommandDto, commands: SkillCommandDto[]): string {
-  if (command.source !== "skill") return `/${command.name}`;
-  const collides =
-    command.requiresPrefix ||
-    commands.some((candidate) => candidate.source !== "skill" && candidate.name === command.name);
-  return collides ? `/skill:${command.name}` : `/${command.name}`;
-}

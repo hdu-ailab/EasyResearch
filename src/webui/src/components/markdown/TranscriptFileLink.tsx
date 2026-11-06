@@ -1,3 +1,4 @@
+import { FileText } from "lucide-react";
 import { createContext, type ReactNode, useContext } from "react";
 
 export const TranscriptFileContext = createContext<((reference: string) => void) | null>(null);
@@ -18,6 +19,7 @@ export function TranscriptFileLink({
       title={path}
       onClick={() => openFile(path)}
     >
+      <FileText size={12} className="mr-1 inline-block align-[-2px] text-v2-text-text-faint" aria-hidden />
       {children}
     </button>
   );

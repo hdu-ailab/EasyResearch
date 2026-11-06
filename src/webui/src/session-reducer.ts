@@ -1200,12 +1200,18 @@ export function mergeSnapshot(state: SessionViewState, snapshot: SessionSnapshot
   return next;
 }
 
-export function terminateSessionRun(state: SessionViewState, clearError = false): SessionViewState {
+export function terminateSessionRun(
+  state: SessionViewState,
+  clearError = false,
+  source: "root" | "child" = "root",
+): SessionViewState {
   return {
     ...state,
     isStreaming: false,
     error: clearError ? null : state.error,
     retry: null,
+    // Root compaction belongs to its controller and may continue after agent_settled.
+    compactionState: source === "child" ? "idle" : state.compactionState,
     activeMessageKey: undefined,
     messages: state.messages.map((message) => ({ ...message, isThinking: false, streaming: false })),
     tools: state.tools.map((tool) => (tool.supervised || tool.done ? tool : interruptTool(tool))),
@@ -1229,8 +1235,39 @@ export function terminateDeletedSession(state: SessionViewState): SessionViewSta
 export function reduceSessionEvent(
   state: SessionViewState,
   event: AgentSessionEvent | RuntimeConfigurationAppliedEvent | TimelineEntryAppendedEventDto,
+  source: "root" | "child" = "root",
 ): SessionViewState {
   switch (event.type) {
+    case "compaction_start":
+      return source !== "child" || state.compactionState === "running"
+        ? state
+        : { ...state, compactionState: "running" };
+    case "compaction_end": {
+      if (source !== "child") return state;
+      const next = state.compactionState === "idle" ? state : { ...state, compactionState: "idle" as const };
+      const error = event.errorMessage?.trim();
+      if (event.aborted || !error) return next;
+      // Native compaction events have no event id. An observed start distinguishes
+      // repeated failures; without a start, do not duplicate the last failure notice.
+      const previous = state.messages.findLast((message) => message.key.startsWith("compaction-error:"));
+      if (state.compactionState === "idle" && previous?.text === error) return next;
+      return {
+        ...next,
+        messages: [
+          ...next.messages,
+          {
+            key: `compaction-error:${state.hydrationRevision}:${state.nextOrder}`,
+            role: "system",
+            text: error,
+            streaming: false,
+            error: true,
+            order: state.nextOrder,
+          },
+        ],
+        messageStructureRevision: state.messageStructureRevision + 1,
+        nextOrder: state.nextOrder + 1,
+      };
+    }
     case "runtime_configuration_applied":
       return event.generation <= state.runtimeConfigurationGeneration
         ? state
@@ -1617,7 +1654,7 @@ export function reduceSessionEvent(
       return changed ? { ...state, tools } : state;
     }
     case "agent_settled": {
-      return terminateSessionRun(state, true);
+      return terminateSessionRun(state, true, source);
     }
     case "queue_update": {
       const steering = (event as { steering?: unknown }).steering;

@@ -5,6 +5,7 @@ import * as api from "../../api";
 import { I18nProvider } from "../../i18n/I18nProvider";
 import { readPreferences, STORAGE_KEY } from "../../preferences";
 import { PreferencesProvider } from "../../preferences/PreferencesProvider";
+import { getTimelineDetail, TIMELINE_PRESETS } from "../../timeline-detail";
 import { SettingsModal, type SettingsModalProps } from "./SettingsModal";
 
 vi.mock("../../api", async (importOriginal) => {
@@ -1122,38 +1123,28 @@ describe("SettingsModal", () => {
     expect(api.patchAgent).not.toHaveBeenCalled();
   });
 
-  it("persists each conversation expansion preference independently", async () => {
+  it("persists category details locally while retaining the global conversation controls", async () => {
     const user = userEvent.setup();
     renderSettings();
     await selectCategory(user, "Conversation");
 
-    const thinking = screen.getByRole("switch", { name: /auto-expand thinking/i });
-    const tools = screen.getByRole("switch", { name: /auto-expand tool output/i });
-    const subagent = screen.getByRole("switch", { name: /expand subagent output/i });
-    expect(thinking).toHaveAttribute("aria-checked", "false");
-    expect(tools).toHaveAttribute("aria-checked", "false");
-    expect(subagent).toHaveAttribute("aria-checked", "false");
-
-    await user.click(thinking);
-    expect(readPreferences(window.localStorage, () => "en")).toMatchObject({
-      autoExpandThinking: true,
-      autoExpandTools: false,
-      expandSubagentOutput: false,
+    expect(await screen.findByRole("spinbutton", { name: /automatic compaction/i })).toBeVisible();
+    expect(screen.getByRole("spinbutton", { name: /LLM request timeout/i })).toBeVisible();
+    expect(screen.getByRole("switch", { name: /show api usage details/i })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    await user.click(screen.getByRole("switch", { name: "Collapse Thinking by default" }));
+    await user.click(screen.getByRole("button", { name: "Hide Other tools" }));
+    await user.click(screen.getByRole("switch", { name: "Group Subagents" }));
+    const defaults = getTimelineDetail({});
+    expect(readPreferences(window.localStorage, () => "en").timelineDetail).toEqual({
+      ...defaults,
+      thinking: { ...defaults.thinking, details: "expanded" },
+      tools: { ...defaults.tools, placement: "hidden" },
+      subagents: { ...defaults.subagents, placement: "separate" },
     });
-
-    await user.click(tools);
-    expect(readPreferences(window.localStorage, () => "en")).toMatchObject({
-      autoExpandThinking: true,
-      autoExpandTools: true,
-      expandSubagentOutput: false,
-    });
-
-    await user.click(subagent);
-    expect(readPreferences(window.localStorage, () => "en")).toMatchObject({
-      autoExpandThinking: true,
-      autoExpandTools: true,
-      expandSubagentOutput: true,
-    });
+    expect(api.patchCompactionSettings).not.toHaveBeenCalled();
+    expect(api.patchApiUsageSettings).not.toHaveBeenCalled();
+    expect(api.patchProviderTimeoutSettings).not.toHaveBeenCalled();
   });
 
   it("retains an in-flight compaction failure and its Retry target across category switches", async () => {
@@ -1228,24 +1219,22 @@ describe("SettingsModal", () => {
     expect(toggle).toHaveAttribute("aria-checked", "false");
   });
 
-  it("contains all switch thumbs with fixed pixel geometry in both states", async () => {
+  it("retains the category disclosure and custom policy across Settings category changes", async () => {
     const user = userEvent.setup();
     renderSettings();
     await selectCategory(user, "Conversation");
-    const switches = [
-      screen.getByRole("switch", { name: /auto-expand thinking/i }),
-      screen.getByRole("switch", { name: /auto-expand tool output/i }),
-      screen.getByRole("switch", { name: /expand subagent output/i }),
-    ];
-
-    for (const track of switches) {
-      const thumb = track.querySelector("[aria-hidden]");
-      expect(track).toHaveClass("h-[20px]", "w-[36px]", "overflow-hidden");
-      expect(thumb).toHaveClass("left-0", "top-[2px]", "size-[16px]", "translate-x-[2px]");
-      await user.click(track);
-      expect(thumb).toHaveClass("translate-x-[18px]");
-      expect(track).toHaveAttribute("aria-checked", "true");
-    }
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    const slider = screen.getByRole("slider", { name: "Conversation detail" });
+    fireEvent.change(slider, { target: { value: 4 } });
+    expect(readPreferences(localStorage, () => "en").timelineDetail).toEqual(TIMELINE_PRESETS[0].value);
+    await user.click(screen.getByRole("button", { name: "Hide Commands" }));
+    await selectCategory(user, "Appearance and language");
+    await selectCategory(user, "Conversation");
+    expect(screen.getByRole("slider", { name: "Conversation detail" })).toBe(slider);
+    expect(slider).toHaveAttribute("aria-valuetext", "Custom");
+    expect(screen.getByRole("button", { name: "Advanced" })).toHaveAttribute("aria-expanded", "true");
+    await user.click(screen.getByRole("button", { name: "Show Commands" }));
+    expect(readPreferences(localStorage, () => "en").timelineDetail).toEqual(TIMELINE_PRESETS[0].value);
   });
 
   it("follows font preference changes from another tab", async () => {

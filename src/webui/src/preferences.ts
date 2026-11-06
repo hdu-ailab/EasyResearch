@@ -1,3 +1,5 @@
+import { getTimelineDetail, parseTimelineDetail, type TimelineDetail } from "./timeline-detail";
+
 export type Language = "en" | "zh-CN";
 
 export type Theme = "light" | "dark";
@@ -11,6 +13,7 @@ export interface WebUiPreferences {
   autoExpandThinking: boolean;
   autoExpandTools: boolean;
   expandSubagentOutput: boolean;
+  timelineDetail?: TimelineDetail;
 }
 
 export const CHAT_FONT_MIN = 10;
@@ -46,6 +49,7 @@ export function readPreferences(storage: Pick<Storage, "getItem">, navigatorLang
     language,
     studioTheme: "light",
     ...DEFAULT_EXPANSION_PREFERENCES,
+    timelineDetail: getTimelineDetail({}),
   });
   try {
     const raw = storage.getItem(STORAGE_KEY);
@@ -53,14 +57,21 @@ export function readPreferences(storage: Pick<Storage, "getItem">, navigatorLang
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const language: Language =
       parsed.language === "en" || parsed.language === "zh-CN" ? parsed.language : browserLanguage;
+    const expansion = {
+      autoExpandThinking: pickBoolean(parsed.autoExpandThinking),
+      autoExpandTools: pickBoolean(parsed.autoExpandTools),
+      expandSubagentOutput: pickBoolean(parsed.expandSubagentOutput),
+    };
     return {
       chatFontSize: pickFontSize(parsed.chatFontSize, DEFAULT_CHAT_FONT_SIZE, CHAT_FONT_MIN, CHAT_FONT_MAX),
       filesFontSize: pickFontSize(parsed.filesFontSize, DEFAULT_FILES_FONT_SIZE, FILES_FONT_MIN, FILES_FONT_MAX),
       language,
       studioTheme: parsed.studioTheme === "dark" ? "dark" : "light",
-      autoExpandThinking: pickBoolean(parsed.autoExpandThinking),
-      autoExpandTools: pickBoolean(parsed.autoExpandTools),
-      expandSubagentOutput: pickBoolean(parsed.expandSubagentOutput),
+      ...expansion,
+      timelineDetail:
+        parsed.timelineDetail === undefined
+          ? getTimelineDetail(expansion)
+          : (parseTimelineDetail(parsed.timelineDetail) ?? getTimelineDetail({})),
     };
   } catch {
     return defaults(browserLanguage);

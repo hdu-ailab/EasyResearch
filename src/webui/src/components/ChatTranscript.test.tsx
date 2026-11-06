@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApiUsageStatisticsDto, ApiUsageTotalsDto } from "../../../web/contracts";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { STORAGE_KEY, type WebUiPreferences, writePreferences } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
@@ -16,6 +17,7 @@ import {
   transcriptContentObserver,
   wheelUp,
 } from "../testing/transcriptTest";
+import { getTimelineDetail, TIMELINE_CATEGORIES, TIMELINE_PRESETS, type TimelineDetail } from "../timeline-detail";
 import { ChatTranscript, type ChatTranscriptHandle } from "./ChatTranscript";
 
 vi.mock("mermaid", () => ({
@@ -68,7 +70,17 @@ function flushFollowFrame() {
 }
 
 function renderTranscript(ui: ReactElement, preferences: Partial<WebUiPreferences> = {}) {
-  writePreferences(window.localStorage, { ...defaultPreferences, ...preferences });
+  // These existing cases exercise individual disclosures. Grouped/default policy
+  // is covered explicitly below instead of hiding the controls under test.
+  const migrated = getTimelineDetail({ ...defaultPreferences, ...preferences });
+  const separate = Object.fromEntries(
+    TIMELINE_CATEGORIES.map((category) => [category, { ...migrated[category], placement: "separate" }]),
+  ) as TimelineDetail;
+  writePreferences(window.localStorage, {
+    ...defaultPreferences,
+    ...preferences,
+    timelineDetail: preferences.timelineDetail ?? separate,
+  });
   const result = render(ui, { wrapper: PreferencesProvider });
   hydrateTranscript(result.container);
   return result;
@@ -76,6 +88,11 @@ function renderTranscript(ui: ReactElement, preferences: Partial<WebUiPreference
 
 function scrollContainer(): HTMLDivElement {
   return screen.getByLabelText("Conversation") as HTMLDivElement;
+}
+
+function setTimelinePreferences(timelineDetail: TimelineDetail) {
+  writePreferences(window.localStorage, { ...defaultPreferences, timelineDetail });
+  fireEvent(window, new StorageEvent("storage", { key: STORAGE_KEY }));
 }
 
 describe("ChatTranscript", () => {
@@ -108,6 +125,382 @@ describe("ChatTranscript", () => {
     expect(screen.getByText("Send a message to start.")).toBeTruthy();
     rerender(<ChatTranscript messages={[]} tools={[]} pending />);
     expect(screen.queryByText("Send a message to start.")).toBeNull();
+  });
+
+  it("projects the shared compact default before virtualization while keeping mixed answers outside groups", async () => {
+    const user = userEvent.setup();
+    const mixed = msg({ key: "mixed", text: "The visible answer", reasoning: "Stored **reasoning**", order: 2 });
+    renderTranscript(
+      <ChatTranscript
+        messages={[mixed]}
+        tools={[
+          tool({ key: "read", name: "read", args: "paper.md", output: "paper contents", order: 0 }),
+          tool({ key: "shell", name: "bash", args: "python train.py", output: "training finished", order: 1 }),
+        ]}
+      />,
+      { timelineDetail: getTimelineDetail(defaultPreferences) },
+    );
+    const group = screen.getByRole("button", { name: /3 activities/ });
+    expect(group).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("The visible answer")).toBeVisible();
+    expect(screen.queryByText("paper contents")).toBeNull();
+    expect(screen.queryByText("Stored")).toBeNull();
+    expect(document.querySelectorAll("[data-row-key]")).toHaveLength(2);
+    group.focus();
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: /read paper.md/ }));
+    expect(screen.getByText("paper contents")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Thinking process" }));
+    expect(screen.getByText("reasoning").tagName).toBe("STRONG");
+    expect(screen.getByText("The visible answer").closest(".er-chat-activity-group")).toBeNull();
+  });
+
+  it("keeps explicit disclosures session-scoped while untouched rows follow live category defaults", () => {
+    const rows = [tool({ key: "r", name: "read" }), tool({ key: "s", name: "web-search", order: 2 })];
+    const detail = Object.fromEntries(
+      TIMELINE_CATEGORIES.map((category) => [category, { placement: "separate", details: "collapsed" }]),
+    ) as TimelineDetail;
+    const view = renderTranscript(<ChatTranscript messages={[]} tools={rows} hydrationScope="root" />, {
+      timelineDetail: detail,
+    });
+    const read = screen.getByRole("button", { name: /^read/ });
+    fireEvent.click(read);
+    fireEvent.click(read);
+    const update = (timelineDetail: TimelineDetail) => {
+      writePreferences(window.localStorage, { ...defaultPreferences, timelineDetail });
+      fireEvent(window, new StorageEvent("storage", { key: STORAGE_KEY }));
+    };
+    update(TIMELINE_PRESETS.find((preset) => preset.id === "everything")!.value);
+    expect(read).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /^web-search/ })).toHaveAttribute("aria-expanded", "true");
+    view.rerender(<ChatTranscript messages={[]} tools={rows} hydrationScope="child" />);
+    expect(screen.getByRole("button", { name: /^read/ })).toHaveAttribute("aria-expanded", "true");
+    view.rerender(<ChatTranscript messages={[]} tools={rows} hydrationScope="root" />);
+    expect(screen.getByRole("button", { name: /^read/ })).toHaveAttribute("aria-expanded", "false");
+    update(detail);
+    expect(screen.getByRole("button", { name: /^web-search/ })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("retains an opened activity group when older members are prepended", () => {
+    const compact = TIMELINE_PRESETS.find((preset) => preset.id === "compact")!.value;
+    const original = [tool({ key: "second", name: "read", order: 2 })];
+    const view = renderTranscript(<ChatTranscript messages={[]} tools={original} />, { timelineDetail: compact });
+    const trigger = screen.getByRole("button", { name: /1 activities/ });
+    fireEvent.click(trigger);
+    view.rerender(
+      <ChatTranscript messages={[]} tools={[tool({ key: "first", name: "write", order: 1 }), ...original]} />,
+    );
+    expect(screen.getByRole("button", { name: /2 activities/ })).toBe(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /^write/ })).toBeVisible();
+  });
+
+  it("retains prepend-stabilized group disclosures independently across root and child visits", () => {
+    const compact = TIMELINE_PRESETS.find((preset) => preset.id === "compact")!.value;
+    const original = [tool({ key: "b", name: "read", order: 2 })];
+    const prepended = [tool({ key: "a", name: "write", order: 1 }), ...original];
+    const view = renderTranscript(<ChatTranscript messages={[]} tools={original} hydrationScope="root" />, {
+      timelineDetail: compact,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /1 activities/ }));
+    view.rerender(<ChatTranscript messages={[]} tools={prepended} hydrationScope="root" />);
+    expect(screen.getByRole("button", { name: /2 activities/ })).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelector('[data-row-key="activity:b"]')).toBeTruthy();
+
+    // Deliberately reuse local keys: the child's disclosure must remain independent.
+    view.rerender(<ChatTranscript messages={[]} tools={original} hydrationScope="child" />);
+    const child = screen.getByRole("button", { name: /1 activities/ });
+    expect(child).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(child);
+    fireEvent.click(child);
+    view.rerender(<ChatTranscript messages={[]} tools={prepended} hydrationScope="child" />);
+    expect(screen.getByRole("button", { name: /2 activities/ })).toHaveAttribute("aria-expanded", "false");
+    view.rerender(<ChatTranscript messages={[]} tools={prepended} hydrationScope="root" />);
+    expect(screen.getByRole("button", { name: /2 activities/ })).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelector('[data-row-key="activity:b"]')).toBeTruthy();
+    view.rerender(<ChatTranscript messages={[]} tools={prepended} hydrationScope="child" />);
+    expect(screen.getByRole("button", { name: /2 activities/ })).toHaveAttribute("aria-expanded", "false");
+    expect(document.querySelector('[data-row-key="activity:b"]')).toBeTruthy();
+    view.unmount();
+    renderTranscript(<ChatTranscript messages={[]} tools={prepended} hydrationScope="root" />, {
+      timelineDetail: compact,
+    });
+    expect(screen.getByRole("button", { name: /2 activities/ })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it.each(["bash", "powershell", "ssh-bash", "write", "edit", "patch", "apply_patch", "read", "web-search"])(
+    "conceals previously opened live %s content immediately, restoring its choice only when visible",
+    (name) => {
+      const compact = TIMELINE_PRESETS.find((preset) => preset.id === "compact")!.value;
+      const hidden = TIMELINE_PRESETS.find((preset) => preset.id === "text-only")!.value;
+      const live = tool({ key: "live", name, args: "LIVE_INPUT", output: "LIVE_OUTPUT", running: true, done: false });
+      const view = renderTranscript(<ChatTranscript messages={[]} tools={[live]} />, { timelineDetail: compact });
+      const button = () => screen.getByRole("button", { name: new RegExp(`^${name}`) });
+      fireEvent.click(button());
+      expect(screen.getByText("LIVE_OUTPUT")).toBeVisible();
+      setTimelinePreferences(hidden);
+      expect(button()).toBeVisible();
+      expect(button()).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByText("LIVE_OUTPUT")).toBeNull();
+      expect(screen.queryByText("LIVE_INPUT")).toBeNull();
+      fireEvent.click(button());
+      expect(screen.queryByText("LIVE_OUTPUT")).toBeNull();
+      view.rerender(<ChatTranscript messages={[]} tools={[{ ...live, output: "LATER_OUTPUT" }]} />);
+      expect(screen.queryByText("LATER_OUTPUT")).toBeNull();
+      setTimelinePreferences(compact);
+      expect(button()).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText("LATER_OUTPUT")).toBeVisible();
+      setTimelinePreferences(hidden);
+      view.rerender(
+        <ChatTranscript
+          messages={[]}
+          tools={[{ ...live, running: false, done: true, error: true, output: "Actual failure diagnostic" }]}
+        />,
+      );
+      expect(screen.getByText("Actual failure diagnostic")).toBeVisible();
+    },
+  );
+
+  it("conceals previously opened live subagent content while preserving disclosure and real terminal errors", () => {
+    const compact = TIMELINE_PRESETS.find((preset) => preset.id === "compact")!.value;
+    const hidden = TIMELINE_PRESETS.find((preset) => preset.id === "text-only")!.value;
+    const child = tool({
+      key: "child",
+      name: "subagent",
+      agentName: "search",
+      running: true,
+      done: false,
+      latestActivity: { kind: "text", text: "CHILD_CONTENT" },
+    });
+    const view = renderTranscript(<ChatTranscript messages={[]} tools={[child]} />, { timelineDetail: compact });
+    const button = () => screen.getByRole("button", { name: /Search.*Running/ });
+    fireEvent.click(button());
+    expect(screen.getByText("CHILD_CONTENT")).toBeVisible();
+    setTimelinePreferences(hidden);
+    expect(button()).toBeVisible();
+    expect(button()).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("CHILD_CONTENT")).toBeNull();
+    fireEvent.click(button());
+    expect(screen.queryByText("CHILD_CONTENT")).toBeNull();
+    setTimelinePreferences(compact);
+    expect(button()).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("CHILD_CONTENT")).toBeVisible();
+    setTimelinePreferences(hidden);
+    view.rerender(
+      <ChatTranscript
+        messages={[]}
+        tools={[{ ...child, running: false, done: true, error: true, latestMessage: "Actual child failure" }]}
+      />,
+    );
+    expect(screen.getByText("Actual child failure")).toBeVisible();
+  });
+
+  it("keeps authoritative child subtree usage exactly once across visible, grouped and hidden activity policies", () => {
+    const everything = TIMELINE_PRESETS.find((preset) => preset.id === "everything")!.value;
+    const compact = TIMELINE_PRESETS.find((preset) => preset.id === "compact")!.value;
+    const hidden = TIMELINE_PRESETS.find((preset) => preset.id === "text-only")!.value;
+    const totals: ApiUsageTotalsDto = {
+      records: 3,
+      input: 10,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      totalTokens: 12,
+      cacheHitRate: 0.37,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.3456 },
+    };
+    const usage: ApiUsageStatisticsDto = {
+      rootSessionId: "root",
+      total: totals,
+      sessions: [{ sessionId: "child", direct: { ...totals, input: 1 }, subtree: totals, models: [] }],
+      partial: false,
+      warnings: [],
+    };
+    const child = tool({ key: "child", name: "subagent", sessionId: "child", latestMessage: "Completed child work" });
+    const view = renderTranscript(
+      <ChatTranscript messages={[]} tools={[child]} apiUsage={usage} showApiUsageDetails />,
+      { timelineDetail: everything },
+    );
+    const assertTotals = () => {
+      const lines = screen.getAllByLabelText("Subagent subtree API usage");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toHaveTextContent("In 10");
+      expect(lines[0]).toHaveTextContent("Cache hit 37.0%");
+      expect(lines[0]).toHaveTextContent("$0.3456");
+    };
+    assertTotals();
+    setTimelinePreferences(compact);
+    assertTotals();
+    fireEvent.click(screen.getByRole("button", { name: /1 activities/ }));
+    assertTotals();
+    setTimelinePreferences(hidden);
+    expect(screen.queryByText("Completed child work")).toBeNull();
+    assertTotals();
+    const withInline = {
+      ...child,
+      apiUsage: {
+        id: "launch-usage",
+        sessionId: "root",
+        source: "tool" as const,
+        timestamp: "2026-11-06T00:00:00Z",
+        anchor: { kind: "tool" as const, toolCallId: child.key },
+        usage: totals,
+      },
+    };
+    view.rerender(<ChatTranscript messages={[]} tools={[withInline]} apiUsage={usage} showApiUsageDetails />);
+    assertTotals();
+    expect(screen.queryByLabelText("API usage details")).toBeNull();
+    const refreshed = {
+      ...usage,
+      sessions: usage.sessions.map((session) => ({
+        ...session,
+        subtree: { ...totals, input: 27, cost: { ...totals.cost, total: 0.9876 } },
+      })),
+    };
+    view.rerender(<ChatTranscript messages={[]} tools={[withInline]} apiUsage={refreshed} showApiUsageDetails />);
+    expect(screen.getAllByLabelText("Subagent subtree API usage")).toHaveLength(1);
+    expect(screen.getByLabelText("Subagent subtree API usage")).toHaveTextContent("In 27");
+    expect(screen.getByLabelText("Subagent subtree API usage")).toHaveTextContent("$0.9876");
+    view.rerender(<ChatTranscript messages={[]} tools={[withInline]} apiUsage={usage} showApiUsageDetails={false} />);
+    expect(screen.queryByRole("note")).toBeNull();
+    view.rerender(<ChatTranscript messages={[]} tools={[withInline]} showApiUsageDetails />);
+    expect(screen.queryByLabelText("Subagent subtree API usage")).toBeNull();
+    expect(screen.getAllByLabelText("API usage details")).toHaveLength(1);
+    view.rerender(<ChatTranscript messages={[]} tools={[child]} showApiUsageDetails />);
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(document.querySelectorAll("[data-row-key]")).toHaveLength(0);
+  });
+
+  it("keeps live work visible without revealing hidden reasoning, and streams the answer in place", () => {
+    const quiet = TIMELINE_PRESETS.find((preset) => preset.id === "text-only")!.value;
+    const thinking = msg({
+      key: "live",
+      text: "",
+      reasoning: "hidden root thought",
+      isThinking: true,
+      streaming: true,
+    });
+    const child = tool({
+      key: "child",
+      name: "subagent",
+      running: true,
+      done: false,
+      agentName: "search",
+      latestActivity: { kind: "thinking", text: "hidden child thought", active: true },
+    });
+    const view = renderTranscript(<ChatTranscript messages={[thinking]} tools={[child]} />, { timelineDetail: quiet });
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking");
+    expect(screen.getByRole("button", { name: /Search.*Running/ })).toBeVisible();
+    expect(screen.queryByText("hidden root thought")).toBeNull();
+    expect(screen.queryByText("hidden child thought")).toBeNull();
+    view.rerender(
+      <ChatTranscript messages={[{ ...thinking, isThinking: false, text: "First token" }]} tools={[child]} />,
+    );
+    const answer = screen.getByText("First token").closest("[data-message-body]");
+    view.rerender(
+      <ChatTranscript
+        messages={[{ ...thinking, isThinking: false, text: "First token and the rest" }]}
+        tools={[child]}
+      />,
+    );
+    expect(screen.getByText("First token and the rest").closest("[data-message-body]")).toBe(answer);
+    expect(screen.queryByRole("status")).toBeNull();
+    view.rerender(<ChatTranscript messages={[]} tools={[{ ...child, running: false, done: true }]} />);
+    expect(screen.queryByText("Send a message to start.")).toBeNull();
+  });
+
+  it("keeps native compaction boundaries and live failures visible in text-only mode", async () => {
+    const quiet = TIMELINE_PRESETS.find((preset) => preset.id === "text-only")!.value;
+    const messages = [msg({ key: "m", text: "Answer remains", reasoning: "Hidden thought" })];
+    const tools = [
+      tool({ key: "hidden", output: "hidden ordinary output" }),
+      tool({ key: "failed", name: "write", output: "Permission denied", error: true, order: 2 }),
+    ];
+    const view = renderTranscript(<ChatTranscript messages={messages} tools={tools} compactionState="queued" />, {
+      timelineDetail: quiet,
+    });
+    expect(screen.getByText("Answer remains")).toBeVisible();
+    expect(screen.queryByText("Hidden thought")).toBeNull();
+    expect(screen.queryByText("hidden ordinary output")).toBeNull();
+    expect(screen.getByText("Permission denied")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Compaction queued");
+    view.rerender(<ChatTranscript messages={messages} tools={tools} compactionState="running" />);
+    expect(screen.getByRole("status")).toHaveTextContent("Compacting context");
+    expect(screen.queryByRole("button", { name: "Session compacted" })).toBeNull();
+    view.rerender(
+      <ChatTranscript
+        messages={messages}
+        tools={tools}
+        compactionState="idle"
+        summaries={[
+          { key: "summary:real", entryId: "real", kind: "compaction", summary: "Full **stored summary**", order: 3 },
+          { key: "summary:branch", entryId: "branch", kind: "branch-summary", summary: "Branch memory", order: 4 },
+        ]}
+      />,
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Branch summary" })).toHaveAttribute("aria-expanded", "false");
+    const summary = screen.getByRole("button", { name: "Session compacted" });
+    expect(summary).toHaveAttribute("aria-expanded", "false");
+    await userEvent.setup().click(summary);
+    expect(screen.getByText("stored summary").tagName).toBe("STRONG");
+    expect(summary.querySelectorAll(".er-chat-divider-line")).toHaveLength(2);
+  });
+
+  it("distinguishes shell, file, Skill and search activity inputs without treating commands as file paths", () => {
+    renderTranscript(
+      <ChatTranscript
+        messages={[]}
+        tools={[
+          tool({ key: "cmd", name: "powershell", args: "python train.py", order: 0 }),
+          tool({ key: "file", name: "write", args: "results/report.md", order: 1 }),
+          tool({ key: "skill", name: "read", skillName: "arxiv", args: "skills/arxiv/SKILL.md", order: 2 }),
+          tool({ key: "search", name: "web-search", args: "research papers", order: 3 }),
+        ]}
+      />,
+      { autoExpandTools: true },
+    );
+    expect(screen.getByRole("button", { name: /^powershell/ }).querySelector(".lucide-terminal")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^write/ }).querySelector(".lucide-file-pen-line")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Reading skill/ }).querySelector(".lucide-book-open")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^web-search/ }).querySelector(".lucide-search")).toBeTruthy();
+    expect(document.querySelector('[data-input-kind="command"] pre')).toHaveTextContent("python train.py");
+    expect(document.querySelector('[data-input-kind="command"] button')).toBeNull();
+    expect(document.querySelector('[data-input-kind="file"] pre')).toHaveTextContent("results/report.md");
+    expect(document.querySelector('[data-input-kind="skill"] pre')).toHaveTextContent("skills/arxiv/SKILL.md");
+  });
+
+  it("preserves exact child details and deferred-entry actions inside a folded activity group", () => {
+    const onReadEntry = vi.fn();
+    const onViewDetails = vi.fn();
+    renderTranscript(
+      <ChatTranscript
+        messages={[]}
+        tools={[
+          tool({
+            key: "child-call",
+            name: "subagent",
+            sessionId: "child",
+            agentId: "search_0",
+            resultEntryId: "tool-result",
+            latestMessage: "child result",
+          }),
+        ]}
+        onReadEntry={onReadEntry}
+        deferredEntries={{ "tool-result": 200000 }}
+        onViewDetails={onViewDetails}
+      />,
+      {
+        timelineDetail: TIMELINE_PRESETS.find((preset) => preset.id === "compact")!.value,
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /1 activities/ }));
+    fireEvent.click(screen.getByRole("button", { name: "View details" }));
+    expect(onViewDetails).toHaveBeenCalledWith("child-call");
+    fireEvent.click(screen.getByRole("button", { name: "Full entry" }));
+    expect(onReadEntry).toHaveBeenCalledWith("tool-result");
   });
 
   it.each([
@@ -885,8 +1278,9 @@ describe("ChatTranscript", () => {
     );
 
     row = screen.getByRole("button", { name: "Thinking: active reasoning" }).closest("li");
-    expect(within(row!).getByText("answer").closest("div.v2-md")).toBeTruthy();
-    expect(row?.querySelector(".v2-caret")).toBeNull();
+    expect(screen.getByText("answer").closest("div.v2-md")).toBeTruthy();
+    expect(row).not.toContainElement(screen.getByText("answer"));
+    expect(scrollContainer().querySelector(".v2-caret")).toBeNull();
   });
 
   it("updates a text-only streaming body without a caret", () => {
@@ -950,7 +1344,7 @@ describe("ChatTranscript", () => {
     expect(screen.queryByText("private subagent progress")).toBeNull();
   });
 
-  it("renders a skill card instead of a generic tool row when the agent reads a skill", () => {
+  it("renders a distinct Skill disclosure with its original input available", () => {
     renderTranscript(
       <ChatTranscript
         messages={[]}
@@ -959,7 +1353,10 @@ describe("ChatTranscript", () => {
     );
     expect(screen.getByText("Reading skill")).toBeVisible();
     expect(screen.getByText("arxiv")).toBeVisible();
-    expect(screen.queryByRole("button", { name: /read/i })).toBeNull();
+    const skill = screen.getByRole("button", { name: /reading skill.*arxiv/i });
+    expect(skill.querySelector(".lucide-book-open")).toBeTruthy();
+    fireEvent.click(skill);
+    expect(screen.getByText("skills/arxiv/SKILL.md")).toBeVisible();
   });
 
   it("interleaves tool rows at their stream position between messages", () => {

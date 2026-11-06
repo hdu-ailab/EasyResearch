@@ -1,8 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import ReactMarkdown from "react-markdown";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MarkdownBlock } from "../MarkdownBlock";
 import { parseMarkdownBlocks } from "./parse";
 import { clearCompletedMarkdownCacheForTests, prepareMarkdownBlocks } from "./render";
+import { TranscriptFileContext } from "./TranscriptFileLink";
 
 vi.mock("mermaid", () => ({
   default: {
@@ -14,6 +16,31 @@ vi.mock("mermaid", () => ({
 beforeEach(() => clearCompletedMarkdownCacheForTests());
 
 describe("prepareMarkdownBlocks", () => {
+  it("keeps command, Skill and file affordances equivalent in Worker and fallback output", async () => {
+    const source = "`python experiments/train.py` · `/skill:paper-search` · `results/my report.md`";
+    const blocks = prepareMarkdownBlocks(await parseMarkdownBlocks(source));
+    const open = vi.fn();
+    const { container } = render(
+      <TranscriptFileContext value={open}>
+        <section data-testid="worker-kinds">{blocks.map((block) => block.node)}</section>
+        <section data-testid="fallback-kinds">
+          <MarkdownBlock text={source} />
+        </section>
+      </TranscriptFileContext>,
+    );
+    for (const id of ["worker-kinds", "fallback-kinds"]) {
+      const section = screen.getByTestId(id);
+      expect(section.querySelector('code[data-inline-kind="command"]')?.textContent).toBe(
+        "python experiments/train.py",
+      );
+      expect(section.querySelector('code[data-inline-kind="skill"]')?.textContent).toBe("/skill:paper-search");
+      expect(within(section).getAllByRole("button")).toHaveLength(1);
+      fireEvent.click(within(section).getByRole("button", { name: "results/my report.md" }));
+    }
+    expect(open.mock.calls).toEqual([["results/my report.md"], ["results/my report.md"]]);
+    expect(container.querySelectorAll("code[data-inline-kind] svg")).toHaveLength(4);
+  });
+
   it.each([
     "Use <placeholder> here.",
     "<div>Important result: accuracy 92%</div>",

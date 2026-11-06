@@ -16,6 +16,46 @@ async function references(source: string): Promise<string[]> {
 }
 
 describe("transcript file references", () => {
+  it("keeps complete commands and Skill invocations distinct from file actions", async () => {
+    const source = [
+      "`python experiments/train.py`",
+      "`npm run check:web`",
+      "`bun scripts/build.ts`",
+      "`git diff src/main.ts`",
+      "`cat report.md`",
+      "`/usr/bin/python report.py`",
+      "`./run.sh --input data.csv`",
+      "`/skill:paper-search papers/topic.md`",
+      "`/compact summarize results/report.md`",
+      "`value = results/table.csv`",
+      "`pdflatex manuscript/main.tex`",
+      "`latexmk manuscript/main.tex`",
+      "`tar xf results.tar`",
+      '`pd.read_csv("results/table.csv")`',
+      "`custom-runner experiments/train.py`",
+    ].join("\n\n");
+    expect(await references(source)).toEqual([]);
+    expect(
+      await references(
+        "`results/my report.md` [script](scripts/run.sh) `./src/main.ts` `/Research Papers/paper.md` `results/R&D.md`",
+      ),
+    ).toEqual([
+      "results/my report.md",
+      "scripts/run.sh",
+      "./src/main.ts",
+      "/Research Papers/paper.md",
+      "results/R&D.md",
+    ]);
+  });
+
+  it("preserves quotes within standalone filenames without turning quoted commands into paths", async () => {
+    expect(
+      await references(
+        '`./results/author\'s report.md` `results/a"b.md` `cat "results/report.md"` `pd.read_csv("results/table.csv")`',
+      ),
+    ).toEqual(["./results/author's report.md", 'results/a"b.md']);
+  });
+
   it("handles bare filename locators without treating them as URI schemes", async () => {
     expect(await references("README.md:12 `README.md:12:3` [read](README.md:12) [bad](javascript:123)")).toEqual([
       "README.md",

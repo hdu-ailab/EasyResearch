@@ -136,6 +136,122 @@ function launchToolEnd(overrides: Partial<SubagentSupervisorEventDto> = {}, tool
 }
 
 describe("session reducer", () => {
+  describe("view-local native child compaction", () => {
+    const start = { type: "compaction_start", reason: "threshold" } satisfies AgentSessionEvent;
+    const end = {
+      type: "compaction_end",
+      reason: "threshold",
+      result: undefined,
+      aborted: false,
+      willRetry: false,
+    } satisfies AgentSessionEvent;
+
+    it("leaves root controller state and policy authoritative for native start/end and ordinary run settlement", () => {
+      for (const compactionState of ["idle", "queued", "running"] as const) {
+        const root = { ...emptyState, compactionState };
+        expect(reduceSessionEvent(root, start)).toBe(root);
+        expect(reduceSessionEvent(root, { ...end, errorMessage: "native failure" })).toBe(root);
+        expect(terminateSessionRun(root).compactionState).toBe(compactionState);
+        expect(reduceSessionEvent(root, { type: "agent_settled" }).compactionState).toBe(compactionState);
+      }
+    });
+
+    it("projects child start/end without changing execution, policy, usage or fabricating a persisted summary", () => {
+      const before = { ...emptyState, compactionPolicy: { triggerPercent: 80, enabled: true } };
+      const running = reduceSessionEvent(before, start, "child");
+      expect(running.compactionState).toBe("running");
+      expect(running.isStreaming).toBe(before.isStreaming);
+      expect(running.compactionPolicy).toBe(before.compactionPolicy);
+      expect(running.messages).toBe(before.messages);
+      expect(reduceSessionEvent(running, start, "child")).toBe(running);
+      const settled = reduceSessionEvent(
+        running,
+        { ...end, result: { summary: "Unpersisted native result", firstKeptEntryId: "kept", tokensBefore: 10 } },
+        "child",
+      );
+      expect(settled.compactionState).toBe("idle");
+      expect(settled.summaries).toEqual([]);
+      expect(settled.messages).toEqual([]);
+      expect(settled.inlineUsage).toBeUndefined();
+      const persisted = reduceSessionEvent(
+        settled,
+        {
+          type: "timeline_entry_appended",
+          entry: {
+            kind: "compaction",
+            entryId: "real-entry",
+            timestamp: "2026-11-06T10:00:00Z",
+            summary: "Persisted native summary",
+          },
+        },
+        "child",
+      );
+      expect(persisted.summaries).toMatchObject([{ entryId: "real-entry", summary: "Persisted native summary" }]);
+    });
+
+    it("reports one real failure per observed operation with collision-safe UI-only message keys", () => {
+      const failure = { ...end, errorMessage: "  provider refused compaction  " };
+      let state = reduceSessionEvent(emptyState, start, "child");
+      state = reduceSessionEvent(state, failure, "child");
+      expect(state.compactionState).toBe("idle");
+      expect(state.messages).toMatchObject([
+        { role: "system", error: true, streaming: false, text: "provider refused compaction" },
+      ]);
+      expect(state.messages[0]?.entryId).toBeUndefined();
+      expect(state.messages[0]?.identity).toBeUndefined();
+      expect(state.summaries).toEqual([]);
+      expect(state.error).toBeNull();
+      expect(reduceSessionEvent(state, failure, "child")).toBe(state);
+      const next = reduceSessionEvent(reduceSessionEvent(state, start, "child"), failure, "child");
+      expect(next.messages).toHaveLength(2);
+      expect(new Set(next.messages.map((message) => message.key)).size).toBe(next.messages.length);
+      expect(next.nextOrder).toBeGreaterThan(state.nextOrder);
+    });
+
+    it("accepts a genuine failure after a missed start and deduplicates the repeated terminal frame", () => {
+      const failure = { ...end, errorMessage: "Missed-start failure" };
+      const state = reduceSessionEvent(emptyState, failure, "child");
+      expect(state.messages).toHaveLength(1);
+      expect(reduceSessionEvent(state, failure, "child")).toBe(state);
+    });
+
+    it.each([undefined, "", " \n\t"])("ignores empty failure text %j", (errorMessage) => {
+      const state = reduceSessionEvent(
+        reduceSessionEvent(emptyState, start, "child"),
+        { ...end, errorMessage },
+        "child",
+      );
+      expect(state.messages).toEqual([]);
+      expect(state.compactionState).toBe("idle");
+    });
+
+    it("clears native activity on cancellation and terminal cleanup without emitting success or error evidence", () => {
+      const running = reduceSessionEvent(emptyState, start, "child");
+      for (const state of [
+        reduceSessionEvent(running, { ...end, aborted: true, errorMessage: "Aborted" }, "child"),
+        reduceSessionEvent(running, { type: "agent_settled" }, "child"),
+        terminateSessionRun(running, false, "child"),
+        terminateDeletedSession(running),
+      ]) {
+        expect(state.compactionState).toBe("idle");
+        expect(state.messages).toEqual([]);
+        expect(state.summaries).toEqual([]);
+      }
+    });
+
+    it("hydrates persisted evidence independently of transient activity and failure notices", () => {
+      const failed = reduceSessionEvent(emptyState, { ...end, errorMessage: "Transient native failure" }, "child");
+      const snapshot = mergeSnapshot(failed, {
+        session: { id: "child", cwd: "/p", status: "ready", isStreaming: false, sessionName: "easyresearch:search" },
+        timeline: [{ kind: "compaction", entryId: "saved", summary: "Real saved summary" }],
+        compactionState: "idle",
+      });
+      expect(snapshot.compactionState).toBe("idle");
+      expect(snapshot.messages).toEqual([]);
+      expect(snapshot.summaries).toMatchObject([{ entryId: "saved", summary: "Real saved summary" }]);
+    });
+  });
+
   it("settles all displayed work on deletion without changing completed evidence or normal run settlement", () => {
     let state = reduceSessionEvent(emptyState, toolEvent("tool_execution_start", "finished"));
     state = reduceSessionEvent(state, {

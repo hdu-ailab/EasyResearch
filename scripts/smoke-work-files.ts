@@ -285,6 +285,10 @@ function fixture(pi: Pi, runtime: string, label: string) {
 
 async function showTree(page: Page): Promise<void> {
   if (page.viewportSize()!.width < 820) await page.getByRole("tab", { name: "Files", exact: true }).click();
+  else {
+    const files = page.getByRole("button", { name: "Files browser", exact: true });
+    if (await files.getAttribute("aria-pressed") !== "true") await files.click();
+  }
   const toggle = page.getByRole("button", { name: "Toggle file tree", exact: true });
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
   await expect(page.getByRole("tree", { name: "Workspace files tree", exact: true })).toBeVisible();

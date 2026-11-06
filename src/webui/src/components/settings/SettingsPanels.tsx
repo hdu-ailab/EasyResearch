@@ -11,6 +11,7 @@ import { ProviderIcon } from "../ProviderIcon";
 import { ProviderTimeoutSetting } from "../ProviderTimeoutSetting";
 import { ActionGlyph } from "../studio/ActionGlyph";
 import { StudioThemePicker } from "../studio/StudioThemePicker";
+import { TimelineDetailSettings } from "./TimelineDetailSettings";
 
 const sectionClass = "rounded-[10px] border border-v2-grey-200 bg-v2-background-bg-base";
 const buttonClass =
@@ -88,39 +89,6 @@ function FontStepper({
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function PreferenceSwitch({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange(checked: boolean): void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <span className="text-[13px] text-v2-text-text-base">{label}</span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        onClick={() => onChange(!checked)}
-        className={`relative h-[20px] w-[36px] shrink-0 overflow-hidden rounded-full transition-colors ${
-          checked ? "bg-v2-blue-600" : "bg-v2-grey-400"
-        }`}
-      >
-        <span
-          aria-hidden
-          className={`absolute left-0 top-[2px] size-[16px] rounded-full bg-v2-background-bg-base transition-transform ${
-            checked ? "translate-x-[18px]" : "translate-x-[2px]"
-          }`}
-        />
-      </button>
     </div>
   );
 }
@@ -212,7 +180,6 @@ export interface ConversationSettingsPanelProps {
 
 export function ConversationSettingsPanel({ configurationGeneration }: ConversationSettingsPanelProps) {
   const { t } = useI18n();
-  const { preferences, updatePreferences } = usePreferences();
 
   return (
     <div className="flex flex-col gap-4">
@@ -222,23 +189,11 @@ export function ConversationSettingsPanel({ configurationGeneration }: Conversat
           <CompactionThresholdSetting configurationGeneration={configurationGeneration} />
           <ProviderTimeoutSetting configurationGeneration={configurationGeneration} />
           <ApiUsageDetailsSetting configurationGeneration={configurationGeneration} />
-          <PreferenceSwitch
-            label={t("settings.conversation.autoExpandThinking")}
-            checked={preferences.autoExpandThinking}
-            onChange={(checked) => updatePreferences({ autoExpandThinking: checked })}
-          />
-          <PreferenceSwitch
-            label={t("settings.conversation.autoExpandTools")}
-            checked={preferences.autoExpandTools}
-            onChange={(checked) => updatePreferences({ autoExpandTools: checked })}
-          />
-          <PreferenceSwitch
-            label={t("settings.conversation.expandSubagentOutput")}
-            checked={preferences.expandSubagentOutput}
-            onChange={(checked) => updatePreferences({ expandSubagentOutput: checked })}
-          />
         </div>
       </section>
+      <div className={`${sectionClass} p-4`}>
+        <TimelineDetailSettings />
+      </div>
     </div>
   );
 }

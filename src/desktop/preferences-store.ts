@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { isTimelineDetail } from "../webui/src/timeline-detail";
 
 const MAX_PREFERENCE_BYTES = 16 * 1024;
 const PREFERENCE_KEYS = new Set([
@@ -19,6 +20,7 @@ const PREFERENCE_KEYS = new Set([
   "autoExpandThinking",
   "autoExpandTools",
   "expandSubagentOutput",
+  "timelineDetail",
 ]);
 
 export function desktopPreferencePath(userDataDir: string): string {
@@ -82,6 +84,7 @@ function validatePreferenceBlob(raw: string): void {
     || typeof value.autoExpandThinking !== "boolean"
     || typeof value.autoExpandTools !== "boolean"
     || typeof value.expandSubagentOutput !== "boolean"
+    || ("timelineDetail" in value && !isTimelineDetail(value.timelineDetail))
   ) {
     throw new Error("Desktop Web preference blob does not match the Web preference schema.");
   }

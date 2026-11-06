@@ -4,7 +4,6 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
-import { MermaidDiagram } from "./MermaidDiagram";
 import { cancelMarkdown, canUseMarkdownWorker, requestMarkdown } from "./markdown/client";
 import { rehypeFileReferences } from "./markdown/file-references";
 import {
@@ -13,6 +12,7 @@ import {
   prepareMarkdownBlocks,
   setCompletedMarkdown,
 } from "./markdown/render";
+import { TranscriptCode } from "./markdown/TranscriptCode";
 import { TranscriptFileLink } from "./markdown/TranscriptFileLink";
 
 export interface MarkdownBlockProps {
@@ -28,14 +28,7 @@ const remarkPlugins = [remarkGfm, remarkMath];
 const rehypePlugins = [rehypeKatex, rehypeFileReferences];
 const components = {
   a: TranscriptFileLink,
-  code: ({ className: codeClassName, children }: React.ComponentProps<"code">) => {
-    const language = codeClassName?.match(/language-(\w+)/)?.[1];
-    if (language === "mermaid") {
-      const source = String(children ?? "").replace(/\n$/, "");
-      return <MermaidDiagram source={source} />;
-    }
-    return <code className={codeClassName}>{children}</code>;
-  },
+  code: TranscriptCode,
 };
 
 function SynchronousMarkdown({ text, className }: Pick<MarkdownBlockProps, "text" | "className">) {

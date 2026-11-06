@@ -9,6 +9,7 @@ import {
   STORAGE_KEY,
   writePreferences,
 } from "./preferences";
+import { getTimelineDetail, TIMELINE_PRESETS } from "./timeline-detail";
 
 function fakeStorage(initial: Record<string, string> = {}): Storage & { data: Record<string, string> } {
   const data = { ...initial };
@@ -81,6 +82,7 @@ describe("readPreferences", () => {
       autoExpandThinking: false,
       autoExpandTools: false,
       expandSubagentOutput: false,
+      timelineDetail: getTimelineDetail({}),
     });
     expect(readPreferences(fakeStorage(), nav("en-US")).language).toBe("en");
   });
@@ -119,6 +121,11 @@ describe("readPreferences", () => {
       autoExpandThinking: true,
       autoExpandTools: false,
       expandSubagentOutput: true,
+      timelineDetail: getTimelineDetail({
+        autoExpandThinking: true,
+        autoExpandTools: false,
+        expandSubagentOutput: true,
+      }),
     });
   });
 
@@ -142,6 +149,7 @@ describe("readPreferences", () => {
       autoExpandThinking: true,
       autoExpandTools: false,
       expandSubagentOutput: true,
+      timelineDetail: getTimelineDetail({ autoExpandThinking: true, expandSubagentOutput: true }),
     });
   });
 
@@ -168,6 +176,51 @@ describe("readPreferences", () => {
       autoExpandThinking: false,
       autoExpandTools: false,
       expandSubagentOutput: false,
+      timelineDetail: getTimelineDetail({}),
+    });
+  });
+
+  it("migrates old expansion choices without writing during read", () => {
+    const legacy = { autoExpandThinking: false, autoExpandTools: true, expandSubagentOutput: true };
+    const raw = JSON.stringify({ ...legacy, language: "zh-CN", chatFontSize: 18 });
+    const storage = fakeStorage({ [STORAGE_KEY]: raw });
+    const value = readPreferences(storage, nav("en"));
+    expect(value.timelineDetail).toEqual(getTimelineDetail(legacy));
+    expect(storage.getItem(STORAGE_KEY)).toBe(raw);
+    writePreferences(storage, value);
+    expect(readPreferences(storage, nav("en"))).toEqual(value);
+  });
+
+  it("restores category preferences ahead of legacy fields and preserves independent settings", () => {
+    const value = TIMELINE_PRESETS[3].value;
+    const storage = fakeStorage({
+      [STORAGE_KEY]: JSON.stringify({
+        timelineDetail: value,
+        autoExpandTools: true,
+        expandSubagentOutput: true,
+        studioTheme: "dark",
+        filesFontSize: 18,
+      }),
+    });
+    const preferences = readPreferences(storage, nav("en"));
+    expect(preferences).toMatchObject({ timelineDetail: value, studioTheme: "dark", filesFontSize: 18 });
+    writePreferences(storage, preferences);
+    expect(readPreferences(storage, nav("en"))).toEqual(preferences);
+  });
+
+  it("recovers malformed category data without reviving old expansion or discarding other settings", () => {
+    const storage = fakeStorage({
+      [STORAGE_KEY]: JSON.stringify({
+        timelineDetail: { ...getTimelineDetail({}), shell: { placement: "separate", details: "future" } },
+        autoExpandTools: true,
+        chatFontSize: 18,
+        studioTheme: "dark",
+      }),
+    });
+    expect(readPreferences(storage, nav("en"))).toMatchObject({
+      timelineDetail: getTimelineDetail({}),
+      chatFontSize: 18,
+      studioTheme: "dark",
     });
   });
 });

@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readDesktopPreferenceBlob, writeDesktopPreferenceBlob } from "../../../desktop/preferences-store";
 import { STORAGE_KEY } from "../preferences";
+import { getTimelineDetail } from "../timeline-detail";
 import { CHAT_FONT_VAR, FILES_FONT_VAR } from "../webui-fonts";
 import { PreferencesProvider, usePreferences } from "./PreferencesProvider";
 
@@ -119,6 +120,7 @@ describe("PreferencesProvider", () => {
       autoExpandThinking: false,
       autoExpandTools: true,
       expandSubagentOutput: false,
+      timelineDetail: getTimelineDetail({}),
     });
   });
 
@@ -175,7 +177,12 @@ describe("PreferencesProvider", () => {
         await user.click(screen.getByRole("button", { name: `use ${studioTheme}` }));
         await user.click(screen.getByRole("button", { name: "enable tools" }));
         const saved = readDesktopPreferenceBlob(root)!;
-        expect(JSON.parse(saved)).toEqual({ ...JSON.parse(oldBlob), studioTheme, autoExpandTools: true });
+        expect(JSON.parse(saved)).toEqual({
+          ...JSON.parse(oldBlob),
+          studioTheme,
+          autoExpandTools: true,
+          timelineDetail: getTimelineDetail(JSON.parse(oldBlob)),
+        });
         first.unmount();
 
         // A fresh ephemeral origin starts with empty localStorage and the host mirror.

@@ -92,7 +92,7 @@ try {
         assert.deepEqual(reads, [], "Recognition must not probe or read files");
         const draft = chat.getByRole("textbox", { name: /message/i });
         await draft.fill("preserved draft");
-        if (!mobile) await page.getByRole("button", { name: "Files browser", exact: true }).click();
+        if (!mobile) await expect(page.getByRole("button", { name: "Files browser", exact: true })).toHaveAttribute("aria-pressed", "false");
         await relative.focus();
         await relative.press("Enter");
         await expect(files).toBeVisible();

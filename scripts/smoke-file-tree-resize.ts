@@ -116,6 +116,7 @@ try {
     });
 
     await page.goto(`${origin}/#/work/file-split-smoke?cwd=%2Fp`);
+    await page.getByRole("button", { name: "Files browser", exact: true }).click();
     const handle = page.getByRole("separator", { name: "Resize file tree" });
     const tree = page.locator("[data-files-tree]");
     await expect(handle).toBeVisible();

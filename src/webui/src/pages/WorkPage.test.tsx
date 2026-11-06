@@ -9,6 +9,7 @@ import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import { completionEntry } from "../testing/subagentCompletion";
 import { hydrateTranscript, observerFor } from "../testing/transcriptTest";
+import { TIMELINE_CATEGORIES } from "../timeline-detail";
 import { WorkPage } from "./WorkPage";
 
 const fileQueueProbe = vi.hoisted(() => ({ pending: 0 }));
@@ -245,6 +246,25 @@ function panelObserver(panel = screen.getByRole("region", { name: /file browser/
   return observer as unknown as { __fire: (n: number) => void };
 }
 
+/** File/resize tests explicitly enter Files; ordinary session entry remains closed. */
+function renderFiles(ui: ReactElement) {
+  const result = render(ui);
+  fireEvent.click(screen.getByRole("button", { name: "Files browser" }));
+  return result;
+}
+
+async function expectBashState(state: "running" | "interrupted" | "done") {
+  const button = await screen.findByRole("button", { name: /^bash(?:\s|$)/ });
+  expect(button).toBeVisible();
+  await waitFor(() => {
+    expect(button.querySelector(".v2-spinner") !== null).toBe(state === "running");
+    if (state === "interrupted") expect(button).toHaveTextContent("Interrupted");
+    else expect(button).not.toHaveTextContent("Interrupted");
+    if (state === "done") expect(button.querySelector(".lucide-check")).not.toBeNull();
+  });
+  return button;
+}
+
 describe("WorkPage", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -252,6 +272,16 @@ describe("WorkPage", () => {
   });
 
   beforeEach(() => {
+    // Lifecycle tests deliberately expose separate collapsed activities; default
+    // grouping and preference changes have their own transcript/settings coverage.
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        timelineDetail: Object.fromEntries(
+          TIMELINE_CATEGORIES.map((category) => [category, { placement: "separate", details: "collapsed" }]),
+        ),
+      }),
+    );
     vi.mocked(api.getSnapshot).mockReset();
     vi.mocked(api.getChildSnapshot).mockReset();
     vi.mocked(api.getTranscriptPage).mockReset();
@@ -533,7 +563,7 @@ describe("WorkPage", () => {
       draft: "",
       start: 0,
       end: 0,
-      expected: "/p/notes.md ",
+      expected: '"/p/notes.md" ',
       streaming: false,
     },
     {
@@ -578,7 +608,7 @@ describe("WorkPage", () => {
         ...snapshotValue,
         session: { ...snapshotValue.session, cwd, isStreaming: streaming, status: streaming ? "running" : "ready" },
       } as never);
-      render(<WorkPage id="s1" cwd={cwd} onBack={() => {}} onOpenSettings={() => {}} />);
+      renderFiles(<WorkPage id="s1" cwd={cwd} onBack={() => {}} onOpenSettings={() => {}} />);
       await screen.findByText("starting research");
       const input = screen.getByRole("textbox", { name: /message/i }) as HTMLTextAreaElement;
       fireEvent.change(input, { target: { value: draft } });
@@ -608,7 +638,10 @@ describe("WorkPage", () => {
       expect(input.value).toBe(expected);
       await waitFor(() => expect(input).toHaveFocus());
       expect(input.selectionStart).toBe(
-        expected.indexOf(path) + path.length + (draft.slice(end).startsWith(" ") ? 0 : 1),
+        expected.indexOf(path) +
+          path.length +
+          (expected.startsWith('"') ? 1 : 0) +
+          (draft.slice(end).startsWith(" ") ? 0 : 1),
       );
       expect(input.selectionEnd).toBe(input.selectionStart);
       expect(screen.queryByText("Drop to insert file path")).toBeNull();
@@ -636,7 +669,7 @@ describe("WorkPage", () => {
   });
 
   it("clears drag feedback on nested leave, cancellation, and leaving the chat", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const file = await screen.findByRole("treeitem", { name: /notes.md/ });
     const chat = screen.getByRole("tabpanel", { name: /^chat$/i });
     const input = screen.getByRole("textbox", { name: /message/i });
@@ -656,7 +689,7 @@ describe("WorkPage", () => {
 
   it("rejects directories and external file drops without navigating or changing the draft", async () => {
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "directory", name: "papers", path: "/p/papers" }]);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const directory = await screen.findByRole("treeitem", { name: /papers/ });
     expect(directory).not.toHaveAttribute("draggable", "true");
     const dataTransfer = dragTransfer();
@@ -674,7 +707,7 @@ describe("WorkPage", () => {
     const user = userEvent.setup();
     const pending = deferred<void>();
     vi.mocked(api.sendPrompt).mockReturnValue(pending.promise);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const file = await screen.findByRole("treeitem", { name: /notes.md/ });
     const input = screen.getByRole("textbox", { name: /message/i });
     await user.type(input, "send this");
@@ -691,7 +724,7 @@ describe("WorkPage", () => {
   });
 
   it.each(["malformed", "foreign-root", "outside-root"])("rejects a %s internal path payload", async (mode) => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const file = await screen.findByRole("treeitem", { name: /notes.md/ });
     const dataTransfer = dragTransfer();
     fireEvent.dragStart(file, { dataTransfer });
@@ -1240,6 +1273,237 @@ describe("WorkPage", () => {
     expect(screen.queryByRole("progressbar", { name: /context capacity/i })).toBeNull();
   });
 
+  it("shows native compaction for the focused view without leaking root activity into child chat", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({ type: "compaction_state_changed", state: "queued" });
+    expect(await screen.findByText("Compaction queued")).toBeVisible();
+    emitInAct({ type: "compaction_state_changed", state: "running" });
+    expect(await screen.findByText("Compacting context…")).toBeVisible();
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "sub-compaction",
+      toolName: "subagent",
+      args: { agent: "search" },
+    });
+    await user.click(await screen.findByRole("button", { name: /agent search/i }));
+    expect(screen.queryByText("Compacting context…")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
+    expect(await screen.findByText("Compacting context…")).toBeVisible();
+    emitInAct({ type: "compaction_state_changed", state: "idle" });
+    expect(screen.queryByText("Compacting context…")).toBeNull();
+  });
+
+  it.each(["running", "failure", "abort", "terminal"] as const)(
+    "preserves child native compaction %s across pending history without changing root controller state",
+    async (outcome) => {
+      const user = userEvent.setup();
+      const pending = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+      vi.mocked(api.getChildSnapshot).mockReturnValue(pending.promise);
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          timelineDetail: Object.fromEntries(
+            TIMELINE_CATEGORIES.map((category) => [category, { placement: "hidden", details: "collapsed" }]),
+          ),
+        }),
+      );
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await screen.findByText("starting research");
+      emitInAct({ type: "compaction_state_changed", state: "queued" });
+      emitInAct({
+        type: "tool_execution_start",
+        toolCallId: "native-compact",
+        toolName: "subagent",
+        args: { agent: "search" },
+      });
+      const child = { toolCallId: "native-compact", childSessionId: "child-native-compact", agent: "search" };
+      emitSupervisorChildEvent({ ...child, event: { type: "compaction_start", reason: "threshold" } });
+      expect(screen.getByText("Compaction queued")).toBeVisible();
+      expect(screen.queryByText("Compacting context…")).toBeNull();
+      await user.click(await screen.findByRole("button", { name: /agent search/i }));
+      expect(await screen.findByText("Compacting context…")).toBeVisible();
+      expect(screen.queryByText("Compaction queued")).toBeNull();
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+      if (outcome === "terminal") emitSupervisor({ ...child, status: "error" });
+      else if (outcome !== "running") {
+        const end = {
+          type: "compaction_end",
+          reason: "threshold",
+          result: undefined,
+          aborted: outcome === "abort",
+          willRetry: false,
+          errorMessage: "Child compaction provider failure",
+        } as const;
+        emitSupervisorChildEvent({ ...child, event: end });
+        emitSupervisorChildEvent({ ...child, event: end });
+      }
+      await act(async () =>
+        pending.resolve({
+          session: { id: child.childSessionId, cwd: "/p", sessionName: "easyresearch:search" },
+          subagents: [],
+          timeline: [
+            {
+              kind: "message",
+              entryId: "child-task",
+              message: { role: "user", content: "Real child history", timestamp: 1 },
+            },
+          ],
+        }),
+      );
+      await screen.findByText("Real child history");
+      if (outcome === "running") expect(screen.getByText("Compacting context…")).toBeVisible();
+      else expect(screen.queryByText("Compacting context…")).toBeNull();
+      if (outcome === "failure") {
+        expect(screen.getByRole("button", { name: /Child compaction provider failure/ })).toBeVisible();
+        expect(screen.getAllByRole("button", { name: /Child compaction provider failure/ })).toHaveLength(1);
+      } else expect(screen.queryByText("Child compaction provider failure")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Session compacted" })).toBeNull();
+      await user.click(screen.getByRole("button", { name: /agent research assistant/i }));
+      expect(screen.getByText("Compaction queued")).toBeVisible();
+      expect(screen.queryByText("Compacting context…")).toBeNull();
+      expect(screen.queryByText("Child compaction provider failure")).toBeNull();
+    },
+  );
+
+  it("settles child compaction from native end and displays only the subsequently persisted summary", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "compact-success",
+      toolName: "subagent",
+      args: { agent: "search" },
+    });
+    const child = { toolCallId: "compact-success", childSessionId: "child-compact-success", agent: "search" };
+    emitSupervisorChildEvent({ ...child, event: { type: "compaction_start", reason: "threshold" } });
+    await user.click(await screen.findByRole("button", { name: /agent search/i }));
+    expect(await screen.findByText("Compacting context…")).toBeVisible();
+    emitSupervisorChildEvent({
+      ...child,
+      event: {
+        type: "compaction_end",
+        reason: "threshold",
+        result: { summary: "Unpersisted result", firstKeptEntryId: "kept", tokensBefore: 100 },
+        aborted: false,
+        willRetry: false,
+      },
+    });
+    expect(screen.queryByText("Compacting context…")).toBeNull();
+    expect(screen.queryByText("Unpersisted result")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Session compacted" })).toBeNull();
+    emitSupervisorChildEvent({
+      ...child,
+      event: {
+        type: "entry_appended",
+        entry: {
+          type: "compaction",
+          id: "persisted-compact",
+          parentId: null,
+          timestamp: "2026-11-06T10:00:00Z",
+          summary: "Persisted child summary",
+          firstKeptEntryId: "kept",
+          tokensBefore: 100,
+        },
+      },
+    });
+    await user.click(await screen.findByRole("button", { name: "Session compacted" }));
+    expect(await screen.findByText("Persisted child summary")).toBeVisible();
+  });
+
+  it("keeps root native failure in the existing controller notice without duplicate transcript reduction", async () => {
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({ type: "compaction_state_changed", state: "queued" });
+    emitInAct({ type: "compaction_start", reason: "manual" });
+    expect(screen.getByText("Compaction queued")).toBeVisible();
+    expect(screen.queryByText("Compacting context…")).toBeNull();
+    emitInAct({
+      type: "compaction_end",
+      reason: "manual",
+      aborted: false,
+      willRetry: false,
+      errorMessage: "Root compaction failed",
+    });
+    emitInAct({ type: "compaction_state_changed", state: "idle" });
+    expect(screen.getAllByText("Root compaction failed")).toHaveLength(1);
+    expect(within(screen.getByLabelText("Conversation")).queryByText("Root compaction failed")).toBeNull();
+  });
+
+  it.each(["missed-end", "new-start", "delivered-end"] as const)(
+    "recovers child compaction across a reconnect and history refresh (%s)",
+    async (afterReconnect) => {
+      const user = userEvent.setup();
+      const child = { toolCallId: "compact-refresh", childSessionId: "child-compact-refresh", agent: "search" };
+      const parent = {
+        ...snapshotValue,
+        subagents: [subagentSummary(child.toolCallId, child.childSessionId, "search", { status: "working" })],
+        timeline: [
+          {
+            kind: "message",
+            entryId: "dispatch",
+            message: {
+              role: "assistant",
+              content: [{ type: "toolCall", id: child.toolCallId, name: "subagent", arguments: { agent: "search" } }],
+            },
+          },
+        ],
+      };
+      vi.mocked(api.getSnapshot).mockResolvedValue(parent as never);
+      const childHistory: Awaited<ReturnType<typeof api.getChildSnapshot>> = {
+        session: { id: child.childSessionId, cwd: "/p", sessionName: "easyresearch:search" },
+        subagents: [],
+        timeline: [
+          {
+            kind: "message" as const,
+            entryId: "child-task",
+            message: { role: "user", content: "Child task", timestamp: 1 },
+          },
+        ],
+      };
+      vi.mocked(api.getChildSnapshot).mockResolvedValue(childHistory);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await user.click(await screen.findByRole("button", { name: "View details" }));
+      await screen.findByText("Child task");
+      emitSupervisorChildEvent({ ...child, event: { type: "compaction_start", reason: "threshold" } });
+      expect(screen.getByText("Compacting context…")).toBeVisible();
+      const pending = deferred<Awaited<ReturnType<typeof api.getChildSnapshot>>>();
+      vi.mocked(api.getChildSnapshot).mockReturnValue(pending.promise);
+      emitInAct({ type: "snapshot", ...parent });
+      await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
+      // Old native activity is unverifiable across the reconnect acquisition barrier.
+      expect(screen.queryByText("Compacting context…")).toBeNull();
+      if (afterReconnect === "new-start")
+        emitSupervisorChildEvent({ ...child, event: { type: "compaction_start", reason: "threshold" } });
+      if (afterReconnect === "delivered-end")
+        emitSupervisorChildEvent({
+          ...child,
+          event: { type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false },
+        });
+      await act(async () =>
+        pending.resolve({
+          ...childHistory,
+          timeline: [
+            ...childHistory.timeline,
+            {
+              kind: "compaction",
+              entryId: "missed-native-end",
+              timestamp: "2026-11-06T10:00:00Z",
+              summary: "Compaction completed during disconnect",
+            },
+          ],
+        }),
+      );
+      if (afterReconnect === "new-start") expect(screen.getByText("Compacting context…")).toBeVisible();
+      else expect(screen.queryByText("Compacting context…")).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Session compacted" }));
+      expect(await screen.findByText("Compaction completed during disconnect")).toBeVisible();
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    },
+  );
+
   it("shows the session name in the workspace heading and updates it live on session_info_changed", async () => {
     stubEvents();
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
@@ -1379,7 +1643,7 @@ describe("WorkPage", () => {
     });
 
     await waitFor(() => expect(screen.queryByLabelText("Working")).toBeNull());
-    expect(await screen.findByText(/Running tool: bash/)).toBeTruthy();
+    await expectBashState("running");
   });
 
   it("jumps to the bottom on send even when the transcript was scrolled up", async () => {
@@ -1845,6 +2109,7 @@ describe("WorkPage", () => {
     expect(conversation).toHaveTextContent("Research Assistant");
     expect(conversation).toHaveTextContent("Search");
     expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Files browser" }));
     const dataTransfer = dragTransfer();
     fireEvent.dragStart(await screen.findByRole("treeitem", { name: /notes.md/ }), { dataTransfer });
     fireEvent.dragEnter(conversation, { dataTransfer });
@@ -2753,10 +3018,10 @@ describe("WorkPage", () => {
       } as never);
       render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
       await user.click(await screen.findByRole("button", { name: "View details" }));
-      expect(await screen.findByRole("button", { name: /Running tool: bash/ })).toBeVisible();
+      await expectBashState("running");
       emitInAct({ type: "snapshot", ...parent });
       await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
-      expect(screen.getByRole("button", { name: /Running tool: bash/ })).toBeVisible();
+      await expectBashState("running");
       if (terminal === "event") {
         emitSupervisor({ toolCallId: "sub-tool", childSessionId: "child-tool", status: "error" });
       } else {
@@ -2767,8 +3032,7 @@ describe("WorkPage", () => {
           subagents: [subagentSummary("sub-tool", "child-tool", "search", { status: "error" })],
         });
       }
-      expect(await screen.findByRole("button", { name: /Interrupted: bash/ })).toBeVisible();
-      expect(screen.queryByRole("button", { name: /Running tool: bash/ })).toBeNull();
+      await expectBashState("interrupted");
     },
   );
 
@@ -2868,11 +3132,10 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     const details = await screen.findAllByRole("button", { name: "View details" });
     await user.click(details[details.length - 1]!);
-    expect(await screen.findByRole("button", { name: /Running tool: bash/ })).toBeVisible();
+    await expectBashState("running");
     emitInAct({ type: "snapshot", ...parent });
     await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole("button", { name: /Running tool: bash/ })).toBeVisible();
-    expect(screen.queryByRole("button", { name: /Interrupted: bash/ })).toBeNull();
+    await expectBashState("running");
   });
 
   it.each([false, true])(
@@ -2906,7 +3169,7 @@ describe("WorkPage", () => {
       render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
       await user.click(await screen.findByRole("button", { name: "View details" }));
       if (refresh) {
-        expect(await screen.findByRole("button", { name: /Running tool: bash/ })).toBeVisible();
+        await expectBashState("running");
         emitInAct({ type: "snapshot", ...parent });
       }
       await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(refresh ? 2 : 1));
@@ -2914,8 +3177,7 @@ describe("WorkPage", () => {
         emit(supervisorEvent({ toolCallId: "sub-race-tool", childSessionId: "child-race-tool", status: "error" }));
         pending.resolve(child as never);
       });
-      expect(await screen.findByRole("button", { name: /Interrupted: bash/ })).toBeVisible();
-      expect(screen.queryByRole("button", { name: /Running tool: bash/ })).toBeNull();
+      await expectBashState("interrupted");
     },
   );
 
@@ -3397,7 +3659,7 @@ describe("WorkPage", () => {
       if (p === "/p") return [{ kind: "directory", name: "folder", path: "/p/folder" }];
       return pending;
     });
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const files = within(screen.getByRole("region", { name: /file browser/i }));
     expect(await screen.findByText("folder")).toBeVisible();
@@ -3410,7 +3672,7 @@ describe("WorkPage", () => {
   it("files panel shows a loading message instead of empty content while the root is pending", async () => {
     const pending: Promise<FileEntryDto[]> = new Promise(() => {});
     vi.mocked(api.listEntries).mockImplementation(async () => pending);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     expect(await screen.findByText("Loading…")).toBeTruthy();
     expect(screen.queryByText("No files.")).toBeNull();
@@ -3419,7 +3681,7 @@ describe("WorkPage", () => {
   it("routes valid file watcher events to the file browser and ignores out-of-root events", async () => {
     let entries: FileEntryDto[] = [{ kind: "file", name: "notes.md", path: "/p/notes.md" }];
     vi.mocked(api.listEntries).mockImplementation(async () => entries);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await screen.findByText("notes.md");
 
@@ -3461,7 +3723,7 @@ describe("WorkPage", () => {
       truncated: false,
       binary: false,
     }));
-    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const view = renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByText("results"));
     await user.click(await screen.findByText("nested"));
     await screen.findByText("result-0.txt");
@@ -3531,7 +3793,7 @@ describe("WorkPage", () => {
       truncated: false,
       binary: false,
     }));
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await user.click(await screen.findByText("a.txt"));
     await screen.findByText("/p/a.txt version 0");
     await user.click(screen.getByText("b.txt"));
@@ -3558,7 +3820,7 @@ describe("WorkPage", () => {
   it("does not replay file events admitted before parent hydration", async () => {
     const pending = deferred<typeof snapshot>();
     vi.mocked(api.getSnapshot).mockReturnValue(pending.promise);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     expect(api.listEntries).not.toHaveBeenCalled();
     await act(async () => {
       emit({ type: "file.watcher.updated", properties: { file: "/p", event: "change" } });
@@ -3579,7 +3841,7 @@ describe("WorkPage", () => {
       truncated: false,
       binary: false,
     });
-    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const view = renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("notes.md");
     const oldHandlers = latestHandlers!;
     vi.mocked(api.getSnapshot).mockResolvedValue({
@@ -3591,6 +3853,7 @@ describe("WorkPage", () => {
       view.rerender(<WorkPage id="s2" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     });
     expect(api.connectSessionEvents).toHaveBeenLastCalledWith("s2", expect.any(Object));
+    await user.click(screen.getByRole("button", { name: "Files browser" }));
     await screen.findByText("notes.md");
     await user.click(screen.getByText("notes.md"));
     await screen.findByText("plan");
@@ -3611,7 +3874,7 @@ describe("WorkPage", () => {
       byteCount: 15,
       truncated: false,
     } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(await screen.findByText("notes.md"));
     expect(api.readFileContent).toHaveBeenCalledWith("/p/notes.md");
@@ -3648,10 +3911,9 @@ describe("WorkPage", () => {
       const chat = screen.getByRole("tabpanel", { name: "Chat" });
       const local = await within(chat).findByRole("button", { name: "manuscript/draft.md" });
       const outside = within(chat).getByRole("button", { name: "shared notes" });
-      const files = screen.getByRole("tabpanel", { name: "Files" });
+      const files = document.getElementById("work-panel-files")!;
       const draft = screen.getByRole("textbox", { name: /message/i });
       fireEvent.change(draft, { target: { value: "Keep this draft" } });
-      await user.click(screen.getByRole("button", { name: "Files browser" }));
       expect(files).not.toBeVisible();
 
       await user.click(local);
@@ -3730,7 +3992,7 @@ describe("WorkPage", () => {
       byteCount: 4,
       truncated: false,
     } as never);
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     await user.click(await screen.findByText("notes.md"));
     expect(await screen.findByText("body")).toBeTruthy();
@@ -3902,9 +4164,9 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} });
-    expect(await screen.findByText(/Running tool: bash/)).toBeTruthy();
+    await expectBashState("running");
     emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: {}, isError: false });
-    expect(await screen.findByText("bash")).toBeTruthy();
+    await expectBashState("done");
   });
 
   it("does not render a live toolResult message_start as a system bubble", async () => {
@@ -3958,7 +4220,7 @@ describe("WorkPage", () => {
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls -la" } });
-    expect(await screen.findByText(/Running tool: bash/)).toBeTruthy();
+    await expectBashState("running");
     expect(screen.getByText("ls -la")).toBeTruthy();
     emit({
       type: "tool_execution_end",
@@ -3968,12 +4230,12 @@ describe("WorkPage", () => {
       isError: false,
     });
     expect(screen.queryByText("file.txt")).toBeNull();
-    await userEvent.setup().click(screen.getByText(/Running tool: bash/));
+    await userEvent.setup().click(await expectBashState("done"));
     expect(await screen.findByText(/file.txt/)).toBeTruthy();
   });
 
   it("chat column is the flex-1 remainder and the panel carries the explicit width", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const chat = screen.getByText("starting research").closest("section");
     const panel = screen.getByRole("region", { name: /file browser/i });
@@ -3985,7 +4247,7 @@ describe("WorkPage", () => {
 
   it("keeps the shell contiguous when the desktop side panel closes", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const chat = screen.getByRole("tabpanel", { name: /chat/i });
     const row = chat?.parentElement;
@@ -3999,7 +4261,7 @@ describe("WorkPage", () => {
   });
 
   async function overlappingResizes(first: "outer" | "inner") {
-    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const view = renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     act(() => panelObserver().__fire(1200));
     const handles = {
@@ -4110,7 +4372,7 @@ describe("WorkPage", () => {
     "unmount",
     "buttons",
   ])("restores outer resize ownership, style priorities and transcript state on %s", async (reason) => {
-    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const view = renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const panel = screen.getByRole("region", { name: /file browser/i });
     const observer = panelObserver(panel);
@@ -4181,7 +4443,7 @@ describe("WorkPage", () => {
   });
 
   it("owns only one primary pointer and commits its final release before a queued frame", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     act(() => panelObserver().__fire(1200));
     const panel = screen.getByRole("region", { name: /file browser/i });
@@ -4213,7 +4475,7 @@ describe("WorkPage", () => {
   });
 
   it("uses live outer bounds without losing the remembered width on an unmoved clamped click", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const observer = panelObserver();
     act(() => observer.__fire(1200));
@@ -4240,7 +4502,7 @@ describe("WorkPage", () => {
   });
 
   it("resizes the panel within min/max while dragging", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const panel = screen.getByRole("region", { name: /file browser/i });
     const observer = panelObserver(panel);
@@ -4268,7 +4530,7 @@ describe("WorkPage", () => {
   });
 
   it("coalesces pointer moves into one direct width write per animation frame", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     panelObserver().__fire(1200);
     const panel = screen.getByRole("region", { name: /file browser/i });
@@ -4298,7 +4560,7 @@ describe("WorkPage", () => {
   });
 
   it("does not expose a pending drag width through unrelated React renders", async () => {
-    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const view = renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     panelObserver().__fire(1200);
     const panel = screen.getByRole("region", { name: /file browser/i });
@@ -4336,7 +4598,7 @@ describe("WorkPage", () => {
   });
 
   it("keeps width transitions disabled until the frame after a rapid release", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     panelObserver().__fire(1200);
     const panel = screen.getByRole("region", { name: /file browser/i });
@@ -4369,7 +4631,7 @@ describe("WorkPage", () => {
   });
 
   it("releases drag globals and document listeners on pointer cancellation", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     panelObserver().__fire(1200);
     const panel = screen.getByRole("region", { name: /file browser/i });
@@ -4404,7 +4666,7 @@ describe("WorkPage", () => {
   });
 
   it("releases drag globals and document listeners when Work unmounts mid-drag", async () => {
-    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    const view = renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     panelObserver().__fire(1200);
     const handle = screen.getByRole("separator", { name: /resize panel/i });
@@ -4425,7 +4687,7 @@ describe("WorkPage", () => {
   });
 
   it("freezes only transcript message content while chat controls follow pointer dragging", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     panelObserver().__fire(1200);
     const panel = screen.getByRole("region", { name: /file browser/i });
@@ -4478,7 +4740,7 @@ describe("WorkPage", () => {
 
   it("exposes the panel divider as a keyboard-adjustable separator", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     act(() => panelObserver().__fire(1200));
     const handle = await screen.findByRole("separator", { name: /resize panel/i });
@@ -4501,7 +4763,7 @@ describe("WorkPage", () => {
     style.textContent = "hr { height: 0 } .h-auto { height: auto }";
     document.head.append(style);
     try {
-      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
       const handle = await screen.findByRole("separator", { name: /resize panel/i });
 
       expect(getComputedStyle(handle).height).not.toBe("0px");
@@ -4511,7 +4773,7 @@ describe("WorkPage", () => {
   });
 
   it("remembers the dragged width for the session after the first drag", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const panel = screen.getByRole("region", { name: /file browser/i });
     const observer = panelObserver(panel);
@@ -4539,7 +4801,7 @@ describe("WorkPage", () => {
   });
 
   it("never lets the drag shrink the panel below one third of the screen", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const panel = screen.getByRole("region", { name: /file browser/i });
     const observer = panelObserver(panel);
@@ -4570,6 +4832,70 @@ describe("WorkPage", () => {
     expect(await screen.findByRole("tab", { name: /chat/i })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel", { name: /chat/i })).toBeVisible();
     expect(screen.getByTitle("/papers/fault-diagnosis")).toHaveTextContent("fault-diagnosis");
+  });
+
+  it.each([390, 820, 1200, 1920])(
+    "starts with Files and Agents closed at %spx, including after hydration and child activity",
+    async (width) => {
+      vi.stubGlobal("innerWidth", width);
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      const chat = screen.getByRole("tabpanel", { name: "Chat" });
+      const row = chat.parentElement;
+      const files = document.getElementById("work-panel-files");
+      const agents = document.getElementById("work-panel-agents");
+      expect(row).toHaveAttribute("data-panel-open", "false");
+      expect(files).toHaveAttribute("hidden");
+      expect(agents).toHaveAttribute("hidden");
+      await screen.findByText("starting research");
+      emitInAct({ type: "agent_start" });
+      emitSupervisor({ toolCallId: "background-child", childSessionId: "child-background" });
+      expect(row).toHaveAttribute("data-panel-open", "false");
+      expect(files).toHaveAttribute("hidden");
+      expect(agents).toHaveAttribute("hidden");
+      expect(chat).toBeVisible();
+      expect(document.getElementById("work-panel-files")).toBe(files);
+      expect(document.getElementById("work-panel-agents")).toBe(agents);
+    },
+  );
+
+  it.each([390, 1200])("resets the panel to closed when opening another session at %spx", async (width) => {
+    vi.stubGlobal("innerWidth", width);
+    const user = userEvent.setup();
+    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    await user.click(
+      screen.getByRole(width < 820 ? "tab" : "button", { name: width < 820 ? "Files" : "Files browser" }),
+    );
+    expect(screen.getByRole("tabpanel", { name: "Files" })).toBeVisible();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      session: { ...snapshotValue.session, id: "s2" },
+    } as never);
+    view.rerender(<WorkPage id="s2" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    hydrateTranscript(view.container);
+    await screen.findByText("starting research");
+    expect(screen.getByRole("tabpanel", { name: "Chat" }).parentElement).toHaveAttribute("data-panel-open", "false");
+    expect(document.getElementById("work-panel-files")).toHaveAttribute("hidden");
+    expect(document.getElementById("work-panel-agents")).toHaveAttribute("hidden");
+    expect(screen.getByRole("tabpanel", { name: "Chat" })).toBeVisible();
+  });
+
+  it("opens Files and Agents only through explicit controls and preserves mounted file state", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    const files = document.getElementById("work-panel-files");
+    await user.click(screen.getByRole("button", { name: "Files browser" }));
+    const filter = screen.getByRole("textbox", { name: "Filter files" });
+    await user.type(filter, "notes");
+    await user.click(screen.getByRole("button", { name: "Agent list" }));
+    expect(screen.getByRole("region", { name: "Agent list" })).toBeVisible();
+    expect(files).toHaveAttribute("hidden");
+    await user.click(screen.getByRole("button", { name: "Files browser" }));
+    expect(document.getElementById("work-panel-files")).toBe(files);
+    expect(screen.getByRole("textbox", { name: "Filter files" })).toBe(filter);
+    expect(filter).toHaveValue("notes");
+    expect(api.listEntries).toHaveBeenCalledExactlyOnceWith("/p");
   });
 
   it("preserves file browser state while switching mobile views", async () => {
@@ -4638,7 +4964,7 @@ describe("WorkPage", () => {
   });
 
   it("disables panel transitions while drag-resizing", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     panelObserver().__fire(1000);
     const handle = screen.getByRole("separator", { name: /resize panel/i });
@@ -4650,7 +4976,7 @@ describe("WorkPage", () => {
   });
 
   it("keeps the resize handle reachable while clipping panel content internally", async () => {
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const region = screen.getByRole("region", { name: /file browser/i });
     expect(region.className).not.toContain("overflow-hidden");
@@ -4663,7 +4989,7 @@ describe("WorkPage", () => {
 
   it("keeps entry static, arms panel transitions after layout, and fades later view switches", async () => {
     const user = userEvent.setup();
-    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    renderFiles(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
     await screen.findByText("starting research");
     const filesRegion = screen.getByRole("region", { name: /file browser/i });
     const filesWrapper = filesRegion.querySelector("#work-panel-files");

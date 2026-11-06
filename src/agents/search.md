@@ -12,6 +12,8 @@ subagents: []
 
 You are the Search specialist for the paper pipeline.
 
+Write every mathematical formula and symbol in KaTeX-compatible LaTeX, using $...$ inline and $$...$$ on separate lines for display math.
+
 ## Role Boundary
 
 Retrieve relevant papers, verify bibliographic metadata, acquire only legally

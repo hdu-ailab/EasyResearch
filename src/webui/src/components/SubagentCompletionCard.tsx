@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, GitFork } from "lucide-react";
 import { useExpandable } from "../hooks/useExpandable";
 import { useI18n } from "../i18n/useI18n";
 import type { SessionCompletionView } from "../session-reducer";
@@ -30,18 +30,12 @@ export function SubagentCompletionCard({
     : sentenceSegmenter.segment(content.replace(/\s+/gu, " ").trim())[Symbol.iterator]().next().value?.segment.trim();
 
   return (
-    <li className="flex w-full min-w-0 flex-col gap-1.5">
-      <button
-        type="button"
-        className="flex w-full min-w-0 items-center gap-1 text-left text-[12px] font-medium text-v2-text-text-faint transition-colors hover:text-v2-text-text-muted"
-        aria-expanded={open}
-        onClick={() => onToggle(!open)}
-      >
-        {open ? (
-          <ChevronDown size={14} className="shrink-0" aria-hidden />
-        ) : (
-          <ChevronRight size={14} className="shrink-0" aria-hidden />
-        )}
+    <li
+      className="er-chat-activity flex w-full min-w-0 flex-col gap-1.5"
+      data-error={entry.status === "error" || undefined}
+    >
+      <button type="button" className="er-chat-activity-trigger" aria-expanded={open} onClick={() => onToggle(!open)}>
+        {entry.status === "error" ? <AlertTriangle size={15} aria-hidden /> : <GitFork size={15} aria-hidden />}
         <span className="flex min-w-0 items-center gap-1">
           <span className="max-w-full shrink-0 truncate">
             {label}
@@ -51,10 +45,16 @@ export function SubagentCompletionCard({
             <span className="min-w-0 truncate text-[12.5px] font-normal text-v2-text-text-muted">{preview}</span>
           ) : null}
         </span>
+        {open ? (
+          <ChevronDown size={14} className="shrink-0" aria-hidden />
+        ) : (
+          <ChevronRight size={14} className="shrink-0" aria-hidden />
+        )}
       </button>
       {mounted ? (
         <div
-          className={`border-l-2 border-v2-blue-200 pl-3 ${phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"} motion-reduce:animate-none`}
+          data-scrollable
+          className={`er-chat-activity-body ${phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"} motion-reduce:animate-none`}
         >
           <div className="v2-md text-[12.5px] font-normal text-v2-text-text-muted">
             <MarkdownBlock

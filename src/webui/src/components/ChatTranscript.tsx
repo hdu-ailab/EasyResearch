@@ -1,10 +1,9 @@
 import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
-import { AlertTriangle, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Pencil, Zap } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Copy, Pencil } from "lucide-react";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import type { ApiUsageStatisticsDto, ApiUsageTotalsDto } from "../../../web/contracts";
+import type { ApiUsageStatisticsDto, ApiUsageTotalsDto, CompactionStateDto } from "../../../web/contracts";
 import { isScrollKeyTarget, normalizeWheelDelta, scrollKey, scrollKeyOwner } from "../hooks/scrollGesture";
 import { useAutoScroll } from "../hooks/useAutoScroll";
-import { useExpandable } from "../hooks/useExpandable";
 import { useScrollGesture } from "../hooks/useScrollGesture";
 import { agentDisplayName } from "../i18n/agents";
 import type { MessageKey } from "../i18n/messages";
@@ -18,14 +17,27 @@ import type {
   SteerView,
   ToolView,
 } from "../session-reducer";
-import { indexSubtreeUsage, mergeTranscriptEntries, type TranscriptEntry } from "../transcript-entries";
+import { getTimelineDetail, type TimelineDetail } from "../timeline-detail";
+import { indexSubtreeUsage, mergeTranscriptEntries } from "../transcript-entries";
 import { shouldAdjustTranscriptRow } from "../transcript-history";
-import { ApiUsageLine } from "./ApiUsageLine";
+import {
+  isSummaryEntry,
+  type PresentationEntry,
+  presentationConcealsContent,
+  presentationDefaultOpen,
+  projectTranscript,
+} from "../transcript-presentation";
+import { ApiUsageLine, ApiUsageSummaryLine } from "./ApiUsageLine";
 import { MarkdownBlock } from "./MarkdownBlock";
-import { SubagentCompletionCard } from "./SubagentCompletionCard";
-import { SubagentToolCard } from "./SubagentToolCard";
 import { ActionGlyph } from "./studio/ActionGlyph";
-import { ThinkingPreview } from "./ThinkingPreview";
+import {
+  CompactionActivity,
+  deferredEntryIds,
+  FullEntryLinks,
+  SummaryRow,
+  TranscriptActivity,
+} from "./TranscriptActivityRows";
+import "./chat-transcript.css";
 
 export interface ChatTranscriptProps {
   messages: SessionMessageView[];
@@ -37,6 +49,7 @@ export interface ChatTranscriptProps {
   emptyHint?: string;
   /** While true, renders a working agent row under the newest user message. */
   pending?: boolean;
+  compactionState?: CompactionStateDto;
   onViewDetails?: (toolCallId: string, step?: number) => void;
   /** Tree metadata per message key (entry ids and version groups, ADR-066). */
   messageMeta?: Record<string, SessionMessageMeta>;
@@ -73,197 +86,6 @@ const ROLE_LABELS: Record<string, MessageKey> = {
 
 const ROW_ESTIMATE = 60;
 const ROW_GAP_PX = 12;
-
-/** Collapsible reasoning block; expansion state is controlled by the virtualized list. */
-function ReasoningBlock({
-  text,
-  open,
-  onToggle,
-  active,
-  markdownScope,
-  markdownKey,
-  onRendered,
-}: {
-  text: string;
-  open: boolean;
-  onToggle: (open: boolean) => void;
-  active: boolean;
-  markdownScope: string;
-  markdownKey: string;
-  onRendered: () => void;
-}) {
-  const { mounted, phase } = useExpandable(open);
-
-  return (
-    <div className="flex w-full flex-col gap-1.5">
-      <button
-        type="button"
-        className="flex w-full min-w-0 items-center gap-1 text-[12px] font-medium text-v2-text-text-faint transition-colors hover:text-v2-text-text-muted"
-        aria-expanded={open}
-        onClick={() => onToggle(!open)}
-      >
-        {open ? (
-          <ChevronDown size={14} className="shrink-0" aria-hidden />
-        ) : (
-          <ChevronRight size={14} className="shrink-0" aria-hidden />
-        )}
-        <ThinkingPreview text={text} active={active} open={open} />
-      </button>
-      {mounted && (
-        <div
-          className={`border-l-2 border-v2-blue-200 pl-3 ${
-            phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
-          } motion-reduce:animate-none`}
-        >
-          <div className="v2-md text-[12.5px] font-normal text-v2-text-text-muted">
-            <MarkdownBlock
-              text={text}
-              scope={markdownScope}
-              cacheKey={markdownKey}
-              streaming={active}
-              onRendered={onRendered}
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SummaryRow({
-  entry,
-  open,
-  onToggle,
-  showApiUsageDetails,
-  markdownScope,
-  markdownKey,
-  onRendered,
-}: {
-  entry: SessionSummaryView;
-  open: boolean;
-  onToggle: (open: boolean) => void;
-  showApiUsageDetails: boolean;
-  markdownScope: string;
-  markdownKey: string;
-  onRendered: () => void;
-}) {
-  const { t } = useI18n();
-  const { mounted, phase } = useExpandable(open);
-  const label = entry.kind === "compaction" ? t("transcript.sessionCompacted") : t("usage.internalSummary");
-  const content =
-    entry.summary?.trim() ||
-    t(entry.kind === "compaction" ? "transcript.compactionSummaryUnavailable" : "transcript.branchSummaryUnavailable");
-  return (
-    <li className="flex w-full flex-col gap-1.5 py-1">
-      <button
-        type="button"
-        className="flex w-full min-w-0 items-center gap-2 text-[12px] font-medium text-v2-text-text-faint transition-colors hover:text-v2-text-text-muted"
-        aria-expanded={open}
-        onClick={() => onToggle(!open)}
-      >
-        <span className="h-px min-w-4 flex-1 bg-v2-grey-200" aria-hidden />
-        {open ? (
-          <ChevronDown size={14} className="shrink-0" aria-hidden />
-        ) : (
-          <ChevronRight size={14} className="shrink-0" aria-hidden />
-        )}
-        <span className="shrink-0">{label}</span>
-        <span className="h-px min-w-4 flex-1 bg-v2-grey-200" aria-hidden />
-      </button>
-      {mounted ? (
-        <div
-          className={`mx-auto w-full max-w-[920px] border-l-2 border-v2-blue-200 pl-3 ${
-            phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
-          } motion-reduce:animate-none`}
-        >
-          <div className="v2-md text-[12.5px] font-normal text-v2-text-text-muted">
-            <MarkdownBlock text={content} scope={markdownScope} cacheKey={markdownKey} onRendered={onRendered} />
-          </div>
-        </div>
-      ) : null}
-      {showApiUsageDetails && entry.apiUsage ? (
-        <div className="flex justify-center">
-          <ApiUsageLine record={entry.apiUsage} />
-        </div>
-      ) : null}
-    </li>
-  );
-}
-
-function ToolRow({
-  tool,
-  open,
-  onToggle,
-  showApiUsageDetails,
-}: {
-  tool: ToolView;
-  open: boolean;
-  onToggle: (open: boolean) => void;
-  showApiUsageDetails: boolean;
-}) {
-  const { t } = useI18n();
-  const { mounted, phase } = useExpandable(open);
-  const statusClass = tool.done
-    ? tool.error
-      ? "border-v2-status-error/30 text-v2-status-error hover:bg-v2-status-error/5"
-      : "border-v2-grey-200 text-v2-text-text-muted hover:bg-v2-grey-100"
-    : "border-v2-blue-200 text-v2-blue-600 hover:bg-v2-blue-100/50";
-
-  if (tool.skillName && !tool.error) {
-    return (
-      <li className="flex flex-col gap-1 items-start">
-        <div className="flex items-center gap-1.5 rounded-md border border-v2-blue-200 bg-v2-blue-100/40 px-2 py-1 text-[12px]">
-          <Zap size={13} className="text-v2-blue-600" aria-hidden />
-          <span className="font-medium text-v2-text-text-base">{t("transcript.readingSkill")}</span>
-          <span className="font-mono text-v2-blue-700">{tool.skillName}</span>
-        </div>
-      </li>
-    );
-  }
-
-  return (
-    <li className="flex flex-col gap-1 items-start">
-      <button
-        type="button"
-        className={`flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[12px] transition-colors ${statusClass}`}
-        aria-expanded={open}
-        onClick={() => onToggle(!open)}
-      >
-        {tool.running ? <span className="v2-spinner" aria-hidden /> : null}
-        {tool.done && !tool.error ? <Check size={13} aria-hidden /> : null}
-        {tool.error ? <AlertTriangle size={13} aria-hidden /> : null}
-        <span className="truncate">
-          {tool.interrupted ? t("transcript.interruptedTool") : tool.running ? t("transcript.runningTool") : ""}
-          {tool.name}
-          {tool.args ? <span className="text-v2-text-text-faint"> {tool.args}</span> : null}
-        </span>
-        {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
-      </button>
-      {showApiUsageDetails && tool.apiUsage ? <ApiUsageLine record={tool.apiUsage} /> : null}
-      {mounted && (
-        <div
-          data-scrollable
-          className={`max-h-64 w-full overflow-y-auto rounded-md border border-v2-grey-200 bg-v2-background-bg-deep px-3 py-2 ${
-            phase === "enter" ? "animate-v2-expand-down" : "animate-v2-collapse-up"
-          } motion-reduce:animate-none`}
-        >
-          {tool.interrupted ? (
-            <p className="text-[12px] text-v2-status-error">{t("transcript.interruptedToolDetails")}</p>
-          ) : null}
-          {tool.output ? (
-            <pre className="whitespace-pre-wrap font-mono text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-muted">
-              {tool.output}
-            </pre>
-          ) : tool.running ? (
-            <p className="text-[12px] text-v2-text-text-muted">{t("transcript.running")}</p>
-          ) : !tool.interrupted ? (
-            <p className="text-[12px] text-v2-text-text-faint">{t("transcript.noOutput")}</p>
-          ) : null}
-        </div>
-      )}
-    </li>
-  );
-}
 
 /** In-place editor for a historical user message (ADR-066). Focus lands on
  * the textarea when the row mounts; Enter submits, Shift+Enter newlines. */
@@ -334,26 +156,23 @@ function SkillInvocationContent({ invocation }: { invocation: NonNullable<SteerV
   const { t } = useI18n();
   return (
     <>
-      <div className="flex items-center gap-1.5 rounded-md border border-v2-blue-200 bg-v2-blue-100/40 px-2 py-1 text-[12px]">
-        <Zap size={13} className="text-v2-blue-600" aria-hidden />
+      <div className="er-chat-skill flex items-center gap-1.5 text-[12px]">
+        <BookOpen size={14} aria-hidden />
         <span className="font-medium text-v2-text-text-base">{t("transcript.skillInvocation")}</span>
-        <span className="font-mono text-v2-blue-700">{invocation.name}</span>
+        <span className="font-mono text-v2-text-text-muted">{invocation.name}</span>
       </div>
       {invocation.args ? <p className="mt-1 text-[12px] text-v2-text-text-muted">{invocation.args}</p> : null}
     </>
   );
 }
 
-/** A single message bubble. Human messages align right with the You label;
- * anything labeled otherwise (subagent-line dispatches, agent replies)
- * aligns left under its own label. Both roles reveal message time and Copy;
+/** User bubbles and unboxed assistant prose share left-aligned metadata.
+ * Both roles retain message time and Copy;
  * human messages with tree metadata also gain Edit and a version switcher. Skill-invoked
  * messages render a compact card instead of the expanded content. */
 function MessageRow({
   message,
   today,
-  open,
-  onToggle,
   meta,
   editing,
   draft,
@@ -368,8 +187,6 @@ function MessageRow({
 }: {
   message: SessionMessageView;
   today: Date;
-  open: boolean;
-  onToggle: (open: boolean) => void;
   meta?: SessionMessageMeta;
   editing: boolean;
   draft: string;
@@ -412,21 +229,12 @@ function MessageRow({
     );
   }
   return (
-    <li className={`group flex flex-col gap-1 ${isYou ? "items-end" : "items-start"}`}>
-      <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">{label}</span>
-      {message.reasoning ? (
-        <ReasoningBlock
-          text={message.reasoning}
-          open={open}
-          onToggle={onToggle}
-          active={Boolean(message.isThinking)}
-          markdownScope={markdownScope}
-          markdownKey={`${message.key}:reasoning`}
-          onRendered={onRendered}
-        />
-      ) : message.isThinking ? (
-        <span className="text-[12px] font-medium text-v2-text-text-faint">{t("transcript.thinking")}</span>
-      ) : null}
+    <li
+      className="group er-chat-message"
+      data-message-role={isYou ? "user" : "assistant"}
+      data-error={message.error || undefined}
+    >
+      <span className="er-chat-message-label">{label}</span>
       {editing && isYou ? (
         <EditMessageDraft
           draft={draft}
@@ -435,12 +243,7 @@ function MessageRow({
           onSubmitEdit={onSubmitEdit}
         />
       ) : hasBody && (message.role === "assistant" || message.role === "user") ? (
-        <div
-          data-message-body={isYou ? "user" : "assistant"}
-          className={`v2-md max-w-full rounded-lg px-3 py-2 text-[length:var(--v2-chat-font-size)] ${
-            isYou ? "bg-v2-blue-100/60 text-v2-text-text-base" : "bg-v2-background-bg-deep text-v2-text-text-base"
-          } ${message.error ? "text-v2-status-error" : ""}`}
-        >
+        <div data-message-body={isYou ? "user" : "assistant"} className="v2-md er-chat-message-body">
           {message.skillInvocation ? (
             <SkillInvocationContent invocation={message.skillInvocation} />
           ) : (
@@ -464,7 +267,7 @@ function MessageRow({
       ) : null}
       {showApiUsageDetails && message.apiUsage ? <ApiUsageLine record={message.apiUsage} /> : null}
       {isChatMessage && (sentAt || canCopy || canEdit) ? (
-        <div className="mt-1 flex max-w-full flex-wrap items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:opacity-100">
+        <div className="er-chat-message-meta mt-1 flex max-w-full flex-wrap items-center gap-1">
           {sentAt ? (
             <time
               dateTime={sentAt.toISOString()}
@@ -544,11 +347,9 @@ function MessageRow({
 function PendingRow() {
   const { t } = useI18n();
   return (
-    <li className="flex flex-col items-start gap-1" aria-label={t("transcript.working")}>
-      <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">
-        {t("transcript.researchAssistant")}
-      </span>
-      <div className="v2-md flex items-center gap-2 rounded-lg bg-v2-background-bg-deep px-3 py-2 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base">
+    <li className="er-chat-message" aria-label={t("transcript.working")}>
+      <span className="er-chat-message-label">{t("transcript.researchAssistant")}</span>
+      <div className="er-chat-activity-trigger">
         <span className="v2-spinner" aria-hidden />
         <span className="text-[12px] text-v2-text-text-faint">{t("transcript.workingInProgress")}</span>
       </div>
@@ -557,16 +358,17 @@ function PendingRow() {
 }
 
 interface TranscriptVirtualRowProps {
-  entry: TranscriptEntry;
+  entry: PresentationEntry;
+  detail: TimelineDetail;
   today: Date;
   index: number;
   start: number;
   rowKey: string;
-  open: boolean;
+  getOpen: (entry: PresentationEntry) => boolean;
   editing: boolean;
   draft: string;
   messageMeta?: SessionMessageMeta;
-  subtreeUsage?: ApiUsageTotalsDto;
+  subtreeUsage: ReadonlyMap<string, ApiUsageTotalsDto>;
   showApiUsageDetails: boolean;
   markdownScope: string;
   animate: boolean;
@@ -585,11 +387,12 @@ interface TranscriptVirtualRowProps {
 
 const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
   entry,
+  detail,
   today,
   index,
   start,
   rowKey,
-  open,
+  getOpen,
   editing,
   draft,
   messageMeta,
@@ -609,11 +412,9 @@ const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
   deferredEntries,
   onReadEntry,
 }: TranscriptVirtualRowProps) {
-  const { t } = useI18n();
-  const ids = "name" in entry ? [entry.callEntryId, entry.resultEntryId] : "entryId" in entry ? [entry.entryId] : [];
-  const deferred = [
-    ...new Set(ids.filter((id): id is string => id !== undefined && deferredEntries?.[id] !== undefined)),
-  ];
+  const deferred = deferredEntryIds(entry, deferredEntries);
+  const hiddenSubtreeUsage =
+    "kind" in entry && entry.kind === "subtree-usage" ? subtreeUsage.get(entry.sessionId) : undefined;
   const element = useRef<HTMLDivElement | null>(null);
   const measureFrame = useRef<number | null>(null);
   const bindMeasure = useCallback(
@@ -650,78 +451,61 @@ const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
       >
         {"kind" in entry && entry.kind === "pending" ? (
           <PendingRow />
-        ) : "kind" in entry && entry.kind === "subagent-completion" ? (
-          <SubagentCompletionCard
-            entry={entry}
-            open={open}
-            onToggle={(next) => onToggle(rowKey, next)}
-            markdownScope={markdownScope}
-            onRendered={remeasure}
-          />
-        ) : "kind" in entry ? (
-          <SummaryRow
-            entry={entry}
-            open={open}
-            onToggle={(next) => onToggle(rowKey, next)}
-            showApiUsageDetails={showApiUsageDetails}
-            markdownScope={markdownScope}
-            markdownKey={`${rowKey}:summary`}
-            onRendered={remeasure}
-          />
-        ) : "name" in entry ? (
-          entry.name === "subagent" ? (
-            <SubagentToolCard
-              tool={entry}
-              open={open}
-              initialOpen={open}
+        ) : "kind" in entry && entry.kind === "compaction-state" ? (
+          <CompactionActivity state={entry.state} />
+        ) : "kind" in entry && entry.kind === "usage" ? (
+          <ApiUsageLine record={entry.record} />
+        ) : "kind" in entry && entry.kind === "subtree-usage" ? (
+          hiddenSubtreeUsage ? (
+            <ApiUsageSummaryLine totals={hiddenSubtreeUsage} />
+          ) : null
+        ) : isSummaryEntry(entry) ? (
+          <>
+            <SummaryRow
+              entry={entry}
+              open={getOpen(entry)}
               onToggle={(next) => onToggle(rowKey, next)}
-              onViewDetails={onViewDetails}
-              subtreeUsage={subtreeUsage}
               showApiUsageDetails={showApiUsageDetails}
               markdownScope={markdownScope}
-              markdownCacheKey={`${rowKey}:subagent`}
-              onMarkdownRendered={remeasure}
+              markdownKey={`${rowKey}:summary`}
+              onRendered={remeasure}
             />
-          ) : (
-            <ToolRow
-              tool={entry}
-              open={open}
-              onToggle={(next) => onToggle(rowKey, next)}
-              showApiUsageDetails={showApiUsageDetails}
-            />
-          )
-        ) : (
-          <MessageRow
-            message={entry}
-            today={today}
-            open={open}
-            onToggle={(next) => onToggle(rowKey, next)}
-            meta={deferred.length ? undefined : messageMeta}
-            editing={editing}
-            draft={draft}
-            onStartEdit={() => onStartEdit(rowKey, entry.text)}
-            onCancelEdit={onCancelEdit}
-            onDraftChange={onDraftChange}
-            onSubmitEdit={(text) => onSubmitEdit(rowKey, text)}
-            onSwitchBranch={onSwitchBranch}
-            showApiUsageDetails={showApiUsageDetails}
+            <FullEntryLinks ids={deferred} onReadEntry={onReadEntry} />
+          </>
+        ) : "kind" in entry || "name" in entry ? (
+          <TranscriptActivity
+            entry={entry}
+            detail={detail}
+            getOpen={getOpen}
+            onToggle={onToggle}
             markdownScope={markdownScope}
             onRendered={remeasure}
+            onViewDetails={onViewDetails}
+            subtreeUsage={subtreeUsage}
+            showApiUsageDetails={showApiUsageDetails}
+            deferredEntries={deferredEntries}
+            onReadEntry={onReadEntry}
           />
+        ) : (
+          <>
+            <MessageRow
+              message={entry}
+              today={today}
+              meta={deferred.length ? undefined : messageMeta}
+              editing={editing}
+              draft={draft}
+              onStartEdit={() => onStartEdit(rowKey, entry.text)}
+              onCancelEdit={onCancelEdit}
+              onDraftChange={onDraftChange}
+              onSubmitEdit={(text) => onSubmitEdit(rowKey, text)}
+              onSwitchBranch={onSwitchBranch}
+              showApiUsageDetails={showApiUsageDetails}
+              markdownScope={markdownScope}
+              onRendered={remeasure}
+            />
+            <FullEntryLinks ids={deferred} onReadEntry={onReadEntry} />
+          </>
         )}
-        {onReadEntry
-          ? deferred.map((id) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => onReadEntry(id)}
-                className="mt-1 mr-3 text-[12px] text-v2-blue-600 underline underline-offset-2"
-              >
-                {t("transcript.fullEntry")}
-                {deferred.length > 1 ? ` · ${deferred.indexOf(id) + 1}` : ""}
-              </button>
-            ))
-          : null}
       </div>
     </div>
   );
@@ -746,6 +530,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     hydrationScope = "default",
     emptyHint,
     pending = false,
+    compactionState = "idle",
     onViewDetails,
     messageMeta,
     onEditMessage,
@@ -764,10 +549,20 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
 ) {
   const { t } = useI18n();
   const { preferences } = usePreferences();
+  const detail = useMemo(() => getTimelineDetail(preferences), [preferences]);
   const hint = emptyHint ?? t("transcript.sendToStart");
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [openByKey, setOpenByKey] = useState<Record<string, boolean>>({});
+  const disclosureKey = useCallback((key: string) => JSON.stringify([hydrationScope, key]), [hydrationScope]);
+  const getOpen = useCallback(
+    (entry: PresentationEntry) =>
+      presentationConcealsContent(entry, detail)
+        ? false
+        : (openByKey[disclosureKey("kind" in entry && entry.kind === "pending" ? "pending" : entry.key)] ??
+          presentationDefaultOpen(entry, detail)),
+    [openByKey, disclosureKey, detail],
+  );
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [today, setToday] = useState(() => new Date());
@@ -792,11 +587,27 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     };
   }, []);
 
-  const entries = useMemo(
+  const timeline = useMemo(
     () => mergeTranscriptEntries(messages, tools, summaries, pending, completions),
     [messages, tools, summaries, pending, completions],
   );
+  // One latest projection per visited session, owned only for this component's lifetime.
+  // Returning to a child/root must retain prepend-stabilized group keys as well as disclosures.
+  const previousProjections = useRef(new Map<string, PresentationEntry[]>());
   const subtreeUsage = useMemo(() => indexSubtreeUsage(apiUsage), [apiUsage]);
+  const entries = useMemo(
+    () =>
+      projectTranscript(timeline, detail, {
+        showApiUsageDetails,
+        subtreeUsage,
+        compactionState,
+        previous: previousProjections.current.get(hydrationScope),
+      }),
+    [timeline, detail, showApiUsageDetails, subtreeUsage, compactionState, hydrationScope],
+  );
+  useEffect(() => {
+    previousProjections.current.set(hydrationScope, entries);
+  }, [entries, hydrationScope]);
   const entryKeys = useMemo(
     () =>
       entries.map((entry, index) =>
@@ -878,7 +689,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     [jumpThreshold],
   );
 
-  const rowKey = useCallback((entry: TranscriptEntry | undefined, index: number) => {
+  const rowKey = useCallback((entry: PresentationEntry | undefined, index: number) => {
     if (!entry) return `removed:${index}`;
     return "kind" in entry && entry.kind === "pending" ? "pending" : entry.key;
   }, []);
@@ -929,9 +740,12 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
     },
     [virtualizer],
   );
-  const toggleRow = useCallback((key: string, next: boolean) => {
-    setOpenByKey((current) => ({ ...current, [key]: next }));
-  }, []);
+  const toggleRow = useCallback(
+    (key: string, next: boolean) => {
+      setOpenByKey((current) => ({ ...current, [disclosureKey(key)]: next }));
+    },
+    [disclosureKey],
+  );
   const startEdit = useCallback((key: string, text: string) => {
     setEditingKey(key);
     setDraft(text);
@@ -1088,7 +902,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
   }, [entries.length, hasScrollGesture, shouldAnchorBottom, virtualizer]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="er-chat-transcript flex min-h-0 flex-1 flex-col">
       <div data-testid="transcript-viewport" className="relative flex min-h-0 flex-1">
         {scrollState.overflow && scrollState.jump ? (
           <button
@@ -1126,7 +940,7 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
           onKeyDown={handleKeyDown}
           onClick={handleInteraction}
         >
-          {entries.length === 0 ? (
+          {entries.length === 0 && timeline.length === 0 ? (
             <p className="px-4 pt-6 text-center text-[length:var(--v2-chat-font-size)] text-v2-text-text-faint">
               {hint}
             </p>
@@ -1157,32 +971,20 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
               const entry = entries[virtualRow.index];
               if (!entry) return null;
               const key = rowKey(entry, virtualRow.index);
-              const open =
-                openByKey[key] ??
-                ("kind" in entry
-                  ? entry.kind === "subagent-completion" && preferences.expandSubagentOutput
-                  : "name" in entry
-                    ? entry.name === "subagent"
-                      ? preferences.expandSubagentOutput
-                      : preferences.autoExpandTools
-                    : preferences.autoExpandThinking);
               return (
                 <TranscriptVirtualRow
                   key={key}
                   entry={entry}
+                  detail={detail}
                   today={today}
                   index={virtualRow.index}
                   start={virtualRow.start}
                   rowKey={key}
-                  open={open}
+                  getOpen={getOpen}
                   editing={!("kind" in entry) && !("name" in entry) && editingKey === entry.key}
                   draft={!("kind" in entry) && !("name" in entry) && editingKey === entry.key ? draft : ""}
                   messageMeta={!("kind" in entry) && !("name" in entry) ? messageMeta?.[entry.key] : undefined}
-                  subtreeUsage={
-                    !("kind" in entry) && "name" in entry && entry.sessionId
-                      ? subtreeUsage.get(entry.sessionId)
-                      : undefined
-                  }
+                  subtreeUsage={subtreeUsage}
                   showApiUsageDetails={showApiUsageDetails}
                   markdownScope={hydrationIdentity}
                   animate={entrance.identity === hydrationIdentity && entrance.keys.has(key)}
@@ -1223,13 +1025,11 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
           aria-label={t("transcript.steerQueuedLabel")}
           className="shrink-0 border-t border-v2-grey-200/70 bg-v2-background-bg-base/85 px-4 py-2 backdrop-blur"
         >
-          <ul className="mx-auto flex w-full max-w-[1000px] flex-col items-end gap-1.5">
+          <ul className="mx-auto flex w-full max-w-[1000px] flex-col items-start gap-1.5">
             {steers.map((steer) => (
-              <li key={steer.key} className="v2-steer-queued flex flex-col items-end gap-1">
-                <span className="text-[11px] font-medium uppercase tracking-wide text-v2-text-text-faint">
-                  {t("transcript.you")}
-                </span>
-                <div className="v2-md flex max-w-full items-center gap-2 whitespace-pre-wrap break-words rounded-lg bg-v2-blue-100/60 px-3 py-2 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base">
+              <li key={steer.key} className="v2-steer-queued er-chat-message" data-message-role="user">
+                <span className="er-chat-message-label">{t("transcript.you")}</span>
+                <div className="v2-md er-chat-message-body flex items-center gap-2 whitespace-pre-wrap break-words">
                   {steer.skillInvocation ? (
                     <div className="min-w-0">
                       <SkillInvocationContent invocation={steer.skillInvocation} />

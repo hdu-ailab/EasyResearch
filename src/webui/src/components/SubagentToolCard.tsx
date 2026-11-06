@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, GitFork } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ApiUsageTotalsDto } from "../../../web/contracts";
 import { useExpandable } from "../hooks/useExpandable";
@@ -43,6 +43,9 @@ export function SubagentToolCard({
   markdownScope,
   markdownCacheKey,
   onMarkdownRendered,
+  compact = false,
+  hideThinking = false,
+  concealContent = false,
 }: {
   tool: ToolView;
   initialOpen: boolean;
@@ -56,11 +59,14 @@ export function SubagentToolCard({
   markdownScope?: string;
   markdownCacheKey?: string;
   onMarkdownRendered?: () => void;
+  compact?: boolean;
+  hideThinking?: boolean;
+  concealContent?: boolean;
 }) {
   const { t } = useI18n();
   const [internalOpen, setInternalOpen] = useState(initialOpen);
   const isControlled = open !== undefined;
-  const isOpen = isControlled ? open : internalOpen;
+  const isOpen = !concealContent && (isControlled ? open : internalOpen);
   const setOpen = isControlled ? (onToggle ?? (() => {})) : setInternalOpen;
   const reducedMotion = usePrefersReducedMotion();
   const { mounted, phase } = useExpandable(isOpen);
@@ -68,11 +74,14 @@ export function SubagentToolCard({
   const activity = running ? tool.latestActivity : undefined;
   const isToolActivity = activity?.kind === "tool";
   const thinking = activity?.kind === "thinking" ? activity : undefined;
-  const message = activity
-    ? activity.kind === "tool"
-      ? `${activity.name}${activity.args ? ` ${activity.args}` : ""}`
-      : activity.text
-    : (tool.latestMessage ?? "");
+  const message =
+    hideThinking && thinking
+      ? ""
+      : activity
+        ? activity.kind === "tool"
+          ? `${activity.name}${activity.args ? ` ${activity.args}` : ""}`
+          : activity.text
+        : (tool.latestMessage ?? "");
   const agentName = agentDisplayName(t, tool.agentName ?? "subagent");
   const agentId = tool.agentId;
   const emptyMessage = running ? t("transcript.waitingForProgress") : t("transcript.noSavedProgress");
@@ -96,7 +105,7 @@ export function SubagentToolCard({
           },
         ]
       : []);
-  const canViewDetails = onViewDetails !== undefined && (running || mappedLinks.length > 0);
+  const canViewDetails = !concealContent && onViewDetails !== undefined && (running || mappedLinks.length > 0);
   const stateClass = running
     ? reducedMotion
       ? "border border-v2-blue-200"
@@ -107,15 +116,29 @@ export function SubagentToolCard({
 
   return (
     <li className="w-full">
-      <article className={`relative isolate w-full overflow-hidden rounded-lg ${stateClass}`}>
-        <div className="relative z-[1] rounded-[7px] bg-v2-background-bg-base px-3 py-2">
+      <article
+        className={compact ? "er-chat-subagent" : `relative isolate w-full overflow-hidden rounded-lg ${stateClass}`}
+      >
+        <div
+          className={
+            compact ? "er-chat-subagent-content" : "relative z-[1] rounded-[7px] bg-v2-background-bg-base px-3 py-2"
+          }
+        >
           <button
             type="button"
-            className="flex w-full items-center gap-2 text-left text-[12px] text-v2-text-text-muted transition-colors hover:text-v2-text-text-base"
+            className={
+              compact
+                ? "er-chat-activity-trigger"
+                : "flex w-full items-center gap-2 text-left text-[12px] text-v2-text-text-muted transition-colors hover:text-v2-text-text-base"
+            }
             aria-expanded={isOpen}
+            disabled={concealContent}
             onClick={() => setOpen(!isOpen)}
           >
-            <span className="sr-only">{isOpen ? t("transcript.hideDetails") : t("transcript.showDetails")}</span>
+            {!concealContent ? (
+              <span className="sr-only">{isOpen ? t("transcript.hideDetails") : t("transcript.showDetails")}</span>
+            ) : null}
+            {compact ? <GitFork size={15} aria-hidden /> : null}
             {running ? <span className="v2-spinner shrink-0" aria-hidden /> : null}
             {tool.done && !tool.error ? (
               <Check className="shrink-0 text-v2-status-success" size={14} aria-hidden />
@@ -129,26 +152,29 @@ export function SubagentToolCard({
             ) : null}
             <span className={tool.error ? "text-v2-status-error" : "text-v2-text-text-faint"}>{state}</span>
             {step ? <span className="text-v2-text-text-faint">{step}</span> : null}
-            {isOpen ? (
+            {concealContent ? null : isOpen ? (
               <ChevronDown className="shrink-0" size={14} aria-hidden />
             ) : (
               <ChevronRight className="shrink-0" size={14} aria-hidden />
             )}
           </button>
 
-          {thinking ? (
+          {thinking && !concealContent ? (
             <div className="mt-1.5 text-[12px] font-medium">
-              <ThinkingPreview text={thinking.text} active={thinking.active} open={isOpen} />
+              <ThinkingPreview text={hideThinking ? "" : thinking.text} active={thinking.active} open={isOpen} />
             </div>
-          ) : !mounted ? (
-            <p className="mt-1.5 line-clamp-3 text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-muted">
+          ) : !mounted && !concealContent ? (
+            <p
+              className={`${compact ? "er-chat-subagent-preview line-clamp-1" : "line-clamp-3"} mt-1.5 text-[length:var(--v2-chat-font-size)] leading-relaxed text-v2-text-text-muted`}
+            >
               {message ? subagentMessagePreview(message) : emptyMessage}
             </p>
           ) : null}
 
-          {mounted ? (
+          {mounted && !concealContent ? (
             <div
-              className={`mt-1.5 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base ${
+              data-scrollable={compact || undefined}
+              className={`${compact ? "er-chat-subagent-output" : ""} mt-1.5 text-[length:var(--v2-chat-font-size)] text-v2-text-text-base ${
                 isToolActivity
                   ? "whitespace-pre-wrap break-words font-mono text-[12px] text-v2-text-text-muted"
                   : "v2-md"

@@ -1,5 +1,6 @@
 import type { Element, Root, RootContent } from "hast";
 import { isAbsoluteFilesystemPath, joinFilesystemPath, normalizeAbsoluteFilesystemPath } from "../../filesystem-path";
+import { inlineCodeKind } from "./inline-code-kind";
 
 function fileReference(path: string, explicit = false, grouped = false): string | null {
   if (
@@ -90,11 +91,17 @@ export function rehypeFileReferences() {
           return;
         if (node.tagName === "code" && node.children.length === 1 && node.children[0]?.type === "text") {
           const label = node.children[0].value;
+          const kind = inlineCodeKind(label);
+          if (kind) {
+            node.properties.dataInlineKind = kind;
+            return;
+          }
+          if (/[{}=;|]/u.test(label) || /^[\w.$]+\s*\(/u.test(label) || /^(["'])[\s\S]*\1$/u.test(label)) return;
           const path = fileReference(stripFileLocator(label), false, true);
           if (path) {
             node.children = [referenceNode(label, path)];
-            return;
           }
+          return;
         }
       }
       node.children = node.children.flatMap((child) => {

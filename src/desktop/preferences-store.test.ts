@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getTimelineDetail, TIMELINE_CATEGORIES, TIMELINE_PRESETS } from "../webui/src/timeline-detail";
 import {
   desktopPreferencePath,
   readDesktopPreferenceBlob,
@@ -28,6 +29,43 @@ afterEach(() => {
 });
 
 describe("desktop preference persistence", () => {
+  it.each(TIMELINE_PRESETS)("round-trips a complete $id timeline policy through the host mirror", ({ value }) => {
+    const blob = JSON.stringify({ ...JSON.parse(valid), timelineDetail: value });
+    writeDesktopPreferenceBlob(root, blob);
+    expect(readDesktopPreferenceBlob(root)).toBe(blob);
+  });
+
+  it.each(TIMELINE_CATEGORIES)("validates exact nested fields for %s without replacing accepted preferences", (category) => {
+    const accepted = JSON.stringify({ ...JSON.parse(valid), timelineDetail: getTimelineDetail({}) });
+    writeDesktopPreferenceBlob(root, accepted);
+    const missing = getTimelineDetail({}) as Partial<ReturnType<typeof getTimelineDetail>>;
+    delete missing[category];
+    const candidates = [
+      missing,
+      { ...getTimelineDetail({}), [category]: { placement: "grouped", details: "collapsed", extra: true } },
+      { ...getTimelineDetail({}), [category]: { placement: "grouped" } },
+      { ...getTimelineDetail({}), [category]: { placement: "future", details: "collapsed" } },
+      { ...getTimelineDetail({}), [category]: { placement: "grouped", details: "future" } },
+      { ...getTimelineDetail({}), [category]: [] },
+      { ...getTimelineDetail({}), [category]: null },
+    ];
+    for (const timelineDetail of candidates) {
+      expect(() => writeDesktopPreferenceBlob(root, JSON.stringify({ ...JSON.parse(valid), timelineDetail })))
+        .toThrow(/preference/i);
+      expect(readDesktopPreferenceBlob(root)).toBe(accepted);
+    }
+  });
+
+  it.each([null, [], false, "compact", {}, { ...getTimelineDetail({}), extra: {} }])(
+    "rejects an invalid timeline policy: %j",
+    (timelineDetail) => {
+      writeDesktopPreferenceBlob(root, valid);
+      expect(() => writeDesktopPreferenceBlob(root, JSON.stringify({ ...JSON.parse(valid), timelineDetail })))
+        .toThrow(/preference/i);
+      expect(readDesktopPreferenceBlob(root)).toBe(valid);
+    },
+  );
+
   it.each(["light", "dark"])("restores a Studio %s preference blob through the host mirror", (studioTheme) => {
     const blob = JSON.stringify({ ...JSON.parse(valid), uiVersion: "studio", studioTheme });
     writeDesktopPreferenceBlob(root, blob);
