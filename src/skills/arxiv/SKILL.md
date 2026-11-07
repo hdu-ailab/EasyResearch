@@ -69,7 +69,7 @@ python scripts/search_arxiv.py --category cs.LG --sort date --max 5
 ```
 
 ## Read Pages
-Use the current OpenCode `webfetch` tool to read pages:
+Use the available `webfetch` tool to read pages:
 ```text
 https://arxiv.org/abs/{id}
 https://arxiv.org/pdf/{id}

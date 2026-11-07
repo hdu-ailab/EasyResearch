@@ -4,7 +4,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 
 ## 0.1.18 highlights
 
-- OpenCode Web-inspired session tabs replace the top workspace display. Hover a
+- Session tabs replace the top workspace display. Hover a
   tab for its full session name and workspace; switch between retained drafts,
   files and Agent views. Closing a tab leaves background Agent work running.
 - Refreshed chat presentation with six activity-category visibility, grouping and
@@ -19,7 +19,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 
 ## 0.1.18 更新
 
-- 顶部工作区展示改为 OpenCode Web 风格的会话标签，悬停显示完整会话名称与工作区；
+- 顶部工作区展示改为会话标签，悬停显示完整会话名称与工作区；
   切换时保留草稿、文件和 Agent 视图，关闭标签后后台 Agent 继续执行。
 - 全新聊天样式，支持六类活动的显示、分组和折叠控制，以及五档详细程度预设。
 - 上下文压缩摘要可折叠，带分界线与排队／执行状态；超长摘要可完整查看 Markdown。
