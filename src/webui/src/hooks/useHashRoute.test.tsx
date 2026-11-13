@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -80,6 +80,26 @@ afterEach(() => {
 });
 
 describe("useHashRoute", () => {
+  it("keeps synchronous navigation identity across away/back batching and ignores duplicate location notifications", () => {
+    setLocation("#/work/s1?cwd=%2Fp");
+    const { result, rerender } = renderHook(() => useHashRoute());
+    const before = result.current.getRoute();
+    act(() => {
+      result.current.navigate({ page: "work", session: { id: "s2", cwd: "/p" } });
+      expect(result.current.getRoute()).not.toBe(before);
+      result.current.navigate(before);
+      expect(result.current.getRoute()).not.toBe(before);
+    });
+    const returned = result.current.getRoute();
+    expect(returned).toEqual(before);
+    expect(returned).not.toBe(before);
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+    act(() => window.dispatchEvent(new HashChangeEvent("hashchange")));
+    expect(result.current.getRoute()).toBe(returned);
+    rerender();
+    expect(result.current.getRoute()).toBe(returned);
+  });
+
   it.each(["work", "settings", "config"])(
     "replaces an explicitly recovered UUID under %s and preserves the exact return host",
     async (surface) => {

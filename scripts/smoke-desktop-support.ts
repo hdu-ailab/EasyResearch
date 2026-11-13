@@ -34,6 +34,7 @@ export interface NativeCommand {
   command: string;
   args: string[];
   cwd?: string;
+  windowsVerbatimArguments?: boolean;
 }
 
 export type DesktopSmokePackage = DesktopBuildManifest["packages"][number] & { path: string };
@@ -451,7 +452,9 @@ export function verifyDesktopSidecarIdentity(
 }
 
 export function nsisInstallCommand(installer: string, installDir: string): NativeCommand {
-  return { command: installer, args: ["/S", `/D=${installDir}`] };
+  // NSIS consumes the raw command line after /D=: keep it last and unquoted,
+  // including when the selected directory contains spaces.
+  return { command: installer, args: ["/S", `/D=${installDir}`], windowsVerbatimArguments: true };
 }
 
 export function dmgAttachCommand(dmg: string, mountPoint: string): NativeCommand {

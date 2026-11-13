@@ -22,7 +22,7 @@ import { Topbar } from "../components/Topbar";
 import { WorkspaceDialog, type WorkspaceDialogProps } from "../components/WorkspaceDialog";
 import type { HomeCatalogMutation } from "../hooks/useSessionShell";
 import { useI18n } from "../i18n/useI18n";
-import { useViewActivity } from "../view-activity";
+import { useViewActivity, useViewActivityRef } from "../view-activity";
 import { buildHomeProjectGroups } from "./home-view-model";
 
 export interface HomePageProps {
@@ -48,7 +48,8 @@ export function HomePage({
   onSessionOpenStart,
 }: HomePageProps) {
   const { t } = useI18n();
-  const { interactive } = useViewActivity();
+  const { visible, interactive } = useViewActivity();
+  const viewActivity = useViewActivityRef();
   const activity = useRef({ interactive, epoch: 0 });
   if (activity.current.interactive !== interactive)
     activity.current = { interactive, epoch: activity.current.epoch + 1 };
@@ -70,6 +71,7 @@ export function HomePage({
     homeDir: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [disconnectingSessionId, setDisconnectingSessionId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -79,6 +81,8 @@ export function HomePage({
   const [deletingSession, setDeletingSession] = useState<ActiveSessionDto | SessionSummaryDto | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const statusRequest = useRef(0);
+  const statusRead = useRef<AbortController | null>(null);
+  const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectionRequest = useRef(0);
   const mounted = useRef(true);
   const [workspaceDialog, setWorkspaceDialog] = useState<{
@@ -111,6 +115,7 @@ export function HomePage({
       const request = ++selectionRequest.current;
       const ownsSelection = openingOwner();
       setSelectedCwd(cwd);
+      setError(null);
       if (cwd === null) return;
       try {
         await validateWorkspace(cwd);
@@ -121,31 +126,72 @@ export function HomePage({
     [reportFailure, openingOwner],
   );
 
-  const refresh = useCallback(() => {
-    const request = ++statusRequest.current;
-    const publish = callbacks.current.onStatusRequest?.();
-    setError(null);
-    listStatus()
-      .then((next) => {
-        if (request === statusRequest.current) {
+  const cancelStatusRefresh = useCallback(() => {
+    statusRequest.current += 1;
+    if (statusTimer.current !== null) clearTimeout(statusTimer.current);
+    statusTimer.current = null;
+    const read = statusRead.current;
+    statusRead.current = null;
+    read?.abort();
+  }, []);
+
+  const refresh = useCallback((): void => {
+    cancelStatusRefresh();
+    const eligible = () => mounted.current && viewActivity.current.visible && document.visibilityState === "visible";
+    if (!eligible()) return;
+    const request = statusRequest.current;
+    const controller = new AbortController();
+    statusRead.current = controller;
+    const ownsRead = () => eligible() && request === statusRequest.current && statusRead.current === controller;
+    const read = async () => {
+      try {
+        const publish = callbacks.current.onStatusRequest?.();
+        const next = await listStatus({ signal: controller.signal });
+        if (ownsRead()) {
           setStatus(next);
+          setStatusError(null);
           publish?.(next);
         }
-      })
-      .catch((e: unknown) => {
-        if (request === statusRequest.current) setError(e instanceof Error ? e.message : String(e));
-      });
-  }, []);
+      } catch (failure) {
+        if (ownsRead()) setStatusError(failure instanceof Error ? failure.message : String(failure));
+      } finally {
+        // Only this read's owner may schedule its successor. Aborted requests
+        // can still settle after a hide, mutation, or replacement read.
+        if (ownsRead()) {
+          statusRead.current = null;
+          statusTimer.current = setTimeout(() => {
+            if (request === statusRequest.current) refresh();
+          }, MONITOR_POLL_MS);
+        }
+      }
+    };
+    void read();
+  }, [cancelStatusRefresh, viewActivity]);
 
   useEffect(() => {
     mounted.current = true;
-    refresh();
     return () => {
       mounted.current = false;
-      statusRequest.current += 1;
       selectionRequest.current += 1;
     };
-  }, [refresh]);
+  }, []);
+
+  useEffect(() => {
+    let eligible = false;
+    const syncVisibility = () => {
+      const next = visible && document.visibilityState === "visible";
+      if (next === eligible) return;
+      eligible = next;
+      if (next) refresh();
+      else cancelStatusRefresh();
+    };
+    document.addEventListener("visibilitychange", syncVisibility);
+    syncVisibility();
+    return () => {
+      document.removeEventListener("visibilitychange", syncVisibility);
+      cancelStatusRefresh();
+    };
+  }, [visible, refresh, cancelStatusRefresh]);
 
   useEffect(() => {
     let active = true;
@@ -161,11 +207,6 @@ export function HomePage({
       active = false;
     };
   }, []);
-
-  useEffect(() => {
-    const timer = setInterval(refresh, MONITOR_POLL_MS);
-    return () => clearInterval(timer);
-  }, [refresh]);
 
   const startSession = useCallback(
     async (cwd: string) => {
@@ -188,6 +229,7 @@ export function HomePage({
     async (session: SessionSummaryDto) => {
       const ownsSelection = openingOwner();
       const ownsTab = callbacks.current.onSessionOpenStart?.(session.id) ?? (() => true);
+      setError(null);
       try {
         const dto = await openSession(session.path);
         if (dto.id !== session.id) throw new Error("The opened session does not match the requested session");
@@ -203,6 +245,7 @@ export function HomePage({
     async (session: ActiveSessionDto) => {
       const ownsSelection = openingOwner();
       const ownsTab = callbacks.current.onSessionOpenStart?.(session.id) ?? (() => true);
+      setError(null);
       try {
         await touchSession(session.id);
         if (ownsSelection() && ownsTab()) onOpenSession({ id: session.id, cwd: session.cwd });
@@ -230,6 +273,7 @@ export function HomePage({
   );
 
   const groups = buildHomeProjectGroups(status?.sessions ?? [], status?.activeSessions ?? []);
+  const displayedError = error ?? statusError;
 
   useEffect(() => {
     if (selectedCwd && !groups.some((group) => group.cwd === selectedCwd)) setSelectedCwd(null);
@@ -265,12 +309,12 @@ export function HomePage({
       )}
       <main className="er-home-main min-h-0 flex-1 overflow-y-auto bg-v2-background-bg-base">
         <div className="flex min-h-full w-full flex-col">
-          {error && (
+          {displayedError && (
             <p
               className="shrink-0 border-b border-v2-status-error/30 bg-v2-status-error/5 px-5 py-3 text-[13px] text-v2-status-error"
               role="alert"
             >
-              {error}
+              {displayedError}
             </p>
           )}
 
@@ -321,7 +365,7 @@ export function HomePage({
             if (!mounted.current) return;
             const ownsSelection = workspaceDialog.ownsSelection ?? (() => false);
             const canRecover = ownsSelection() && (workspaceDialog.ownsTab?.() ?? true);
-            statusRequest.current += 1;
+            cancelStatusRefresh();
             selectionRequest.current += 1;
             const ids = new Set(result.sessionIds);
             const oldCwd = workspaceDialog.cwd;
@@ -387,20 +431,23 @@ export function HomePage({
           onClose={() => setDeletingSession(null)}
           onDelete={async (force) => {
             const mutation = callbacks.current.onCatalogMutationStart?.();
-            statusRequest.current += 1;
-            await deleteSession(deletingSession.id, force);
-            mutation?.deleted(deletingSession.id);
-            // Invalidate every pre-success poll before removing either projection.
-            statusRequest.current += 1;
-            setStatus(
-              (current) =>
-                current && {
-                  ...current,
-                  sessions: current.sessions.filter((session) => session.id !== deletingSession.id),
-                  activeSessions: current.activeSessions.filter((session) => session.id !== deletingSession.id),
-                },
-            );
-            refresh();
+            cancelStatusRefresh();
+            try {
+              await deleteSession(deletingSession.id, force);
+              mutation?.deleted(deletingSession.id);
+              // Invalidate every pre-success poll before removing either projection.
+              cancelStatusRefresh();
+              setStatus(
+                (current) =>
+                  current && {
+                    ...current,
+                    sessions: current.sessions.filter((session) => session.id !== deletingSession.id),
+                    activeSessions: current.activeSessions.filter((session) => session.id !== deletingSession.id),
+                  },
+              );
+            } finally {
+              refresh();
+            }
           }}
         />
       )}

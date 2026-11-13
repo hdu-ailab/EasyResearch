@@ -45,6 +45,7 @@ describe("FileBrowser", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     document.body.style.userSelect = "";
   });
@@ -659,6 +660,32 @@ describe("FileBrowser", () => {
     fireEvent(window, new Event("resize"));
     expect(tree).not.toBeVisible();
     expect(controls).toBeVisible();
+  });
+
+  it("uses a standalone media-query owner and releases it without replacing the file tree", async () => {
+    const media = new EventTarget();
+    Object.defineProperty(media, "matches", { get: () => window.innerWidth >= 820 });
+    const subscribe = vi.spyOn(media, "addEventListener");
+    const unsubscribe = vi.spyOn(media, "removeEventListener");
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => media),
+    );
+    const view = render(<FileBrowser root="/p" />);
+    const tree = await screen.findByRole("tree", { name: "Workspace files tree" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Filter files" }), { target: { value: "notes" } });
+    expect(screen.getByRole("separator", { name: "Resize file tree" })).toBeVisible();
+    expect(subscribe).toHaveBeenCalledOnce();
+    vi.stubGlobal("innerWidth", 819);
+    act(() => media.dispatchEvent(new Event("change")));
+    expect(screen.queryByRole("separator", { name: "Resize file tree" })).toBeNull();
+    expect(screen.getByRole("tree", { name: "Workspace files tree" })).toBe(tree);
+    vi.stubGlobal("innerWidth", 820);
+    act(() => media.dispatchEvent(new Event("change")));
+    expect(screen.getByRole("separator", { name: "Resize file tree" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Filter files" })).toHaveValue("notes");
+    view.unmount();
+    expect(unsubscribe).toHaveBeenCalledWith("change", subscribe.mock.calls[0]?.[1]);
   });
 
   it("reloads opened previews when rename activity invalidates their directory", async () => {

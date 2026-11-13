@@ -1,11 +1,12 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntryDto } from "../../../web/contracts";
 import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
-import { PreferencesProvider } from "../preferences/PreferencesProvider";
+import { PreferencesProvider, usePreferences } from "../preferences/PreferencesProvider";
+import { allObservers, observerFor } from "../testing/transcriptTest";
 import { ViewActivityProvider } from "../view-activity";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 
@@ -769,6 +770,132 @@ describe("ChatComposer file references", () => {
 });
 
 describe("ChatComposer sizing", () => {
+  beforeEach(() => {
+    vi.stubGlobal("CSS", { supports: () => false });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("leaves content sizing entirely native without geometry reads or sizing observers", async () => {
+    vi.stubGlobal("CSS", { supports: () => true });
+    const read = vi.spyOn(Element.prototype, "scrollHeight", "get");
+    const { user, unmount } = await renderComposer();
+    const input = screen.getByRole("textbox", { name: "Message" });
+    const width = vi.spyOn(input, "clientWidth", "get");
+    await user.type(input, "one{Shift>}{Enter}{/Shift}two");
+    expect(input.style.height).toBe("");
+    expect(read).not.toHaveBeenCalled();
+    expect(width).not.toHaveBeenCalled();
+    expect(observerFor(input)).toBeUndefined();
+    expect(input).toHaveAttribute("data-composer-sizing", "native");
+    unmount();
+  });
+
+  it("keeps one fallback observer through edits and waits for provider-applied font styles before remeasuring", async () => {
+    vi.stubGlobal("CSS", { supports: () => false });
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    function FontComposer() {
+      const { preferences, updatePreferences } = usePreferences();
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => updatePreferences({ chatFontSize: preferences.chatFontSize === 20 ? 13 : 20 })}
+          >
+            Change font
+          </button>
+          <ChatComposer
+            chatFontSize={preferences.chatFontSize}
+            disabled={false}
+            streaming={false}
+            onSend={() => {}}
+            onAbort={() => {}}
+          />
+        </>
+      );
+    }
+    const view = render(
+      <PreferencesProvider>
+        <FontComposer />
+      </PreferencesProvider>,
+    );
+    const input = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const scroll = vi.fn(() =>
+      Math.max(
+        Number.parseInt(document.documentElement.style.getPropertyValue("--v2-chat-font-size"), 10) * 4 +
+          input.value.length,
+        Number.parseFloat(input.style.height) || 0,
+      ),
+    );
+    Object.defineProperties(input, {
+      clientWidth: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, get: scroll },
+    });
+    act(() => vi.runAllTimers());
+    const observer = observerFor(input)!;
+    const disconnect = vi.spyOn(observer, "disconnect");
+    fireEvent.change(input, { target: { value: "draft" } });
+    expect(input).toHaveStyle({ height: "57px" });
+    fireEvent.click(screen.getByRole("button", { name: "Change font" }));
+    act(() => vi.runAllTimers());
+    expect(input).toHaveStyle({ height: "85px" });
+    fireEvent.click(screen.getByRole("button", { name: "Change font" }));
+    act(() => vi.runAllTimers());
+    expect(input).toHaveStyle({ height: "57px" });
+    expect(input).toHaveAttribute("data-composer-sizing", "fallback");
+    expect(allObservers().filter((candidate) => candidate.__observed.includes(input))).toEqual([observer]);
+    expect(disconnect).not.toHaveBeenCalled();
+    scroll.mockClear();
+    act(() => observer.__fire(276));
+    expect(scroll).toHaveBeenCalledOnce();
+    scroll.mockClear();
+    act(() => observer.__fire(276));
+    expect(scroll).not.toHaveBeenCalled();
+    view.unmount();
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("suspends fallback sizing while inactive and remeasures the retained draft on activation", async () => {
+    vi.stubGlobal("CSS", { supports: () => false });
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    const ref = createRef<ChatComposerHandle>();
+    const composer = (visible: boolean) => (
+      <ViewActivityProvider visible={visible} interactive={visible}>
+        <ChatComposer ref={ref} disabled={false} streaming={false} onSend={() => {}} onAbort={() => {}} />
+      </ViewActivityProvider>
+    );
+    const view = render(composer(true));
+    const input = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    let width = 300;
+    const scroll = vi.fn(() => Math.max(52 + input.value.length, Number.parseFloat(input.style.height) || 0));
+    Object.defineProperties(input, {
+      clientWidth: { configurable: true, get: () => width },
+      scrollHeight: { configurable: true, get: scroll },
+    });
+    fireEvent.change(input, { target: { value: "draft" } });
+    const observer = observerFor(input)!;
+    const disconnect = vi.spyOn(observer, "disconnect");
+    view.rerender(composer(false));
+    expect(disconnect).toHaveBeenCalledOnce();
+    scroll.mockClear();
+    act(() => {
+      ref.current?.setDraft("restored while inactive");
+      observer.__fire(100);
+      vi.runAllTimers();
+    });
+    expect(scroll).not.toHaveBeenCalled();
+    view.rerender(composer(true));
+    expect(input).toHaveStyle({ height: `${52 + input.value.length}px` });
+    width = 0;
+    scroll.mockClear();
+    fireEvent.change(input, { target: { value: "zero geometry" } });
+    expect(scroll).not.toHaveBeenCalled();
+  });
+
   it("remeasures typed, restored and inserted drafts, then shrinks after submit", async () => {
     const ref = createRef<ChatComposerHandle>();
     await renderComposer({ ref });

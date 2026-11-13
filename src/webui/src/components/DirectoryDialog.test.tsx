@@ -476,6 +476,59 @@ describe("DirectoryDialog", () => {
     expect(screen.getByRole("combobox")).toHaveValue(`${HOME}/papers/new folder/review`);
   });
 
+  it("does not create a workspace or close its dialog while confirming IME text", async () => {
+    const user = userEvent.setup();
+    const destination = `${HOME}/研究`;
+    const onClose = vi.fn();
+    mockListing({ [HOME]: [], [destination]: [] });
+    vi.mocked(api.createDirectory).mockResolvedValue({ path: destination });
+    render(<DirectoryDialog homeDir={HOME} onSelect={vi.fn()} onClose={onClose} />);
+    await user.click(screen.getByRole("button", { name: /new workspace/i }));
+    const dialog = screen.getByRole("dialog", { name: "New workspace" });
+    const input = within(dialog).getByRole("textbox", { name: "Folder name" });
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: "研究" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input).toHaveFocus();
+    expect(dialog).toBeVisible();
+    expect(api.createDirectory).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true, keyCode: 13 });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: false, keyCode: 229 });
+    expect(api.createDirectory).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    await user.keyboard("{Enter}");
+    expect(api.createDirectory).toHaveBeenCalledExactlyOnceWith(destination);
+    await waitFor(() => expect(screen.getByRole("combobox")).toHaveValue(destination));
+  });
+
+  it("keeps path completion and navigation idle while the path input is composing", async () => {
+    const user = userEvent.setup();
+    const destination = `${HOME}/papers`;
+    const onClose = vi.fn();
+    mockListing({ [HOME]: ["papers", "patches"], [destination]: [] });
+    render(<DirectoryDialog homeDir={HOME} onSelect={vi.fn()} onClose={onClose} />);
+    const input = screen.getByRole("combobox");
+    await user.clear(input);
+    await user.type(input, `${HOME}/pa`);
+    const option = await screen.findByRole("option", { name: "papers/" });
+    expect(input).toHaveAttribute("aria-activedescendant", option.id);
+    fireEvent.compositionStart(input);
+    for (const key of ["ArrowDown", "End", "Enter", "Escape"]) fireEvent.keyDown(input, { key });
+    expect(input).toHaveFocus();
+    expect(input).toHaveAttribute("aria-activedescendant", option.id);
+    expect(input).toHaveValue(`${HOME}/pa`);
+    expect(screen.getByRole("listbox")).toBeVisible();
+    expect(api.listDirectories).not.toHaveBeenCalledWith(destination);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(api.listDirectories).not.toHaveBeenCalledWith(destination);
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(input).toHaveValue(destination));
+  });
+
   it("shows a folder creation error inline and rejects null bytes", async () => {
     const user = userEvent.setup();
     mockListing({ [HOME]: [] });

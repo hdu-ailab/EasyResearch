@@ -195,6 +195,10 @@ describe("App routing", () => {
       .mockReset()
       .mockResolvedValue([{ name: "/", path: "/" }]);
     vi.mocked(api.getSnapshot).mockReset();
+    vi.mocked(api.getChildSnapshot).mockReset();
+    vi.mocked(api.sendPrompt).mockClear();
+    vi.mocked(api.stopSession).mockClear();
+    vi.mocked(api.abortSession).mockClear();
     vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
     vi.mocked(api.getProviderTimeoutSettings)
       .mockReset()
@@ -280,6 +284,391 @@ describe("App routing", () => {
     );
     return sessions;
   }
+
+  const createdRoot = {
+    id: "c5475ad3-92e3-4d37-96db-ebcf66a425b7",
+    cwd: "/p",
+    status: "ready" as const,
+    isStreaming: false,
+  };
+  const emptySnapshot: SessionSnapshotDto = {
+    session: createdRoot,
+    timeline: [],
+    subagents: [],
+    runtimeConfigurationGeneration: 0,
+    compactionPolicy: { triggerPercent: 70, enabled: true },
+  };
+  const plus = () => screen.getByRole("button", { name: "New session in this workspace" });
+
+  function creationFixture() {
+    multipleSessions();
+    const request = deferred<Awaited<ReturnType<typeof api.createSession>>>();
+    vi.mocked(api.createSession).mockReturnValue(request.promise);
+    const originalSnapshot = vi.mocked(api.getSnapshot).getMockImplementation()!;
+    vi.mocked(api.getSnapshot).mockImplementation((id) =>
+      id === createdRoot.id ? Promise.resolve(emptySnapshot) : originalSnapshot(id),
+    );
+    const handlers = new Map<string, Parameters<typeof api.connectSessionEvents>[1]>();
+    const releases = new Map<string, ReturnType<typeof vi.fn>>();
+    vi.mocked(api.connectSessionEvents).mockImplementation((id, value) => {
+      handlers.set(id, value);
+      const release = vi.fn();
+      releases.set(id, release);
+      return release;
+    });
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    return { request, handlers, releases };
+  }
+
+  function expectNoAgentMutation() {
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+    expect(api.stopSession).not.toHaveBeenCalled();
+    expect(api.abortSession).not.toHaveBeenCalled();
+    expect(api.deleteSession).not.toHaveBeenCalled();
+  }
+
+  it("creates one empty independent root in the resolved Work cwd, retaining the source view and draft", async () => {
+    const { request, releases } = creationFixture();
+    // The address bar carries an obsolete hint; the root's accepted cwd wins.
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fstale-hash");
+    await renderWork();
+    const original = sessionSurface("s1");
+    const draft = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(draft, { target: { value: "Source draft with @reference" } });
+    const create = plus();
+    act(() => {
+      create.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      create.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(api.createSession).toHaveBeenCalledExactlyOnceWith("/p");
+    expect(create).toBeDisabled();
+    expect(create).toHaveAttribute("aria-busy", "true");
+    expect(tabButton("s2")).toBeEnabled();
+    expect(sessionSurface("s1")).toBe(original);
+    expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp");
+    await act(async () => request.resolve(createdRoot));
+    await waitFor(() => expect(sessionSurface(createdRoot.id)).not.toBeNull());
+    expect(window.location.hash).toBe(`#/work/${createdRoot.id}?cwd=%2Fp`);
+    expect(tabButton(createdRoot.id)).toHaveAttribute("aria-selected", "true");
+    expect(createdRoot.id).not.toBe("s1");
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+    expect(sessionSurface(createdRoot.id).querySelector("[data-work-layout]")).toHaveAttribute(
+      "data-panel-open",
+      "false",
+    );
+    expect(within(sessionSurface(createdRoot.id)).queryByText("starting research")).toBeNull();
+    expect(api.openSession).toHaveBeenCalledTimes(1);
+    expect(releases.get("s1")).not.toHaveBeenCalled();
+    fireEvent.click(tabButton("s1"));
+    expect(sessionSurface("s1")).toBe(original);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(draft);
+    expect(draft).toHaveValue("Source draft with @reference");
+    fireEvent.keyDown(tabButton(createdRoot.id), { key: "Delete" });
+    expect(releases.get(createdRoot.id)).toHaveBeenCalledOnce();
+    expect(releases.get("s1")).not.toHaveBeenCalled();
+    expectNoAgentMutation();
+  });
+
+  it("uses the root workspace even while the source displays a read-only child", async () => {
+    const { request, handlers } = creationFixture();
+    vi.mocked(api.getChildSnapshot).mockResolvedValue({
+      session: { id: "child", cwd: "/foreign-child-scope", sessionName: "easyresearch:search" },
+      timeline: [],
+      subagents: [],
+    });
+    await renderWork();
+    act(() => {
+      handlers.get("s1")!.onEvent({
+        type: "tool_execution_start",
+        toolCallId: "child-tool",
+        toolName: "subagent",
+        args: { agent: "search" },
+      });
+      handlers.get("s1")!.onEvent({
+        type: "subagent_supervisor",
+        ownerSessionId: "s1",
+        toolCallId: "child-tool",
+        agent: "search",
+        agentId: "search_0",
+        childSessionId: "child",
+        launchId: "launch-child",
+        status: "working",
+      });
+    });
+    await userEvent.click(await screen.findByRole("button", { name: /agent search/i }));
+    await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledWith("s1", "child"));
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    fireEvent.click(plus());
+    expect(api.createSession).toHaveBeenCalledExactlyOnceWith("/p");
+    await act(async () => request.resolve(createdRoot));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled());
+    fireEvent.click(tabButton("s1"));
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    expectNoAgentMutation();
+  });
+
+  it.each([false, true])(
+    "creates in an active-only root's authoritative cwd with a stale bookmark: %s",
+    async (bookmarked) => {
+      const activeRoot = { id: "active-empty", cwd: "/authoritative", status: "ready" as const, isStreaming: false };
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          language: "en",
+          sessionTabs: bookmarked
+            ? [
+                { id: activeRoot.id, cwd: "/stale-bookmark" },
+                { id: "unvisited", cwd: "/other" },
+              ]
+            : [],
+        }),
+      );
+      window.history.replaceState(null, "", "#/work/active-empty?cwd=%2Fstale-hash");
+      vi.mocked(api.listStatus).mockResolvedValue({ ...persisted, sessions: [], activeSessions: [activeRoot] });
+      vi.mocked(api.getSnapshot).mockImplementation(async (id) => ({
+        ...emptySnapshot,
+        session: id === activeRoot.id ? activeRoot : { ...createdRoot, cwd: activeRoot.cwd },
+      }));
+      const request = deferred<Awaited<ReturnType<typeof api.createSession>>>();
+      vi.mocked(api.createSession).mockReturnValue(request.promise);
+      render(<App />);
+      await waitFor(() => expect(plus()).toBeEnabled());
+      await waitFor(() => expect(api.getSnapshot).toHaveBeenCalledWith(activeRoot.id));
+      expect(window.location.hash).toBe("#/work/active-empty?cwd=%2Fauthoritative");
+      expect(api.openSession).not.toHaveBeenCalled();
+      const original = sessionSurface(activeRoot.id);
+      fireEvent.click(plus());
+      expect(api.createSession).toHaveBeenCalledExactlyOnceWith(activeRoot.cwd);
+      await act(async () => request.resolve({ ...createdRoot, cwd: activeRoot.cwd }));
+      await waitFor(() => expect(sessionSurface(createdRoot.id)).not.toBeNull());
+      expect(window.location.hash).toBe(`#/work/${createdRoot.id}?cwd=%2Fauthoritative`);
+      expect(sessionSurface(activeRoot.id)).toBe(original);
+      expect(sessionSurface("unvisited")).toBeNull();
+      expect(api.getSnapshot).not.toHaveBeenCalledWith("unvisited");
+      expectNoAgentMutation();
+    },
+  );
+
+  it.each(["unknown", "listing-failure"] as const)(
+    "allows fallback attachment for %s but never creates from its unresolved cwd hint",
+    async (failure) => {
+      window.history.replaceState(null, "", "#/work/active-empty?cwd=%2Fstale-hash");
+      if (failure === "listing-failure") vi.mocked(api.listStatus).mockRejectedValue(new Error("Status unavailable"));
+      if (failure === "unknown")
+        vi.mocked(api.getSnapshot).mockRejectedValue(new api.ApiError(404, { error: "Unknown session" }));
+      else
+        vi.mocked(api.getSnapshot).mockResolvedValue({
+          ...emptySnapshot,
+          session: { ...createdRoot, id: "active-empty", cwd: "/authoritative" },
+        });
+      render(<App />);
+      await waitFor(() => expect(api.getSnapshot).toHaveBeenCalledWith("active-empty"));
+      await screen.findByRole("textbox", { name: "Message" });
+      expect(plus()).toBeDisabled();
+      fireEvent.click(plus());
+      expect(api.createSession).not.toHaveBeenCalled();
+      expect(api.openSession).not.toHaveBeenCalled();
+      if (failure === "unknown") expect(await screen.findByText("Unknown session")).toBeVisible();
+    },
+  );
+
+  it.each([undefined, "Named by server"])(
+    "retries an owned failure and admits optional server metadata (%s)",
+    async (name) => {
+      const { request } = creationFixture();
+      await renderWork();
+      fireEvent.click(plus());
+      await act(async () => request.reject(new Error("Request failed")));
+      expect(screen.getByRole("alert")).toHaveTextContent("Could not create session.");
+      expect(plus()).toBeEnabled();
+      expect(plus()).not.toHaveAttribute("aria-busy");
+      const retry = deferred<Awaited<ReturnType<typeof api.createSession>>>();
+      vi.mocked(api.createSession).mockReturnValueOnce(retry.promise);
+      // Inspect the admitted metadata before the first live snapshot arrives.
+      vi.mocked(api.getSnapshot).mockReturnValueOnce(new Promise(() => {}));
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(api.createSession).toHaveBeenCalledTimes(2);
+      await act(async () => retry.resolve({ ...createdRoot, sessionName: name }));
+      expect(tabButton(createdRoot.id)).toHaveAccessibleName(name ?? "Untitled session");
+      const bookmark = JSON.parse(localStorage.getItem(STORAGE_KEY)!).sessionTabs.find(
+        (tab: { id: string }) => tab.id === createdRoot.id,
+      );
+      if (name) expect(bookmark.name).toBe(name);
+      else expect(bookmark).not.toHaveProperty("name");
+      expectNoAgentMutation();
+    },
+  );
+
+  it("routes missing-folder creation failure through the source root's recovery dialog", async () => {
+    const { request } = creationFixture();
+    await renderWork();
+    fireEvent.click(plus());
+    await act(async () =>
+      request.reject(new api.ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/p", error: "Missing" })),
+    );
+    expect(await screen.findByRole("dialog", { name: "Workspace folder not found" })).toHaveTextContent("/p");
+    expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp");
+    expectNoAgentMutation();
+  });
+
+  it.each(["success", "failure"] as const)(
+    "fences a late %s after same-batch A→B→A, without clearing a new creation",
+    async (outcome) => {
+      const { request } = creationFixture();
+      await renderWork();
+      // Previsit B, so navigation itself does not require a deferred lookup.
+      fireEvent.click(tabButton("s2"));
+      await waitFor(() => expect(sessionSurface("s2")).not.toBeNull());
+      fireEvent.click(tabButton("s1"));
+      fireEvent.click(plus());
+      act(() => {
+        tabButton("s2").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        tabButton("s1").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(plus()).toBeEnabled();
+      const next = deferred<Awaited<ReturnType<typeof api.createSession>>>();
+      vi.mocked(api.createSession).mockReturnValueOnce(next.promise);
+      fireEvent.click(plus());
+      await act(async () =>
+        outcome === "success" ? request.resolve(createdRoot) : request.reject(new Error("Stale failure")),
+      );
+      expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp");
+      expect(tabButton(createdRoot.id)).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(plus()).toBeDisabled();
+      expect(plus()).toHaveAttribute("aria-busy", "true");
+      fireEvent.click(plus());
+      expect(api.createSession).toHaveBeenCalledTimes(2);
+      await act(async () => next.reject(new Error("Current failure")));
+      expect(screen.getByRole("alert")).toHaveTextContent("Could not create session.");
+      expect(plus()).toBeEnabled();
+      expectNoAgentMutation();
+    },
+  );
+
+  it.each(
+    (
+      ["settings", "settings-return", "config", "close-reopen", "relocate", "delete", "unmount", "replacement"] as const
+    ).flatMap((transition) => (["success", "failure"] as const).map((outcome) => ({ transition, outcome }))),
+  )("expires Work creation on $transition without publishing late $outcome", async ({ transition, outcome }) => {
+    const { request, handlers } = creationFixture();
+    const reload = vi.fn();
+    const app = await renderWork(
+      <App runtimeReplacementBrowser={{ history: window.history, location: window.location, reload }} />,
+    );
+    fireEvent.click(plus());
+    let settingsDraft: HTMLElement | undefined;
+    if (transition.startsWith("settings") || transition === "config") {
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(document.querySelector(".er-session-tabs-new")).toBeDisabled();
+      if (transition === "settings-return") {
+        await userEvent.click(screen.getByRole("button", { name: "Close" }));
+        await waitFor(() => expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp"));
+      } else if (transition === "config") {
+        await userEvent.click(screen.getByRole("button", { name: /open config browser/i }));
+        expect(await screen.findByText("Config browser")).toBeVisible();
+      } else {
+        await userEvent.click(screen.getByRole("tab", { name: "Network" }));
+        settingsDraft = await screen.findByRole("textbox", { name: "All traffic proxy" });
+        fireEvent.change(settingsDraft, { target: { value: "http://unsaved.example" } });
+      }
+    } else if (transition === "close-reopen") {
+      fireEvent.keyDown(tabButton("s1"), { key: "Delete" });
+      simulateBrowserBackTo("#/work/s1?cwd=%2Fp");
+      await waitFor(() => expect(sessionSurface("s1")).not.toBeNull());
+    } else if (transition === "relocate") {
+      vi.mocked(api.resumeRelocatedSession).mockResolvedValue({
+        id: "s1",
+        cwd: "/moved",
+        status: "ready",
+        isStreaming: false,
+      });
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...emptySnapshot,
+        session: { id: "s1", cwd: "/moved", status: "ready", isStreaming: false },
+      });
+      act(() => handlers.get("s1")!.onEvent({ type: "session_relocated", sessionId: "s1", cwd: "/moved" }));
+      await waitFor(() => expect(window.location.hash).toBe("#/work/s1?cwd=%2Fmoved"));
+    } else if (transition === "delete") {
+      act(() => handlers.get("s1")!.onEvent({ type: "session_deleted", sessionId: "s1" }));
+      await waitFor(() => expect(sessionSurface("s2")).not.toBeNull());
+    } else if (transition === "unmount") app.unmount();
+    else {
+      for (const bootId of ["boot-a", "boot-b"])
+        act(() =>
+          configurationHandlers.onEvent({
+            type: "config.updated",
+            bootId,
+            generation: 0,
+            agentsChanged: false,
+            modelsChanged: false,
+            skillsChanged: false,
+            runtimeChanged: false,
+          }),
+        );
+      expect(reload).toHaveBeenCalledOnce();
+    }
+    const hash = window.location.hash;
+    const snapshotCount = vi.mocked(api.getSnapshot).mock.calls.length;
+    await act(async () =>
+      outcome === "success"
+        ? request.resolve(createdRoot)
+        : request.reject(new api.ApiError(404, { code: "WORKSPACE_MISSING", cwd: "/p", error: "Missing" })),
+    );
+    expect(window.location.hash).toBe(hash);
+    expect(tabButton(createdRoot.id)).toBeNull();
+    expect(api.getSnapshot).toHaveBeenCalledTimes(snapshotCount);
+    expect(screen.queryByText("Could not create session.")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Workspace folder not found" })).toBeNull();
+    if (settingsDraft) expect(settingsDraft).toHaveValue("http://unsaved.example");
+    expectNoAgentMutation();
+  });
+
+  it("fences creation across an accepted restart after Settings closes back onto the source", async () => {
+    const { request } = creationFixture();
+    vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
+      configured: { all: "http://saved.example" },
+      appliedConfigured: {},
+      sources: { all: "configured", llm: "all", search: "all" },
+      errors: [],
+      restartRequired: true,
+    });
+    vi.mocked(api.restartRuntime).mockResolvedValue({ accepted: true, bootId: "boot-a" });
+    await renderWork(<App runtimeReplacementPoller={() => new Promise(() => {})} />);
+    fireEvent.click(plus());
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Network" }));
+    await user.click(await screen.findByRole("button", { name: "Restart required" }));
+    await user.click(screen.getByRole("button", { name: "Restart now" }));
+    expect(await screen.findByRole("dialog", { name: "Restarting EasyResearch" })).toBeVisible();
+    expect(document.querySelector(".er-session-tabs-new")).toBeDisabled();
+    await act(async () => request.resolve(createdRoot));
+    expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp");
+    expect(tabButton(createdRoot.id)).toBeNull();
+    expectNoAgentMutation();
+  });
+
+  it("disables only plus while Work resolves or fails; Home plus retains the existing chooser surface", async () => {
+    creationFixture();
+    const opening = deferred<Awaited<ReturnType<typeof api.openSession>>>();
+    vi.mocked(api.openSession).mockReturnValueOnce(opening.promise);
+    render(<App />);
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledOnce());
+    expect(plus()).toBeDisabled();
+    expect(tabButton("s2")).toBeEnabled();
+    await act(async () => opening.reject(new Error("Cannot open root")));
+    expect(plus()).toBeDisabled();
+    expect(tabButton("s2")).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Back to home" }));
+    await workspace();
+    fireEvent.click(screen.getByRole("button", { name: "New or open session" }));
+    expect(window.location.hash).toBe("#/");
+    expect(workspace()).toBeVisible();
+    expect(screen.getByRole("button", { name: "New workspace" })).toBeEnabled();
+    expect(api.createSession).not.toHaveBeenCalled();
+  });
 
   async function chooseRecoveryFolder() {
     const user = userEvent.setup();

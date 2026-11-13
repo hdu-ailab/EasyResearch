@@ -523,6 +523,45 @@ describe("ConfigPage", () => {
     expect(api.createConfigDirectory).toHaveBeenCalledWith("project", "/home/u/proj", "skills/reviewer");
   });
 
+  it.each([
+    ["New file", "研究.md"],
+    ["New folder", "研究"],
+  ])("waits for ordinary Enter before %s mutation after synthetic IME confirmation", async (label, name) => {
+    const user = userEvent.setup();
+    renderConfigPage();
+    await user.click(await screen.findByRole("button", { name: "/home/u/proj" }));
+    await user.click(screen.getByRole("button", { name: label }));
+    const dialog = screen.getByRole("dialog", { name: label });
+    const input = within(dialog).getByRole("textbox", { name: label });
+    fireEvent.change(input, { target: { value: name } });
+    for (const flags of [
+      { isComposing: true, keyCode: 13 },
+      { isComposing: false, keyCode: 229 },
+    ]) {
+      expect(fireEvent.keyDown(input, { key: "Enter", ...flags })).toBe(true);
+      expect(api.writeConfigFile).not.toHaveBeenCalled();
+      expect(api.createConfigDirectory).not.toHaveBeenCalled();
+      expect(input).toHaveFocus();
+      expect(input).toHaveValue(name);
+    }
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(dialog).toBeVisible();
+    expect(api.writeConfigFile).not.toHaveBeenCalled();
+    expect(api.createConfigDirectory).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(input);
+    await user.keyboard("{Enter}");
+    if (label === "New file") {
+      expect(api.writeConfigFile).toHaveBeenCalledExactlyOnceWith("project", "/home/u/proj", name, "");
+      expect(api.createConfigDirectory).not.toHaveBeenCalled();
+    } else {
+      expect(api.createConfigDirectory).toHaveBeenCalledExactlyOnceWith("project", "/home/u/proj", name);
+      expect(api.writeConfigFile).not.toHaveBeenCalled();
+    }
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("keeps the editor error visible when a file read fails", async () => {
     const user = userEvent.setup();
     vi.mocked(api.readConfigFile).mockRejectedValueOnce(new ApiError(500, { error: "boom" }));

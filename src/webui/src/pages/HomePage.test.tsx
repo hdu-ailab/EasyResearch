@@ -491,7 +491,7 @@ describe("HomePage", () => {
   it.each(["resolve", "reject"])(
     "rejects an older poll %s after immediate deletion and reconciles the last-row project",
     async (completion) => {
-      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      vi.useFakeTimers();
       const before = {
         bootId: "boot-a",
         agentDir: "/agent",
@@ -515,18 +515,17 @@ describe("HomePage", () => {
             resolveRefresh = resolve;
           }),
         );
-      const user = userEvent.setup();
       renderHome();
-      await user.click(await screen.findByRole("button", { name: "/other" }));
-      act(() => vi.advanceTimersByTime(5000));
-      await user.click(screen.getByRole("button", { name: "Delete session: Other paper" }));
-      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "/other" }));
+      await act(async () => vi.advanceTimersByTimeAsync(5000));
+      fireEvent.click(screen.getByRole("button", { name: "Delete session: Other paper" }));
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+      await act(async () => {});
       expect(api.listStatus).toHaveBeenCalledTimes(3);
       expect(screen.queryByText("Other paper")).toBeNull();
       expect(screen.queryByRole("button", { name: "/other" })).toBeNull();
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "All workspaces" })).toHaveAttribute("aria-current", "true"),
-      );
+      expect(screen.getByRole("button", { name: "All workspaces" })).toHaveAttribute("aria-current", "true");
       expect(screen.getByText("Fault diagnosis")).toBeVisible();
       await act(async () => {
         if (completion === "resolve") resolvePoll(before);
@@ -747,17 +746,15 @@ describe("HomePage", () => {
 
   it("renames a session from the row button and refreshes the status", async () => {
     // The renamed row must come from Save's refresh, never the monitor poll.
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.useFakeTimers();
     vi.mocked(api.renameSession).mockResolvedValue(undefined);
-    const user = userEvent.setup();
     renderHome();
 
-    await screen.findByText("Fault diagnosis");
+    await act(async () => {});
     const rename = screen.getByRole("button", { name: /rename session: fault diagnosis/i });
-    await user.click(rename);
+    fireEvent.click(rename);
     const input = screen.getByRole("textbox", { name: /session name/i });
-    await user.clear(input);
-    await user.type(input, "Renamed paper");
+    fireEvent.change(input, { target: { value: "Renamed paper" } });
     vi.mocked(api.listStatus).mockResolvedValue({
       bootId: "boot-a",
       agentDir: "/agent",
@@ -765,10 +762,11 @@ describe("HomePage", () => {
       sessions: [{ ...history[0]!, name: "Renamed paper" }],
       activeSessions: [{ ...active[0]!, status: "running" }],
     });
-    await user.click(screen.getByRole("button", { name: /save/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await act(async () => {});
 
-    await waitFor(() => expect(api.renameSession).toHaveBeenCalledWith("h1", "Renamed paper"));
-    expect(await screen.findByText("Renamed paper")).toBeVisible();
+    expect(api.renameSession).toHaveBeenCalledWith("h1", "Renamed paper");
+    expect(screen.getByText("Renamed paper")).toBeVisible();
     expect(screen.getByRole("button", { name: "Rename session: Renamed paper" })).toBeVisible();
     expect(screen.queryByText("Fault diagnosis")).toBeNull();
   });

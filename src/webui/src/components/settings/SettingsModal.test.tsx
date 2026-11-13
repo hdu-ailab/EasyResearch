@@ -2056,6 +2056,29 @@ describe("SettingsModal", () => {
     );
   });
 
+  it("creates an Agent only on ordinary Enter after IME confirmation has finished", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await selectCategory(user, "Agents");
+    await user.click(screen.getByRole("button", { name: /add agent/i }));
+    const dialog = screen.getByRole("dialog", { name: /add agent/i });
+    const input = within(dialog).getByRole("textbox", { name: "Agent filename" });
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: "reviewer" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input).toHaveFocus();
+    expect(dialog).toBeVisible();
+    expect(api.createAgentResource).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true, keyCode: 13 });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: false, keyCode: 229 });
+    expect(api.createAgentResource).not.toHaveBeenCalled();
+    await user.keyboard("{Enter}");
+    expect(api.createAgentResource).toHaveBeenCalledExactlyOnceWith("reviewer");
+    expect(await screen.findByRole("textbox", { name: /agent markdown/i })).toBeVisible();
+  });
+
   it("copies a bundled skill when its editor is opened and saves its Markdown", async () => {
     const user = userEvent.setup();
     renderSettings();

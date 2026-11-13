@@ -1,5 +1,5 @@
 import { ChevronDown, Search } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { canFocusElement } from "../hooks/useModalLayer";
 import { useViewActivityRef } from "../view-activity";
 
@@ -65,13 +65,26 @@ export function SearchableSelect({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const composing = useRef(false);
+  const closeAfterTab = useRef(false);
+  const hoverPosition = useRef<{ x: number; y: number } | null>(null);
+  const hoverMove = useRef<MouseEvent | null>(null);
   const generatedId = useId().replaceAll(":", "");
   const panelId = `${id ?? `searchable-select-${generatedId}`}-listbox`;
 
   const current = options.find((option) => option.value === value);
-  const shown = filterOptions(query, options);
+  const shown = useMemo(() => filterOptions(query, options), [query, options]);
+  const effectiveActiveIndex = Math.min(activeIndex, shown.length - 1);
+  const activeOption = shown[effectiveActiveIndex];
 
   useLayoutEffect(() => {
+    if (!open || !interactive) {
+      composing.current = false;
+      closeAfterTab.current = false;
+      hoverPosition.current = null;
+      hoverMove.current = null;
+    }
     if (!interactive) {
       setOpen(false);
       return;
@@ -81,6 +94,26 @@ export function SearchableSelect({
     if (canFocusElement(inputRef.current)) inputRef.current.focus();
   }, [open, interactive]);
 
+  useLayoutEffect(() => {
+    const next = Math.max(0, effectiveActiveIndex);
+    if (activeIndex !== next) setActiveIndex(next);
+  }, [activeIndex, effectiveActiveIndex]);
+
+  useLayoutEffect(() => {
+    if (!open || !interactive || !shown[effectiveActiveIndex]) return;
+    const list = listRef.current;
+    const option = list?.children.item(effectiveActiveIndex);
+    if (!list || !option || list.clientHeight === 0) return;
+    const listRect = list.getBoundingClientRect();
+    const optionRect = option.getBoundingClientRect();
+    const top = listRect.top + list.clientTop;
+    const bottom = top + list.clientHeight;
+    // Adjust only the options scroller; scrollIntoView can also move the dialog/document.
+    if (optionRect.top < top && optionRect.bottom > bottom) return;
+    if (optionRect.top < top) list.scrollTop += optionRect.top - top;
+    else if (optionRect.bottom > bottom) list.scrollTop += optionRect.bottom - bottom;
+  }, [open, interactive, effectiveActiveIndex, shown]);
+
   useEffect(() => {
     if (!open || !interactive) return;
     const onPointerDown = (event: PointerEvent) => {
@@ -89,21 +122,35 @@ export function SearchableSelect({
       setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
+      if (composing.current || event.isComposing || event.keyCode === 229) return;
       if (event.key === "Escape") {
         setOpen(false);
         if (activity.current.interactive && canFocusElement(triggerRef.current)) triggerRef.current.focus();
       }
     };
+    const onMouseMove = (event: MouseEvent) => {
+      if (!activity.current.interactive) return;
+      const previous = hoverPosition.current;
+      hoverPosition.current = { x: event.clientX, y: event.clientY };
+      hoverMove.current = !previous || previous.x !== event.clientX || previous.y !== event.clientY ? event : null;
+    };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
+    // Observe outside movement too, before option handlers, so re-entry has a current baseline.
+    document.addEventListener("mousemove", onMouseMove, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("mousemove", onMouseMove, true);
     };
   }, [open, interactive, activity]);
 
-  const openPanel = () => {
+  const openPanel = (position: { x: number; y: number } | null = null) => {
     if (!activity.current.interactive) return;
+    composing.current = false;
+    closeAfterTab.current = false;
+    hoverPosition.current = position;
+    hoverMove.current = null;
     setQuery("");
     setActiveIndex(
       Math.max(
@@ -135,7 +182,10 @@ export function SearchableSelect({
         aria-controls={panelId}
         aria-haspopup="listbox"
         disabled={disabled}
-        onClick={() => (open ? setOpen(false) : openPanel())}
+        onClick={(event) => {
+          if (open) setOpen(false);
+          else openPanel(event.detail > 0 ? { x: event.clientX, y: event.clientY } : null);
+        }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
             event.preventDefault();
@@ -168,44 +218,65 @@ export function SearchableSelect({
               aria-label="Search"
               aria-autocomplete="list"
               aria-controls={panelId}
-              aria-activedescendant={
-                shown.length > 0 ? `${panelId}-option-${Math.min(activeIndex, shown.length - 1)}` : undefined
-              }
+              aria-activedescendant={activeOption ? `${panelId}-option-${effectiveActiveIndex}` : undefined}
               placeholder={searchPlaceholder}
               value={query}
               onChange={(event) => {
                 setQuery(event.target.value);
                 setActiveIndex(0);
               }}
+              onCompositionStart={() => {
+                composing.current = true;
+              }}
+              onCompositionEnd={() => {
+                composing.current = false;
+              }}
+              onBlur={() => {
+                composing.current = false;
+                if (closeAfterTab.current) {
+                  closeAfterTab.current = false;
+                  setOpen(false);
+                }
+              }}
+              onKeyUp={(event) => {
+                if (event.key === "Tab") closeAfterTab.current = false;
+              }}
               onKeyDown={(event) => {
+                if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+                  event.stopPropagation();
+                  return;
+                }
+                // Keep this input mounted until native Tab or the modal boundary handler moves focus.
+                closeAfterTab.current = event.key === "Tab";
                 if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                   event.preventDefault();
-                  setActiveIndex((index) => {
-                    const count = shown.length;
-                    if (count === 0) return index;
-                    const next = event.key === "ArrowDown" ? index + 1 : index - 1;
-                    return ((next % count) + count) % count;
-                  });
+                  if (shown.length === 0) return;
+                  const next = effectiveActiveIndex + (event.key === "ArrowDown" ? 1 : -1);
+                  setActiveIndex((next + shown.length) % shown.length);
                 } else if (event.key === "Home" || event.key === "End") {
                   event.preventDefault();
                   setActiveIndex(event.key === "Home" ? 0 : Math.max(0, shown.length - 1));
                 } else if (event.key === "Enter") {
                   event.preventDefault();
-                  const target = shown[Math.min(activeIndex, shown.length - 1)];
-                  if (target !== undefined) choose(target);
+                  if (activeOption) choose(activeOption);
                 } else if (event.key === "Escape") {
                   event.preventDefault();
                   event.stopPropagation();
                   setOpen(false);
                   if (canFocusElement(triggerRef.current)) triggerRef.current.focus();
-                } else if (event.key === "Tab") {
-                  setOpen(false);
                 }
               }}
               className="h-6 w-full rounded-md border border-v2-grey-200 bg-v2-background-bg-base pl-6 pr-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-blue-600"
             />
           </div>
-          <div id={panelId} role="listbox" aria-label={ariaLabel} className="min-h-0 overflow-y-auto">
+          <div
+            ref={listRef}
+            id={panelId}
+            role="listbox"
+            tabIndex={-1}
+            aria-label={ariaLabel}
+            className="min-h-0 overflow-y-auto"
+          >
             {shown.length === 0 ? (
               <p className="px-2 py-1 text-[12px] text-v2-text-text-faint">{emptyMessage ?? "No matches"}</p>
             ) : (
@@ -215,11 +286,13 @@ export function SearchableSelect({
                   id={`${panelId}-option-${index}`}
                   role="option"
                   tabIndex={-1}
-                  aria-selected={activeIndex === index}
+                  aria-selected={effectiveActiveIndex === index}
                   className={`cursor-pointer rounded-md px-2 py-1 text-[12px] text-v2-text-text-base ${
-                    activeIndex === index ? "bg-v2-blue-100" : ""
+                    effectiveActiveIndex === index ? "bg-v2-blue-100" : ""
                   }`}
-                  onMouseEnter={() => setActiveIndex(index)}
+                  onMouseMove={(event) => {
+                    if (activity.current.interactive && hoverMove.current === event.nativeEvent) setActiveIndex(index);
+                  }}
                   onMouseDown={(event) => {
                     event.preventDefault();
                     choose(option);

@@ -8,6 +8,7 @@ export function ProviderTimeoutSetting({ configurationGeneration }: { configurat
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<"load" | "save" | "invalid" | null>(null);
   const dirty = useRef(false);
+  const composing = useRef(false);
   const saving = useRef(false);
   const pendingRefresh = useRef(false);
   const request = useRef(0);
@@ -97,9 +98,22 @@ export function ProviderTimeoutSetting({ configurationGeneration }: { configurat
             }}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
+                if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+                  event.stopPropagation();
+                  return;
+                }
                 event.preventDefault();
                 void commit();
               }
+            }}
+            onCompositionStart={() => {
+              composing.current = true;
+            }}
+            onCompositionEnd={() => {
+              composing.current = false;
+            }}
+            onBlur={() => {
+              composing.current = false;
             }}
             className="w-24 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 py-1 text-[13px] text-v2-text-text-base"
           />

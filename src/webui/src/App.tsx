@@ -1,7 +1,7 @@
 import { Settings } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import packageJson from "../../../package.json";
-import { listStatus } from "./api";
+import { createSession, listStatus, workspaceMissingCwd } from "./api";
 import { RuntimeRestartOverlay } from "./components/RuntimeRestartOverlay";
 import { SessionTabBar } from "./components/SessionTabBar";
 import { SettingsModal } from "./components/settings/SettingsModal";
@@ -192,6 +192,8 @@ export function App({
   const routeRef = useRef(route);
   routeRef.current = route;
   const [expectedRuntimeRestart, setExpectedRuntimeRestart] = useState<ExpectedRuntimeRestart | null>(null);
+  const pendingCreation = useRef<(() => boolean) | null>(null);
+  const [workCreation, setWorkCreation] = useState<{ owns(): boolean; pending: boolean } | null>(null);
   const restarting = useRef(false);
   restarting.current = expectedRuntimeRestart !== null;
   const routeWorkId = hostRoute?.page === "work" ? hostRoute.session.id : null;
@@ -276,6 +278,49 @@ export function App({
   );
   const goHome = useCallback(() => navigate({ page: "home" }), [navigate]);
 
+  const newSession = async () => {
+    const source = getRoute();
+    if (restarting.current || runtimeReplacementHandled.current || isSettingsHostRoute(source)) return;
+    if (source.page === "home") {
+      goHome();
+      return;
+    }
+    if (
+      source.page !== "work" ||
+      selectedView?.phase !== "ready" ||
+      !selectedView.workspaceResolved ||
+      selectedView.session.id !== source.session.id ||
+      pendingCreation.current?.()
+    )
+      return;
+    const { session, generation } = selectedView;
+    const ownsView = shell.captureOpen(session.id, generation);
+    const owns = () => ownsView() && getRoute() === source && !restarting.current && !runtimeReplacementHandled.current;
+    if (!owns()) return;
+    // Admission is synchronous, before React disables the button. Expired UI
+    // intents never own the created runtime or a later creation's feedback.
+    pendingCreation.current = owns;
+    setWorkCreation({ owns, pending: true });
+    try {
+      const dto = await createSession(session.cwd);
+      if (!owns()) return;
+      setWorkCreation(null);
+      const created = { id: dto.id, cwd: dto.cwd };
+      resolve(created, "opened");
+      shell.metadata({ ...created, name: dto.sessionName, status: dto.status });
+      navigate({ page: "work", session: created });
+    } catch (failure) {
+      if (!owns()) return;
+      const cwd = workspaceMissingCwd(failure);
+      if (cwd) {
+        setWorkCreation(null);
+        showMissingWorkspace({ id: session.id, cwd }, generation);
+      } else setWorkCreation({ owns, pending: false });
+    } finally {
+      if (pendingCreation.current === owns) pendingCreation.current = null;
+    }
+  };
+
   const reloadRuntime = useCallback(() => {
     if (runtimeReplacementHandled.current) return;
     runtimeReplacementHandled.current = true;
@@ -290,6 +335,7 @@ export function App({
   const onRuntimeRestartAccepted = useCallback(
     (oldBootId: string) => {
       if (runtimeReplacementHandled.current) return;
+      restarting.current = true;
       setExpectedRuntimeRestart({ oldBootId, phase: "waiting", attempt: 0 });
       const current = routeRef.current;
       if (isSettingsHostRoute(current)) closeSettings(current, { replace: true });
@@ -380,6 +426,7 @@ export function App({
   );
 
   const blocked = settingsOpen || configOpen || !!expectedRuntimeRestart;
+  const creation = workCreation?.owns() ? workCreation : null;
   const workLoading = routeWorkId !== null && (!selectedView || selectedView.phase === "loading");
   const settingsMounted = useRef(false);
   if (!settingsOpen) settingsMounted.current = false;
@@ -448,6 +495,9 @@ export function App({
             <SessionTabBar
               idPrefix={sessionTabsPrefix}
               disabled={blocked}
+              newDisabled={routeWorkId !== null && (selectedView?.phase !== "ready" || !selectedView.workspaceResolved)}
+              newPending={creation?.pending}
+              newLabel={t(routeWorkId === null ? "sessionTabs.new" : "sessionTabs.newInWorkspace")}
               tabs={shell.tabs.map((tab) => ({
                 ...tab,
                 loading: shell.views[tab.id]?.phase === "loading",
@@ -456,7 +506,7 @@ export function App({
               activeId={routeWorkId}
               onSelect={selectTab}
               onClose={shell.close}
-              onNew={goHome}
+              onNew={newSession}
               onReorder={shell.reorder}
             />
           }
@@ -467,6 +517,14 @@ export function App({
             </>
           }
         />
+        {creation && !creation.pending && (
+          <div role="alert" className="flex items-center gap-2 px-4 py-2 text-[13px] text-v2-status-error">
+            <span>{t("sessionTabs.createError")}</span>
+            <button type="button" className="er-outlined-button" onClick={newSession}>
+              {t("sessionTabs.retry")}
+            </button>
+          </div>
+        )}
         <div className="relative min-h-0 flex-1">
           {(homeVisited || hostRoute?.page === "home") && (
             <ViewSlot id="home" visible={homeVisible} interactive={homeVisible && !blocked}>

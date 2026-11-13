@@ -25,6 +25,7 @@ export function CompactionThresholdSetting({ configurationGeneration }: { config
   const [error, setError] = useState<"invalid" | "load" | "save" | null>(null);
   const [failedTarget, setFailedTarget] = useState<number | null>(null);
   const request = useRef(0);
+  const composing = useRef(false);
 
   const load = useCallback(async () => {
     const id = ++request.current;
@@ -141,9 +142,24 @@ export function CompactionThresholdSetting({ configurationGeneration }: { config
                 setError(null);
                 setFailedTarget(null);
               }}
-              onBlur={commitDraft}
+              onCompositionStart={() => {
+                composing.current = true;
+              }}
+              onCompositionEnd={() => {
+                composing.current = false;
+              }}
+              onBlur={() => {
+                composing.current = false;
+                commitDraft();
+              }}
               onKeyDown={(event) => {
-                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Enter") {
+                  if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+                    event.stopPropagation();
+                    return;
+                  }
+                  event.currentTarget.blur();
+                }
               }}
               className="h-7 w-12 rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-1 text-center text-[13px] tabular-nums text-v2-text-text-base focus:border-v2-blue-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-v2-blue-600 disabled:opacity-50"
             />

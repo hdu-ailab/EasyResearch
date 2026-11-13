@@ -13,7 +13,7 @@ import { StringDecoder } from "node:string_decoder";
 import { chromium, expect, type Browser, type BrowserContext, type Page } from "@playwright/test";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { importPi } from "../src/runtime/pi-import";
-import type { SessionSnapshotDto } from "../src/web/contracts";
+import type { ActiveSessionDto, SessionSnapshotDto, StatusDto } from "../src/web/contracts";
 import { messages, type MessageKey } from "../src/webui/src/i18n/messages";
 import { createSmokeDaemonCustody } from "./smoke-release-support";
 
@@ -53,12 +53,12 @@ interface FileDelivery {
 /** Real streaming transport recorder, also sees SharedWorker-owned requests.
  * Gates delay delivery of one real upstream response; they never replace it.
  */
-async function recordingBridge(target: string) {
+export async function recordingBridge(target: string) {
   const records: Wire[] = [];
   const fileDeliveries: FileDelivery[] = [];
   const observationErrors: string[] = [];
   const sockets = new Set<Socket>();
-  const gates: Array<{ match(record: Wire): boolean; promise: Promise<void>; release(): void; hit: boolean }> = [];
+  const gates: Array<{ match(record: Wire): boolean; promise: Promise<void>; release(): void; hit: boolean; bodyOnly: boolean }> = [];
   const hop = new Set(["connection", "keep-alive", "transfer-encoding", "proxy-connection", "upgrade"]);
   const server = createServer((incoming, outgoing) => {
     const record: Wire = { method: incoming.method ?? "GET", path: incoming.url ?? "/", live: true, complete: false };
@@ -81,6 +81,8 @@ async function recordingBridge(target: string) {
     upstream.on("error", () => outgoing.destroy());
     upstream.on("response", (response) => {
       record.status = response.statusCode;
+      // A gated SSE observer must not drain bytes before the downstream pipe.
+      if (gate) response.pause();
       if (record.path === "/api/events") {
         const decoder = new StringDecoder("utf8");
         let pending = "";
@@ -110,7 +112,7 @@ async function recordingBridge(target: string) {
       }
       response.on("error", () => outgoing.destroy());
       const forward = async () => {
-        if (gate) await gate.promise;
+        if (gate && !gate.bodyOnly) await gate.promise;
         if (outgoing.destroyed) { response.destroy(); return; }
         const headers: string[] = [];
         for (let i = 0; i < response.rawHeaders.length; i += 2) {
@@ -118,6 +120,8 @@ async function recordingBridge(target: string) {
         }
         outgoing.writeHead(response.statusCode!, headers);
         outgoing.flushHeaders();
+        if (gate?.bodyOnly) await gate.promise;
+        if (outgoing.destroyed) { response.destroy(); return; }
         response.pipe(outgoing);
       };
       void forward().catch(() => outgoing.destroy());
@@ -130,9 +134,10 @@ async function recordingBridge(target: string) {
   assert(address && typeof address !== "string");
   let closing: Promise<void> | undefined;
   return { origin: `http://127.0.0.1:${address.port}`, records, fileDeliveries, observationErrors,
-    delay(match: (record: Wire) => boolean) {
+    // Default still delays headers and body, as required by Work-plus checks.
+    delay(match: (record: Wire) => boolean, options: { bodyOnly?: boolean } = {}) {
       const pending = Promise.withResolvers<void>();
-      const gate = { match, promise: pending.promise, release: () => pending.resolve(), hit: false };
+      const gate = { match, promise: pending.promise, release: () => pending.resolve(), hit: false, bodyOnly: options.bodyOnly === true };
       gates.push(gate);
       return gate;
     },
@@ -378,9 +383,105 @@ async function assertReferencePreview(page: Page, own: Seed, foreign: Seed) {
 }
 
 async function home(page: Page, t: Labels) {
-  // The plus is the existing Home chooser, never a model/session creation request.
-  await topbar(page).getByRole("button", { name: t("sessionTabs.new"), exact: true }).click();
+  await topbar(page).getByRole("button", { name: t("topbar.backToHome"), exact: true }).click();
   await expect.poll(() => new URL(page.url()).hash).toBe("#/");
+}
+
+/** Actual plus -> compiled create endpoint -> fresh root. The bridge only holds
+ * delivery so pending admission can be observed; no API response is fabricated.
+ */
+async function plusCreationChecks(page: Page, t: Labels, source: Seed, bridge: Bridge, json: Json,
+  provider: ReturnType<typeof providerFixture>, result: CaseReport, scope: "root" | "child" | "running") {
+  const retained = await surface(page, source.id).elementHandle();
+  assert(retained);
+  await frames(page);
+  const existingTabs = await order(page);
+  const draft = await input(page).inputValue();
+  const readonly = await input(page).isDisabled();
+  const panelOpen = await surface(page).locator("[data-work-layout]").getAttribute("data-panel-open");
+  const selectedFile = await files(page).locator('[role="tab"][aria-selected="true"]').evaluateAll((items) => items[0]?.getAttribute("title") ?? null);
+  const referencePaths = await surface(page).locator("[data-composer-reference]").evaluateAll((items) => items.map((item) => item.getAttribute("title")));
+  const beforeScroll = await transcript(page).evaluate((element) => element.scrollTop);
+  const beforeHistory = readFileSync(source.path);
+  const before = await json<SessionSnapshotDto>(`/api/sessions/${source.id}/snapshot`);
+  const identities = (subscriptions: ReturnType<Bridge["subscriptions"]>) => subscriptions.map((item) =>
+    `${item.channelId}:${item.id}:${item.path}`).sort();
+  await expect.poll(() => bridge.subscriptions().filter((item) => item.path === `/api/sessions/${source.id}/events`).length).toBe(1);
+  await expect.poll(() => bridge.subscriptions().some((item) => item.path === "/api/config/events")).toBe(true);
+  const beforeSubscriptions = bridge.subscriptions();
+  const beforeIdentities = identities(beforeSubscriptions);
+  const sourceSubscription = beforeSubscriptions.find((item) => item.path === `/api/sessions/${source.id}/events`)!;
+  const modelCalls = provider.requests.length;
+  const start = bridge.records.length;
+  const gate = bridge.delay((record) => record.method === "POST" && record.path === "/api/sessions");
+  const response = page.waitForResponse((response) => response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/sessions");
+  try {
+    const plus = topbar(page).getByRole("button", { name: t("sessionTabs.newInWorkspace"), exact: true });
+    // Two same-task native activations exercise pre-render admission too.
+    await plus.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+    await expect.poll(() => gate.hit).toBe(true);
+    await expect(plus).toBeDisabled();
+    await expect(plus).toHaveAttribute("aria-busy", "true");
+    await expect(tab(page, source.id)).toBeEnabled();
+    assert.equal(new URL(page.url()).hash, workHash(source), "Creation must not route through Home");
+    gate.release();
+    const received = await response;
+    assert(received.ok());
+    const created = await received.json() as ActiveSessionDto;
+    assert.match(created.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    assert(!existingTabs.includes(created.id), "Creation returns a distinct root UUID, not another open tab");
+    assert.equal(created.cwd, source.cwd, "The ready root cwd remains authority even in a child view");
+    await expect.poll(() => new URL(page.url()).hash).toBe(workHash(created));
+    await expect(tab(page, created.id)).toHaveAttribute("aria-selected", "true");
+    await expect(input(page)).toBeEnabled();
+    await expect(input(page)).toHaveValue("");
+    await expect(surface(page).locator("[data-work-layout]")).toHaveAttribute("data-panel-open", "false");
+    await expect(surface(page).locator("[data-composer-reference]")).toHaveCount(0);
+    await expect(files(page).locator('[role="tab"]')).toHaveCount(0);
+    // HTTP hydration cannot substitute for an accepted logical event lease.
+    // Observe acquisition positively, preserving every peer identity/channel.
+    await expect.poll(() => bridge.subscriptions().filter((item) => item.path === `/api/sessions/${created.id}/events`).length).toBe(1);
+    const createdSubscription = bridge.subscriptions().find((item) => item.path === `/api/sessions/${created.id}/events`)!;
+    assert.equal(createdSubscription.channelId, sourceSubscription.channelId);
+    assert(!beforeSubscriptions.some((item) => item.id === createdSubscription.id));
+    await expect.poll(() => identities(bridge.subscriptions())).toEqual(identities([...beforeSubscriptions, createdSubscription]));
+    const snapshot = await json<SessionSnapshotDto>(`/api/sessions/${created.id}/snapshot`);
+    assert.equal(snapshot.session.id, created.id);
+    assert.equal(snapshot.session.cwd, source.cwd);
+    assert.equal(snapshot.session.isStreaming, false);
+    assert.deepEqual(snapshot.timeline, []);
+    assert.deepEqual(snapshot.subagents, []);
+    const requests = bridge.records.slice(start).filter((record) => record.path === "/api/sessions" && record.method === "POST");
+    assert.equal(requests.length, 1, "Rapid plus activation creates exactly one root");
+    assert.deepEqual(requests[0]!.body, { cwd: source.cwd });
+    assert(!bridge.records.slice(start).some((record) => record.path === "/api/sessions/open"
+      || record.method === "POST" && /\/messages$/.test(record.path)), "Creation cannot reopen history or submit a model message");
+    await activate(page, source);
+    assert(await retained.evaluate((element) => element.isConnected));
+    await expect(input(page)).toHaveValue(draft);
+    assert.equal(await input(page).isDisabled(), readonly, "The inner Agent selection stays with the source view");
+    await expect(surface(page).locator("[data-work-layout]")).toHaveAttribute("data-panel-open", panelOpen!);
+    assert.deepEqual(await surface(page).locator("[data-composer-reference]").evaluateAll((items) => items.map((item) => item.getAttribute("title"))), referencePaths);
+    if (selectedFile) await expect(files(page).locator('[role="tab"][aria-selected="true"]')).toHaveAttribute("title", selectedFile);
+    await expect.poll(async () => Math.abs(await transcript(page).evaluate((element) => element.scrollTop) - beforeScroll)).toBeLessThan(2);
+    await tab(page, created.id).locator("..").getByRole("button").click();
+    await expect(tab(page, created.id)).toHaveCount(0);
+    await expect.poll(() => identities(bridge.subscriptions())).toEqual(beforeIdentities);
+    assert.equal(new URL(page.url()).hash, workHash(source));
+    assert.equal((await json<SessionSnapshotDto>(`/api/sessions/${source.id}/snapshot`)).session.isStreaming, before.session.isStreaming);
+    assert((await json<StatusDto>("/api/status")).activeSessions.some((session) => session.id === created.id && session.cwd === source.cwd),
+      "Closing the fresh UI tab preserves its normal active runtime");
+    assert.deepEqual(readFileSync(source.path), beforeHistory);
+    assert.equal(provider.requests.length, modelCalls);
+    assert.deepEqual(provider.failures, []);
+    noAgentControls(bridge.records.slice(start));
+    const measurements = (result.measurements.plusCreations ??= []) as Array<unknown>;
+    measurements.push({ scope, source: source.id, cwd: source.cwd, created: created.id, requestCount: requests.length,
+      timelineEntries: snapshot.timeline.length, modelCalls: provider.requests.length - modelCalls, sourceStreaming: before.session.isStreaming,
+      subscriptionsBefore: beforeSubscriptions, acquiredSubscription: createdSubscription, subscriptionsAfter: bridge.subscriptions() });
+    result.checks.push(`Work plus (${scope}): one empty UUID in root cwd; no model request; retained draft/references/file/pane/scroll/Agent ownership`);
+  } finally { gate.release(); await response.catch(() => {}); await retained.dispose(); }
 }
 
 function homeRow(page: Page, seed: Seed) {
@@ -439,7 +540,8 @@ async function selectedInterest(bridge: Bridge, cwd: string) {
   for (const record of records) assert((record.body?.cwds as string[] | undefined)?.length! <= 1, "App config interest must not union retained Work cwds");
 }
 
-async function stateChecks(page: Page, t: Labels, seed: ReturnType<typeof fixtures>, bridge: Bridge, result: CaseReport) {
+async function stateChecks(page: Page, t: Labels, seed: ReturnType<typeof fixtures>, bridge: Bridge,
+  json: Json, provider: ReturnType<typeof providerFixture>, result: CaseReport) {
   const [a, b, c] = seed.roots as [Seed, Seed, Seed];
   await expect(surface(page).getByText("ROOT_A_TAIL", { exact: true })).toBeVisible();
   assert.equal(bridge.records.filter((record) => record.path === "/api/sessions/open" && record.body?.path === a.path).length, 1,
@@ -513,6 +615,7 @@ async function stateChecks(page: Page, t: Labels, seed: ReturnType<typeof fixtur
   const retained = await surface(page, a.id).elementHandle();
   assert(geometry && retained);
   try {
+    await plusCreationChecks(page, t, a, bridge, json, provider, result, "root");
     await activate(page, b);
     await expect(surface(page).getByText("ROOT_B_TAIL", { exact: true })).toBeVisible();
     await expect(input(page)).toHaveValue("");
@@ -588,6 +691,7 @@ async function stateChecks(page: Page, t: Labels, seed: ReturnType<typeof fixtur
   await details.click();
   await expect(surface(page).getByText("CHILD_ONLY_EVIDENCE", { exact: true })).toBeVisible();
   await expect(input(page)).toBeDisabled();
+  await plusCreationChecks(page, t, a, bridge, json, provider, result, "child");
   await activate(page, b);
   await expect(input(page)).toBeEnabled();
   await activate(page, a);
@@ -779,6 +883,7 @@ async function lifecycleChecks(page: Page, context: BrowserContext, t: Labels, s
     await input(page).fill(turns[0].prompt);
     await surface(page).getByRole("button", { name: t("composer.send"), exact: true }).click();
     await expect(surface(page).getByText("STREAM_A_ONLY_START", { exact: false })).toBeVisible();
+    await plusCreationChecks(page, t, a, bridge, json, provider, result, "running");
     releaseB = provider.arm(turns[1].own, turns[1].tokens);
     await activate(page, b);
     await pane(page, t, "chat");
@@ -846,12 +951,35 @@ async function reloadAndMutations(page: Page, t: Labels, seed: ReturnType<typeof
   assert(bookmarks.length <= 32 && Buffer.byteLength(JSON.stringify(bookmarks)) <= 8192);
   assert(bookmarks.every((item) => Object.keys(item).every((key) => ["id", "cwd", "name"].includes(key))));
   await home(page, t);
+  // Retained views can finish an already-owned file-watch update while the old
+  // document unloads. Its lease identity must not be mistaken for a fresh Home
+  // view; a newly hydrated view would acquire a different lease/subscription.
+  const priorFileWatches = new Set(bridge.records.filter((record) => record.method === "PUT" && record.status === 200
+    && /^\/api\/sessions\/[^/]+\/file-watches\/[^/?]+$/.test(record.path)).map((record) => record.path));
+  const priorSubscriptions = new Set(bridge.subscriptions().map((item) => `${item.channelId}:${item.id}:${item.path}`));
   const homeStart = bridge.records.length;
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(surface(page, "home")).toHaveAttribute("data-session-active", "true");
   await expect(topbar(page).locator('[data-session-tab-id][aria-selected="true"]')).toHaveCount(0);
-  assert(!bridge.records.slice(homeStart).some((record) => /\/api\/sessions\/[^/]+\/(snapshot|history|file-watches)/.test(record.path)
-    || record.path === "/api/sessions/open"), "Canonical Home takes precedence over all bookmarks");
+  await expect(page.locator('[data-session-surface]:not([data-session-surface="home"])')).toHaveCount(0);
+  await expect.poll(() => bridge.subscriptions().map((item) => item.path)).toEqual(["/api/config/events"]);
+  const homeTraffic = bridge.records.slice(homeStart);
+  const freshSessionSubscriptions = homeTraffic.flatMap((record) => {
+    const channelId = record.method === "PUT" && /^\/api\/events\/([^/?]+)$/.exec(record.path)?.[1];
+    if (!channelId || !Array.isArray(record.body?.subscriptions)) return [];
+    return record.body.subscriptions.filter((item: { id: string; path: string }) => /\/sessions\/[^/]+\/events$/.test(item.path)
+      && !priorSubscriptions.has(`${channelId}:${item.id}:${item.path}`));
+  });
+  assert.deepEqual(freshSessionSubscriptions, [], "Home reload cannot admit even a transient fresh session subscription");
+  assert(!homeTraffic.some((record) => /\/api\/sessions\/[^/]+\/(snapshot|history)/.test(record.path)
+    || record.path === "/api/sessions/open"
+    || /\/api\/sessions\/[^/]+\/file-watches/.test(record.path)
+      && !(record.method === "PUT" && priorFileWatches.has(record.path))),
+  "Canonical Home cannot hydrate a session or acquire a fresh file-watch lease");
+  result.measurements.homeReload = {
+    subscriptions: bridge.subscriptions(),
+    priorOwnerFileWatchUpdates: homeTraffic.filter((record) => record.method === "PUT" && priorFileWatches.has(record.path)),
+  };
   result.checks.push("reload opens only active bookmarked runtime; other bookmarks have no transcript/view lease; canonical Home takes precedence; descriptor-only bounded persistence");
 
   const homeBefore = new URL(page.url()).hash;
@@ -1022,7 +1150,7 @@ async function main() {
       try {
         await page.goto(`${bridge.origin}/${workHash(seed.roots[0]!)}`, { waitUntil: "domcontentloaded" });
         await expect(page.locator("html")).toHaveAttribute("data-ui-theme", theme);
-        await stateChecks(page, t, seed, bridge, result);
+        await stateChecks(page, t, seed, bridge, json, provider, result);
         assert.equal(provider.requests.length, before, "Read-only interactions must never call a model");
         await page.screenshot({ path: join(artifacts, `retained-${label}.png`) });
         if (width === 1440 && theme === "light") {

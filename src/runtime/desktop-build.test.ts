@@ -192,26 +192,26 @@ describe("electron-builder configuration", () => {
     });
   });
 
-  it("uses a per-user unsigned x64 NSIS installer", () => {
+  it("enables the assisted directory page with current-user defaults and no elevation", () => {
     const config = electronBuilderConfig(
       "windows-x64",
       "1.2.3",
       join(root, "stage"),
       join(root, "desktop"),
     );
-    expect(config).toMatchObject({
-      win: {
-        signExecutable: false,
-        target: [{ target: "nsis", arch: ["x64"] }],
-        artifactName: "EasyResearch-1.2.3-windows-x64.${ext}",
-      },
-      nsis: {
-        perMachine: false,
-        oneClick: true,
-        allowElevation: false,
-        differentialPackage: false,
-      },
+    expect(config.win).toMatchObject({
+      signExecutable: false,
+      target: [{ target: "nsis", arch: ["x64"] }],
+      artifactName: "EasyResearch-1.2.3-windows-x64.${ext}",
     });
+    const installer = config.nsis!;
+    expect(installer.oneClick).toBe(false);
+    expect(installer.allowToChangeInstallationDirectory).toBe(true);
+    expect(installer.perMachine).toBe(false);
+    expect(installer.selectPerMachineByDefault).not.toBe(true);
+    expect(installer.allowElevation).toBe(false);
+    expect(installer.script).toBeUndefined();
+    expect(installer.include).toBeUndefined();
   });
 
   it.each(["windows-x64", "darwin-arm64", "linux-arm64"] as const)(

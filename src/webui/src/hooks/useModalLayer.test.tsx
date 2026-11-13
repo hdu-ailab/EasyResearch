@@ -54,6 +54,18 @@ function BlockedFocusCandidates({ position }: { position: "before" | "after" }) 
       <button type="button" disabled tabIndex={0}>
         disabled-{position}
       </button>
+      <button type="button" tabIndex={-1}>
+        programmatic-button-{position}
+      </button>
+      <a href="#example" tabIndex={-1}>
+        programmatic-link-{position}
+      </a>
+      <input aria-label={`programmatic-input-${position}`} tabIndex={-1} />
+      <textarea aria-label={`programmatic-textarea-${position}`} tabIndex={-1} />
+      <select aria-label={`programmatic-select-${position}`} tabIndex={-1}>
+        <option>Option</option>
+      </select>
+      <div tabIndex={-2}>programmatic-container-{position}</div>
     </>
   );
 }
@@ -90,6 +102,30 @@ function FocusHarness({ withBlockedCandidates = false }: { withBlockedCandidates
 }
 
 describe("useModalLayer", () => {
+  it.each([
+    { isComposing: true, keyCode: 27 },
+    { isComposing: false, keyCode: 229 },
+  ])("does not dismiss a modal for an IME-owned Escape (%j)", (flags) => {
+    render(<FocusHarness />);
+    const opener = screen.getByRole("button", { name: "opener" });
+    opener.focus();
+    fireEvent.click(opener);
+    expect(fireEvent.keyDown(document.activeElement!, { key: "Escape", ...flags })).toBe(true);
+    expect(screen.getByRole("dialog")).toBeVisible();
+    expect(screen.getByRole("button", { name: "first" })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(opener).toHaveFocus();
+  });
+
+  it("still permits explicit programmatic focus on a negative-tabindex control inside the modal", () => {
+    render(<FocusHarness withBlockedCandidates />);
+    fireEvent.click(screen.getByRole("button", { name: "opener" }));
+    const target = screen.getByRole("button", { name: "programmatic-button-after" });
+    target.focus();
+    expect(target).toHaveFocus();
+  });
+
   it("assigns increasing z-index so later modals paint above earlier ones", () => {
     render(
       <>

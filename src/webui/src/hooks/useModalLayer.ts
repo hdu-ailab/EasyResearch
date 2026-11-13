@@ -91,7 +91,7 @@ export function requestModalCloseAbove(root: HTMLElement | null): boolean {
 
 function onKeyDown(event: KeyboardEvent): void {
   const modal = topModal();
-  if (!modal) return;
+  if (!modal || event.isComposing || event.keyCode === 229) return;
   if (event.key === "Escape") {
     event.preventDefault();
     modal.onClose();
@@ -137,6 +137,7 @@ function focusableElements(root: HTMLElement): HTMLElement[] {
     ),
   ).filter(
     (element) =>
+      element.tabIndex >= 0 &&
       !element.matches(':disabled, input[type="hidden"]') &&
       element.closest('[hidden], [aria-hidden="true"], [inert]') === null,
   );

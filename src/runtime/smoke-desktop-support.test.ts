@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BuildArtifact } from "../../scripts/build";
 import type { DesktopBuildManifest } from "../../scripts/build-desktop";
@@ -364,12 +364,22 @@ describe("native package commands and paths", () => {
     expect(statSync(notices).mode & 0o7777).toBe(0o640);
   });
 
-  it("builds a silent per-user NSIS installation command", () => {
-    expect(nsisInstallCommand("C:\\artifacts\\EasyResearch.exe", "C:\\Users\\test\\EasyResearch"))
-      .toEqual({
-        command: "C:\\artifacts\\EasyResearch.exe",
-        args: ["/S", "/D=C:\\Users\\test\\EasyResearch"],
-      });
+  it.each([
+    "C:\\Users\\test\\EasyResearch",
+    "D:\\Research tools\\installed app",
+  ])("keeps silent NSIS destination %s last, unquoted and shared by the installed resources", (installRoot) => {
+    const installer = "C:\\artifacts\\EasyResearch.exe";
+    const command = nsisInstallCommand(installer, installRoot);
+    expect(command.command).toBe(installer);
+    expect(command.args.slice(0, -1)).toEqual(["/S"]);
+    expect(command.args.at(-1)).toBe(`/D=${installRoot}`);
+    expect(command.windowsVerbatimArguments).toBe(true);
+
+    const paths = packagedApplicationPaths("windows-x64", installRoot, "nsis");
+    expect(win32.relative(installRoot, paths.executable)).toBe("EasyResearch.exe");
+    expect(win32.relative(installRoot, paths.sidecar)).toBe("resources\\sidecar\\easyresearch.exe");
+    expect(win32.dirname(paths.notices)).toBe(win32.dirname(paths.sidecar));
+    expect(win32.dirname(paths.uninstaller!)).toBe(installRoot);
   });
 
   it("builds readonly DMG attach and forced detach commands", () => {

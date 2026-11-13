@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
@@ -55,4 +56,26 @@ it("keeps a local draft during an external update and rejects invalid input with
   fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
   await screen.findByRole("alert");
   expect(api.patchProviderTimeoutSettings).not.toHaveBeenCalled();
+});
+
+it.each([
+  { isComposing: true, keyCode: 13, tracked: false },
+  { isComposing: false, keyCode: 229, tracked: false },
+  { isComposing: false, keyCode: 13, tracked: true },
+])("does not commit a numeric timeout on synthetic IME Enter (%j)", async (flags) => {
+  const user = userEvent.setup();
+  render(view(1));
+  const input = await screen.findByRole("spinbutton", { name: /LLM request timeout/i });
+  await waitFor(() => expect(input).toBeEnabled());
+  await user.click(input);
+  fireEvent.change(input, { target: { value: "42.001" } });
+  if (flags.tracked) fireEvent.compositionStart(input);
+  expect(fireEvent.keyDown(input, { key: "Enter", ...flags })).toBe(true);
+  expect(api.patchProviderTimeoutSettings).not.toHaveBeenCalled();
+  expect(input).toHaveValue(42.001);
+  expect(input).toHaveFocus();
+  if (flags.tracked) fireEvent.compositionEnd(input);
+  await user.keyboard("{Enter}");
+  expect(api.patchProviderTimeoutSettings).toHaveBeenCalledExactlyOnceWith({ timeoutMs: 42001 });
+  await waitFor(() => expect(input).toBeEnabled());
 });

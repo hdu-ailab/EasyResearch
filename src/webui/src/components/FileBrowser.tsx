@@ -3,6 +3,7 @@ import type { FileContentDto, FileEntryDto, FileRenameResultDto } from "../../..
 import { readFileContent } from "../api";
 import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
+import { useWorkBreakpoint } from "../hooks/useWorkBreakpoint";
 import { useI18n } from "../i18n/useI18n";
 import { useViewActivityRef } from "../view-activity";
 import { FilesPanel } from "./FilesPanel";
@@ -14,6 +15,8 @@ import { previewKind } from "./previews/preview-kind";
 export interface FileBrowserProps {
   ref?: Ref<FileBrowserHandle>;
   root: string;
+  /** A Work view supplies its breakpoint; standalone browsers subscribe locally. */
+  isMobile?: boolean;
   loadEnabled?: boolean;
   sessionId?: string;
   fileWatchLeaseId?: string | null;
@@ -39,6 +42,7 @@ export const FileBrowser = memo(function FileBrowser(props: FileBrowserProps) {
 function FileBrowserScope({
   ref,
   root,
+  isMobile: ownedMobile,
   loadEnabled = true,
   sessionId,
   fileWatchLeaseId,
@@ -74,7 +78,7 @@ function FileBrowserScope({
   const [contentRevision, setContentRevision] = useState<Record<string, number>>({});
   const [treeVisible, setTreeVisible] = useState(true);
   const [mobileTreeVisible, setMobileTreeVisible] = useState(true);
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 820);
+  const isMobile = useWorkBreakpoint(ownedMobile);
   const treeOpened = isMobile ? mobileTreeVisible : treeVisible;
   const consumedFileEvents = useRef({ previews: 0, listings: 0, acknowledged: 0 });
   const activeRead = useRef<{ path: string } | null>(null);
@@ -101,12 +105,6 @@ function FileBrowserScope({
     (through: number) => consumeFileEvents("listings", through),
     [consumeFileEvents],
   );
-
-  useEffect(() => {
-    const resize = () => setIsMobile(window.innerWidth < 820);
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
-  }, []);
 
   useEffect(() => {
     if (!loadEnabled) return;

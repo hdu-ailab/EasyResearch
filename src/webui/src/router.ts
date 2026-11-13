@@ -130,7 +130,7 @@ export function routeToHash(route: AppRoute): string {
 }
 
 export interface WorkSessionResolver {
-  listStatus(): Promise<{ sessions: Array<{ id: string; path: string }> }>;
+  listStatus(): Promise<{ sessions: Array<{ id: string; path: string }>; activeSessions: WorkSession[] }>;
   openSession(path: string): Promise<WorkSession>;
 }
 
@@ -138,10 +138,10 @@ export interface WorkSessionResolver {
  * Resolves a work route's session before WorkPage mounts: map the session id
  * to its persisted JSONL path through the status listing, then open it so the
  * backend attaches the active registry record or resumes the persisted
- * history. When the session is not persisted yet (no first assistant message)
- * or listing is unavailable, the URL identity is returned unchanged so an
- * already-active session can still attach. A known persisted session's open
- * failure remains actionable and is propagated.
+ * history. A never-persisted active root uses its accepted registry cwd. When
+ * neither inventory identifies the root, or listing is unavailable, the URL
+ * identity remains only an attachment hint, not workspace authority. A known
+ * persisted session's open failure remains actionable and is propagated.
  */
 export async function resolveWorkSession(id: string, cwd: string, deps: WorkSessionResolver): Promise<WorkSession> {
   let status: Awaited<ReturnType<WorkSessionResolver["listStatus"]>>;
@@ -152,5 +152,7 @@ export async function resolveWorkSession(id: string, cwd: string, deps: WorkSess
   }
   const summary = status.sessions.find((session) => session.id === id);
   if (summary) return await deps.openSession(summary.path);
+  const active = status.activeSessions.find((session) => session.id === id);
+  if (active) return { id: active.id, cwd: active.cwd };
   return { id, cwd };
 }

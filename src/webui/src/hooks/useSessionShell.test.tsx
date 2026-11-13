@@ -140,6 +140,41 @@ describe("document session view ownership", () => {
     expect(result.current.tabs.map((tab) => tab.id)).toEqual(["a", "b", "c"]);
   });
 
+  it("replaces a stale bookmark cwd from active-only inventory before publishing a ready workspace", async () => {
+    vi.mocked(api.listStatus).mockResolvedValue({
+      ...status,
+      sessions: [],
+      activeSessions: [active("a", "/authoritative")],
+    });
+    const { result } = setup("a");
+    act(() => result.current.resolve({ id: "a", cwd: "/stale-hash" }));
+    expect(result.current.views.a?.workspaceResolved).toBe(false);
+    await waitFor(() => expect(result.current.views.a?.phase).toBe("ready"));
+    expect(result.current.views.a).toMatchObject({
+      session: { id: "a", cwd: "/authoritative" },
+      workspaceResolved: true,
+    });
+    expect(result.current.getTab("a")?.cwd).toBe("/authoritative");
+    expect(result.current.views.b).toBeUndefined();
+    expect(api.openSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["unknown", "listing-failure"] as const)(
+    "keeps %s attachment hints distinct from resolved workspaces",
+    async (failure) => {
+      if (failure === "unknown")
+        vi.mocked(api.listStatus).mockResolvedValue({ ...status, sessions: [], activeSessions: [] });
+      else vi.mocked(api.listStatus).mockRejectedValue(new Error("Status unavailable"));
+      const { result } = setup("a");
+      act(() => result.current.resolve(tabs[0]));
+      await waitFor(() => expect(result.current.views.a?.phase).toBe("ready"));
+      expect(result.current.views.a).toMatchObject({ session: { id: "a", cwd: "/a" }, workspaceResolved: false });
+      act(() => result.current.metadata({ ...tabs[0], status: "ready" }, result.current.views.a!.generation));
+      expect(result.current.views.a?.workspaceResolved).toBe(false);
+      expect(api.openSession).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects a closed resolver after reopening the same id and fences callbacks from the old view", async () => {
     const old = deferred<ActiveSessionDto>();
     const fresh = deferred<ActiveSessionDto>();
@@ -207,6 +242,22 @@ describe("document session view ownership", () => {
     act(() => mutation.renamed("a", "Obsolete"));
     expect(result.current.getTab("a")?.name).not.toBe("Obsolete");
     expect(api.listStatus).not.toHaveBeenCalled();
+  });
+
+  it("fences a ready-view launch on synchronous replacement and unmount but not metadata updates", () => {
+    const { result, unmount } = setup("a");
+    act(() => result.current.resolve(tabs[0], "opened"));
+    const ownsView = result.current.captureOpen("a", result.current.views.a!.generation);
+    act(() => result.current.metadata({ ...tabs[0], name: "Current name", status: "running" }));
+    expect(ownsView()).toBe(true);
+    act(() => {
+      result.current.resolve(tabs[0], "opened");
+      expect(ownsView()).toBe(false);
+    });
+    const ownsNext = result.current.captureOpen("a", result.current.views.a!.generation);
+    expect(ownsNext()).toBe(true);
+    unmount();
+    expect(ownsNext()).toBe(false);
   });
 
   it("ignores stale Home status after live metadata, including authoritative empty names", async () => {

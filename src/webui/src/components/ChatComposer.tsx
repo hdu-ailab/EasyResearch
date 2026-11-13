@@ -1,5 +1,15 @@
 import { AtSign, FileText, Slash, Square, X } from "lucide-react";
-import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { SkillCommandDto } from "../../../web/contracts";
 import { canFocusElement } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
@@ -21,6 +31,8 @@ import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface ChatComposerProps {
   cwd?: string;
+  /** The Work owner's font preference invalidates fallback sizing after CSS application. */
+  chatFontSize?: number;
   disabled: boolean;
   streaming: boolean;
   onSend: (text: string) => void;
@@ -44,7 +56,7 @@ export interface ChatComposerHandle {
  * `/<name>` form unless a command collision requires Pi's `/skill:<name>` form.
  */
 export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer(
-  { cwd, disabled, streaming, onSend, onCommand, onAbort, commands = [] },
+  { cwd, chatFontSize, disabled, streaming, onSend, onCommand, onAbort, commands = [] },
   ref,
 ) {
   const { t } = useI18n();
@@ -64,28 +76,50 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const insertedCaret = useRef<number | null>(null);
   const referenceId = useRef(0);
   const commandListId = `composer-commands-${useId().replaceAll(":", "")}`;
+  const [nativeSizing] = useState(
+    () => typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content") === true,
+  );
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Remeasure the committed DOM whenever the controlled draft changes.
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea || !visible) return;
-    const resize = () => {
-      if (textarea.clientWidth === 0) return;
+  const resizeFallback = useCallback(
+    (contentWidth?: number) => {
+      const textarea = textareaRef.current;
+      if (nativeSizing || !activity.current.visible || !textarea || (contentWidth ?? textarea.clientWidth) <= 0) return;
       // Reset first so deleting text can shrink; CSS owns the height limits.
       textarea.style.height = "auto";
       textarea.style.height = `${textarea.scrollHeight}px`;
-    };
-    resize();
-    let width = textarea.clientWidth;
-    const observer = new ResizeObserver(() => {
-      const nextWidth = textarea.clientWidth;
+    },
+    [nativeSizing, activity],
+  );
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Remeasure the committed DOM whenever the controlled draft changes.
+  useLayoutEffect(() => {
+    if (visible) resizeFallback();
+  }, [text, visible, resizeFallback]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (nativeSizing || !textarea || !visible) return;
+    let width: number | undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      if (!activity.current.visible) return;
+      const nextWidth = entry?.contentRect.width;
+      if (nextWidth === undefined) return;
       if (nextWidth === width) return;
       width = nextWidth;
-      resize();
+      resizeFallback(nextWidth);
     });
     observer.observe(textarea);
     return () => observer.disconnect();
-  }, [text, visible]);
+  }, [visible, nativeSizing, activity, resizeFallback]);
+
+  // The parent PreferencesProvider applies font CSS in its passive effect, after
+  // child effects. Measure on the next frame with those accepted styles in place.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The font preference invalidates layout without changing draft text or the observer's box.
+  useEffect(() => {
+    if (nativeSizing || !visible) return;
+    const frame = requestAnimationFrame(() => resizeFallback());
+    return () => cancelAnimationFrame(frame);
+  }, [chatFontSize, visible, nativeSizing, resizeFallback]);
 
   useLayoutEffect(() => {
     if (interactive) return;
@@ -347,7 +381,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         ) : null}
         <textarea
           ref={textareaRef}
-          className="max-h-[160px] min-h-[76px] w-full resize-none bg-transparent px-3 py-2 text-[14px] leading-6 text-v2-text-text-base placeholder:text-v2-text-text-faint disabled:opacity-60"
+          data-composer-sizing={nativeSizing ? "native" : "fallback"}
+          className="max-h-[160px] min-h-[76px] w-full resize-none overflow-y-auto bg-transparent px-3 py-2 text-[14px] leading-6 text-v2-text-text-base placeholder:text-v2-text-text-faint disabled:opacity-60"
           style={{ outline: "none" }}
           aria-label={t("composer.message")}
           aria-autocomplete="list"

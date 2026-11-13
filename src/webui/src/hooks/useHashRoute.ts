@@ -105,11 +105,14 @@ export function useHashRoute(): HashRouter {
   const routeRef = useRef(route);
   const closeGuardRef = useRef<SettingsCloseGuard | null>(null);
   const pendingSettingsRestoreRef = useRef<PendingSettingsRestore | null>(null);
-  routeRef.current = route;
 
   const publishRoute = useCallback((next: AppRoute) => {
-    routeRef.current = next;
-    setRoute((current) => (sameRoute(current, next) ? current : next));
+    // Keep one identity per accepted navigation, including away-and-back in a
+    // single React batch. An unrelated render must never restore an old intent.
+    if (sameRoute(routeRef.current, next)) return;
+    const accepted = { ...next };
+    routeRef.current = accepted;
+    setRoute(accepted);
   }, []);
   const getRoute = useCallback(() => routeRef.current, []);
 

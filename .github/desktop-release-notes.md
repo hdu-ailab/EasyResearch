@@ -2,34 +2,31 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.18 highlights
+## 0.1.19 highlights
 
-- Session tabs replace the top workspace display. Hover a
-  tab for its full session name and workspace; switch between retained drafts,
-  files and Agent views. Closing a tab leaves background Agent work running.
-- Refreshed chat presentation with six activity-category visibility, grouping and
-  disclosure controls, plus five detail presets.
-- Foldable context-compaction summaries and separators, queued/running indicators,
-  and complete Markdown viewing for oversized summaries.
-- Distinct command, Skill and file-reference affordances; `@` file suggestions,
-  removable reference chips and precise keyboard editing. New session views start
-  with the right panel closed.
-- All bundled Agents receive one concise instruction for Web-compatible KaTeX
-  mathematical notation.
+- The Work tab bar's plus button creates a new session in the current workspace,
+  while preserving the original session's draft, files and background work.
+- The Windows installation wizard now lets you choose the installation folder.
+- The chat input grows and shrinks with text and font-size changes, using native
+  browser sizing where available and an automatic-sizing fallback elsewhere.
+- Hidden session views retain their pane choices when the window is resized.
+- Home status refresh pauses while hidden and avoids overlapping slow requests.
+- Improved IME confirmation, keyboard and pointer selection, active-option
+  visibility, modal Tab order and file-menu focus restoration.
 
-## 0.1.18 更新
+## 0.1.19 更新
 
-- 顶部工作区展示改为会话标签，悬停显示完整会话名称与工作区；
-  切换时保留草稿、文件和 Agent 视图，关闭标签后后台 Agent 继续执行。
-- 全新聊天样式，支持六类活动的显示、分组和折叠控制，以及五档详细程度预设。
-- 上下文压缩摘要可折叠，带分界线与排队／执行状态；超长摘要可完整查看 Markdown。
-- 命令、Skill 和文件引用分开展示，支持 `@` 文件选择、引用标签及精确键盘编辑；
-  新打开的会话默认收起右侧面板。
-- 每个内置 Agent 增加一行简洁的 KaTeX 数学公式格式指令。
+- 在 Work 页点击标签栏加号，直接在当前工作区新建会话；原会话的草稿、
+  文件视图和后台任务保持独立。
+- Windows 安装向导支持选择安装目录。
+- 聊天输入框随内容和字号自动伸缩，优先使用浏览器原生能力，并保留兼容方案。
+- 调整窗口大小时，隐藏会话保留原来的面板选择。
+- 首页隐藏后暂停状态刷新，慢请求也不会相互覆盖。
+- 改善输入法确认、键鼠切换选项、列表定位、弹窗 Tab 导航及文件菜单焦点恢复。
 
 ## Downloads
 
-- Windows x64: download the `.exe` installer.
+- Windows x64: download the `.exe` installer and choose a folder in the installation wizard.
 - macOS Apple silicon: download the `macos-arm64.dmg`, open it, and drag EasyResearch to Applications.
 - Linux ARM64 (aarch64) with glibc: download `EasyResearch-<version>-linux-arm64.AppImage` or `EasyResearch-<version>-linux-arm64.deb` (Debian/Ubuntu), available starting with 0.1.12.
 - Linux x64: use the npm CLI; its desktop build remains a development preview.
@@ -37,7 +34,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.18
+version=0.1.19
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -45,7 +42,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.18
+version=0.1.19
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 

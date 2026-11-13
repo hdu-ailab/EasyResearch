@@ -37,6 +37,7 @@ export function DirectoryDialog({ homeDir, onSelect, onClose, title, selectLabel
   const [createName, setCreateName] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const composing = useRef(false);
   const dialogRef = useRef<HTMLElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const navigationGeneration = useRef(0);
@@ -147,6 +148,10 @@ export function DirectoryDialog({ homeDir, onSelect, onClose, title, selectLabel
   const activeSuggestionPath = () => (activeSuggestion >= 0 ? suggestions[activeSuggestion] : suggestions[0]);
 
   const handleInputKey = (event: React.KeyboardEvent) => {
+    if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+      event.stopPropagation();
+      return;
+    }
     if (event.key === "Escape") {
       suggestionGeneration.current += 1;
       if (suggestionsOpen) {
@@ -317,7 +322,14 @@ export function DirectoryDialog({ homeDir, onSelect, onClose, title, selectLabel
               refreshSuggestions(value);
             }}
             onKeyDown={handleInputKey}
+            onCompositionStart={() => {
+              composing.current = true;
+            }}
+            onCompositionEnd={() => {
+              composing.current = false;
+            }}
             onBlur={() => {
+              composing.current = false;
               suggestionGeneration.current += 1;
               setTimeout(() => setSuggestionsOpen(false), 120);
             }}
@@ -562,6 +574,7 @@ function CreateFolderDialog({
   onCancel: () => void;
 }) {
   const { t } = useI18n();
+  const composing = useRef(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const { zIndex, dialogProps } = useModalLayer(onCancel, dialogRef);
   return (
@@ -579,7 +592,25 @@ function CreateFolderDialog({
           className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
           value={name}
           onChange={(event) => onNameChange(event.target.value)}
-          onKeyDown={(event) => event.key === "Enter" && onCreate()}
+          onCompositionStart={() => {
+            composing.current = true;
+          }}
+          onCompositionEnd={() => {
+            composing.current = false;
+          }}
+          onBlur={() => {
+            composing.current = false;
+          }}
+          onKeyDown={(event) => {
+            if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+              event.stopPropagation();
+              return;
+            }
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onCreate();
+            }
+          }}
         />
         {error && (
           <p role="alert" className="mt-2 text-[12px] text-v2-status-error">

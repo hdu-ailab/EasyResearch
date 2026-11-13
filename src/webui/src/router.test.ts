@@ -129,14 +129,17 @@ describe("Settings host route helpers", () => {
 
 describe("resolveWorkSession", () => {
   const deps = (overrides: Partial<{ status: unknown; open: unknown }> = {}) => {
-    const listStatus = vi.fn().mockResolvedValue(overrides.status ?? { sessions: [] });
+    const listStatus = vi.fn().mockResolvedValue(overrides.status ?? { sessions: [], activeSessions: [] });
     const openSession = vi.fn().mockResolvedValue(overrides.open ?? { id: "s-1", cwd: "/p" });
     return { listStatus, openSession };
   };
 
   it("opens the persisted session by id from the status listing", async () => {
     const d = deps({
-      status: { sessions: [{ id: "s-1", path: "/store/s-1.jsonl" }] },
+      status: {
+        sessions: [{ id: "s-1", path: "/store/s-1.jsonl" }],
+        activeSessions: [{ id: "s-1", cwd: "/old-active" }],
+      },
       open: { id: "s-1", cwd: "/p" },
     });
     const session = await resolveWorkSession("s-1", "/fallback", d);
@@ -144,8 +147,14 @@ describe("resolveWorkSession", () => {
     expect(session).toEqual({ id: "s-1", cwd: "/p" });
   });
 
-  it("returns the URL identity when the session is not persisted yet", async () => {
-    const d = deps();
+  it("uses an active-only root's accepted cwd without trying to open a nonexistent JSONL", async () => {
+    const d = deps({ status: { sessions: [], activeSessions: [{ id: "fresh-1", cwd: "/authoritative" }] } });
+    expect(await resolveWorkSession("fresh-1", "/stale-hash", d)).toEqual({ id: "fresh-1", cwd: "/authoritative" });
+    expect(d.openSession).not.toHaveBeenCalled();
+  });
+
+  it("retains only an attachment hint when neither inventory identifies the requested root", async () => {
+    const d = deps({ status: { sessions: [], activeSessions: [{ id: "other", cwd: "/other-workspace" }] } });
     const session = await resolveWorkSession("fresh-1", "/p", d);
     expect(d.openSession).not.toHaveBeenCalled();
     expect(session).toEqual({ id: "fresh-1", cwd: "/p" });
@@ -159,7 +168,7 @@ describe("resolveWorkSession", () => {
 
   it("propagates a persisted-session open failure", async () => {
     const opening = deps({
-      status: { sessions: [{ id: "s-1", path: "/store/s-1.jsonl" }] },
+      status: { sessions: [{ id: "s-1", path: "/store/s-1.jsonl" }], activeSessions: [] },
     });
     opening.openSession.mockRejectedValue(new Error("unknown"));
     await expect(resolveWorkSession("s-1", "/p", opening)).rejects.toThrow("unknown");

@@ -48,7 +48,16 @@ export function FileActionMenu({
       if (!menu.current?.contains(event.target as Node) && !trigger.current?.contains(event.target as Node))
         setOpen(false);
     };
-    const hide = () => setOpen(false);
+    const hide = () => {
+      if (
+        menu.current?.contains(document.activeElement) &&
+        activity.current.interactive &&
+        canFocusElement(trigger.current)
+      ) {
+        trigger.current.focus({ preventScroll: true });
+      }
+      setOpen(false);
+    };
     document.addEventListener("pointerdown", outside);
     window.addEventListener("resize", hide);
     // The anchor can move in either scrolling pane.
@@ -58,7 +67,7 @@ export function FileActionMenu({
       window.removeEventListener("resize", hide);
       window.removeEventListener("scroll", hide, true);
     };
-  }, [open, interactive]);
+  }, [open, interactive, activity]);
   const itemClass = "flex w-full items-center gap-2 rounded px-3 py-2 text-left text-[13px] hover:bg-v2-grey-100";
   return (
     <>

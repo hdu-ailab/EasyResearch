@@ -23,6 +23,9 @@ export interface SessionTabBarProps {
   onNew: () => void;
   onReorder?: (fromId: string, toId: string) => void;
   disabled?: boolean;
+  newDisabled?: boolean;
+  newPending?: boolean;
+  newLabel?: string;
   idPrefix?: string;
 }
 
@@ -181,6 +184,9 @@ export function SessionTabBar({
   onNew,
   onReorder,
   disabled = false,
+  newDisabled = false,
+  newPending = false,
+  newLabel,
   idPrefix,
 }: SessionTabBarProps) {
   const { t } = useI18n();
@@ -582,11 +588,12 @@ export function SessionTabBar({
         ref={plus}
         type="button"
         className="er-session-tabs-new"
-        disabled={disabled}
-        aria-label={t("sessionTabs.new")}
-        title={t("sessionTabs.new")}
+        disabled={disabled || newDisabled || newPending}
+        aria-busy={newPending || undefined}
+        aria-label={newLabel ?? t("sessionTabs.new")}
+        title={newLabel ?? t("sessionTabs.new")}
         onClick={() => {
-          if (!disabled) onNew();
+          if (!disabled && !newDisabled && !newPending) onNew();
         }}
       >
         <Plus size={15} aria-hidden="true" />

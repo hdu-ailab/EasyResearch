@@ -434,6 +434,14 @@
     min-height: 52px;
     font-size: var(--v2-chat-font-size);
   }
+  @supports (field-sizing: content) {
+    [data-chat-composer] textarea[data-composer-sizing="native"] {
+      field-sizing: content;
+      height: auto;
+      /* Native content sizing ignores rows; retain two lines plus vertical padding. */
+      min-height: calc(2lh + 1rem);
+    }
+  }
   [data-chat-composer] [data-composer-action] {
     background: var(--color-v2-text-text-base);
     color: var(--color-v2-background-bg-base);

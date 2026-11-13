@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProviderInfoDto } from "../../../web/contracts";
@@ -347,6 +347,40 @@ describe("ProviderConnectModal", () => {
     expect(flow.respond).toHaveBeenCalledWith("sk-abc");
   });
 
+  it.each(["text", "secret", "manual_code"] as const)(
+    "retains a %s prompt and its value through synthetic IME confirmation before ordinary submission",
+    async (kind) => {
+      const user = userEvent.setup();
+      const flow = makeFlow({ view: "flow", pendingPrompt: { kind, message: "Provider response" } });
+      const onClose = vi.fn();
+      mockedUse.mockReturnValue(flow);
+      render(<ProviderConnectModal onClose={onClose} />);
+      const input = screen.getByLabelText("Provider response");
+      await user.click(input);
+      fireEvent.change(input, { target: { value: "研究-response" } });
+      for (const flags of [
+        { isComposing: true, keyCode: 13 },
+        { isComposing: false, keyCode: 229 },
+      ]) {
+        expect(fireEvent.keyDown(input, { key: "Enter", ...flags })).toBe(true);
+        expect(flow.respond).not.toHaveBeenCalled();
+        expect(input).toHaveValue("研究-response");
+        expect(input).toHaveFocus();
+      }
+      fireEvent.compositionStart(input);
+      fireEvent.keyDown(input, { key: "Enter" });
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(flow.respond).not.toHaveBeenCalled();
+      expect(input).toHaveValue("研究-response");
+      expect(input).toHaveFocus();
+      expect(onClose).not.toHaveBeenCalled();
+      fireEvent.compositionEnd(input);
+      await user.keyboard("{Enter}");
+      expect(flow.respond).toHaveBeenCalledExactlyOnceWith("研究-response");
+      expect(input).toHaveValue("");
+    },
+  );
+
   it("shows a warning sub-card on done", () => {
     mockedUse.mockReturnValue(
       makeFlow({ view: "done", warning: "Credential saved; models may not refresh until restart." }),
@@ -411,5 +445,34 @@ describe("ProviderConnectModal", () => {
     expect(screen.getByRole("button", { name: "Anthropic" })).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(flow.start).toHaveBeenCalledWith("anthropic", "api_key");
+  });
+
+  it.each([
+    { isComposing: true, keyCode: 13, tracked: false },
+    { isComposing: false, keyCode: 229, tracked: false },
+    { isComposing: false, keyCode: 13, tracked: true },
+  ])("keeps synthetic IME catalog-search keys from moving focus or starting authentication (%j)", async (flags) => {
+    const flow = makeFlow();
+    const onClose = vi.fn();
+    mockedUse.mockReturnValue(flow);
+    const user = userEvent.setup();
+    render(<ProviderConnectModal onClose={onClose} />);
+    const search = screen.getByRole("searchbox");
+    const first = screen.getByRole("button", { name: "Anthropic" });
+    fireEvent.mouseEnter(first);
+    if (flags.tracked) fireEvent.compositionStart(search);
+    for (const key of ["ArrowDown", "ArrowUp", "Home", "End", "Enter", "Escape"]) {
+      expect(fireEvent.keyDown(search, { key, ...flags })).toBe(true);
+      expect(search).toHaveFocus();
+      expect(flow.start).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+    }
+    if (flags.tracked) fireEvent.compositionEnd(search);
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("button", { name: "xAI" })).toHaveFocus();
+    await user.keyboard("{ArrowUp}");
+    expect(first).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(flow.start).toHaveBeenCalledExactlyOnceWith("anthropic", "api_key");
   });
 });

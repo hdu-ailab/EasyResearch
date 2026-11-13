@@ -20,6 +20,8 @@ export interface SessionView {
   generation: number;
   phase: "loading" | "ready" | "error";
   session: WorkSession;
+  /** An opened/native-status cwd, rather than an unresolved attachment hint. */
+  workspaceResolved: boolean;
   error?: string;
   missingCwd?: string;
   live?: boolean;
@@ -149,8 +151,15 @@ export function useSessionShell(
       delete views[previousId];
       views[next.id] =
         targetView?.phase === "ready" && targetView.session.cwd === next.cwd
-          ? targetView
-          : { generation: owner ?? ++generation.current, phase: "ready", session: { id: next.id, cwd: next.cwd } };
+          ? targetView.workspaceResolved
+            ? targetView
+            : { ...targetView, workspaceResolved: true }
+          : {
+              generation: owner ?? ++generation.current,
+              phase: "ready",
+              session: { id: next.id, cwd: next.cwd },
+              workspaceResolved: true,
+            };
       incarnations.current.set(previousId, (incarnations.current.get(previousId) ?? 0) + 1);
       versions.current.set(previousId, (versions.current.get(previousId) ?? 0) + 1);
       versions.current.set(next.id, (versions.current.get(next.id) ?? 0) + 1);
@@ -171,7 +180,12 @@ export function useSessionShell(
       const session = mode === "normal" && existing ? { id: existing.id, cwd: existing.cwd } : requested;
       const owner = ++generation.current;
       if (mode === "relocate") incarnations.current.set(session.id, (incarnations.current.get(session.id) ?? 0) + 1);
-      const view: SessionView = { generation: owner, phase: mode === "opened" ? "ready" : "loading", session };
+      const view: SessionView = {
+        generation: owner,
+        phase: mode === "opened" ? "ready" : "loading",
+        session,
+        workspaceResolved: mode === "opened",
+      };
       versions.current.set(session.id, (versions.current.get(session.id) ?? 0) + 1);
       const metadataVersion = versions.current.get(session.id);
       const tabs = existing
@@ -239,7 +253,13 @@ export function useSessionShell(
             ? { ...tab, ...(versions.current.get(session.id) === metadataVersion ? found : undefined), ...next }
             : tab,
         );
-        commit({ tabs, views: { ...state.views, [session.id]: { ...view, phase: "ready", session: next } } });
+        commit({
+          tabs,
+          views: {
+            ...state.views,
+            [session.id]: { ...view, phase: "ready", session: next, workspaceResolved: found !== undefined },
+          },
+        });
       }, fail);
     },
     [commit, acceptRecovery],
@@ -303,9 +323,12 @@ export function useSessionShell(
     (id: string): SessionTab | undefined => current.current.tabs.find((tab) => tab.id === id),
     [],
   );
-  const captureOpen = useCallback((id: string) => {
+  const captureOpen = useCallback((id: string, owner?: number) => {
     const incarnation = incarnations.current.get(id);
-    return () => alive.current && incarnation === incarnations.current.get(id);
+    return () =>
+      alive.current &&
+      incarnation === incarnations.current.get(id) &&
+      (owner === undefined || current.current.views[id]?.generation === owner);
   }, []);
   return { ...state, resolve, metadata, close, captureStatus, captureMutation, captureOpen, reorder, getTab };
 }

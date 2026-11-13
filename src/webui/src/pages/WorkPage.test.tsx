@@ -749,6 +749,196 @@ describe("WorkPage", () => {
     },
   );
 
+  it.each(["Files browser", "Agent list"])(
+    "preserves an inactive root's %s choice across a narrow round trip, then reconciles activation while narrow",
+    async (pane) => {
+      vi.stubGlobal("innerWidth", 1200);
+      const handlers = new Map<string, Parameters<typeof api.connectSessionEvents>[1]>();
+      const releases = new Map<string, ReturnType<typeof vi.fn>>();
+      vi.mocked(api.connectSessionEvents).mockImplementation((id, handler) => {
+        handlers.set(id, handler);
+        const release = vi.fn();
+        releases.set(id, release);
+        return release;
+      });
+      const rootSnapshot = (id: string) => ({
+        ...snapshotValue,
+        fileWatchLeaseId: `lease-${id}`,
+        session: { ...snapshotValue.session, id, cwd: id === "s1" ? "/p" : "/q" },
+      });
+      vi.mocked(api.getSnapshot).mockImplementation(async (id) => rootSnapshot(id) as never);
+      const views = (selected: string) => (
+        <>
+          {["s1", "s2"].map((id) => (
+            <ViewActivityProvider key={id} visible={selected === id} interactive={selected === id}>
+              <div inert={selected !== id} aria-hidden={selected !== id || undefined}>
+                <WorkPage id={id} cwd={id === "s1" ? "/p" : "/q"} onBack={() => {}} onOpenSettings={() => {}} />
+              </div>
+            </ViewActivityProvider>
+          ))}
+        </>
+      );
+      const view = render(views("s1"));
+      const first = view.container.querySelector<HTMLElement>('[data-work-session="s1"]')!;
+      await within(first).findByText("starting research");
+      act(() => {
+        for (const id of ["s1", "s2"]) handlers.get(id)?.onEvent({ type: "snapshot", ...rootSnapshot(id) });
+      });
+      const input = within(first).getByRole("textbox", { name: "Message" });
+      fireEvent.change(input, { target: { value: "retained draft" } });
+      fireEvent.click(within(first).getByRole("button", { name: pane }));
+      const row = first.querySelector<HTMLElement>("[data-work-layout]")!;
+      const panel = first.querySelector(`[data-work-pane="${pane === "Files browser" ? "files" : "agents"}"]`)!;
+      if (pane === "Files browser") {
+        fireEvent.change(within(first).getByRole("textbox", { name: "Filter files" }), { target: { value: "notes" } });
+      }
+      expect(row).toHaveAttribute("data-panel-open", "true");
+      view.rerender(views("s2"));
+      for (const width of [819, 820]) {
+        vi.stubGlobal("innerWidth", width);
+        fireEvent(window, new Event("resize"));
+      }
+      view.rerender(views("s1"));
+      expect(row).toHaveAttribute("data-panel-open", "true");
+      expect(panel).not.toHaveAttribute("hidden");
+      expect(input).toHaveValue("retained draft");
+      if (pane === "Files browser")
+        expect(within(first).getByRole("textbox", { name: "Filter files" })).toHaveValue("notes");
+      view.rerender(views("s2"));
+      vi.stubGlobal("innerWidth", 819);
+      fireEvent(window, new Event("resize"));
+      expect(row).toHaveAttribute("data-panel-open", "true");
+      view.rerender(views("s1"));
+      expect(within(first).getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
+      expect(row).toHaveAttribute("data-panel-open", "false");
+      expect(input).toHaveValue("retained draft");
+      for (const release of releases.values()) expect(release).not.toHaveBeenCalled();
+      expect(api.abortSession).not.toHaveBeenCalled();
+      expect(api.stopSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it("owns one breakpoint subscription for Work and Files, using media changes at exactly 820px", async () => {
+    vi.stubGlobal("innerWidth", 820);
+    const media = new EventTarget();
+    Object.defineProperty(media, "matches", { get: () => window.innerWidth >= 820 });
+    const subscribe = vi.spyOn(media, "addEventListener");
+    const unsubscribe = vi.spyOn(media, "removeEventListener");
+    const query = vi.fn(() => media);
+    vi.stubGlobal("matchMedia", query);
+    const view = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    fireEvent.click(screen.getByRole("button", { name: "Files browser" }));
+    expect(screen.getByRole("separator", { name: "Resize file tree" })).toBeVisible();
+    expect(query).toHaveBeenCalledWith("(min-width: 820px)");
+    expect(subscribe).toHaveBeenCalledOnce();
+    vi.stubGlobal("innerWidth", 819);
+    act(() => media.dispatchEvent(new Event("change")));
+    expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+    expect(screen.queryByRole("separator", { name: "Resize file tree" })).toBeNull();
+    vi.stubGlobal("innerWidth", 700);
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+    vi.stubGlobal("innerWidth", 820);
+    act(() => media.dispatchEvent(new Event("change")));
+    fireEvent.click(screen.getByRole("button", { name: "Files browser" }));
+    expect(screen.getByRole("separator", { name: "Resize file tree" })).toBeVisible();
+    view.unmount();
+    expect(unsubscribe).toHaveBeenCalledWith("change", subscribe.mock.calls[0]?.[1]);
+  });
+
+  it.each(["tree", "preview"])(
+    "preserves a retained mobile Files %s through another root's desktop-to-mobile round trip",
+    async (choice) => {
+      vi.stubGlobal("innerWidth", 390);
+      const media = new EventTarget();
+      Object.defineProperty(media, "matches", { get: () => window.innerWidth >= 820 });
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => media),
+      );
+      const resize = (width: number) => {
+        vi.stubGlobal("innerWidth", width);
+        act(() => media.dispatchEvent(new Event("change")));
+      };
+      const releases: Array<ReturnType<typeof vi.fn>> = [];
+      vi.mocked(api.connectSessionEvents).mockImplementation(() => {
+        const release = vi.fn();
+        releases.push(release);
+        return release;
+      });
+      vi.mocked(api.getSnapshot).mockImplementation(
+        async (id) =>
+          ({
+            ...snapshotValue,
+            fileWatchLeaseId: `lease-${id}`,
+            session: { ...snapshotValue.session, id, cwd: id === "s1" ? "/p" : "/q" },
+          }) as never,
+      );
+      vi.mocked(api.readFileContent).mockResolvedValue({
+        path: "/p/notes.md",
+        content: "# Mobile notes",
+        byteCount: 14,
+        truncated: false,
+        binary: false,
+      });
+      const views = (selected: string) => (
+        <>
+          {["s1", "s2"].map((id) => (
+            <ViewActivityProvider key={id} visible={selected === id} interactive={selected === id}>
+              <div inert={selected !== id} aria-hidden={selected !== id || undefined}>
+                <WorkPage id={id} cwd={id === "s1" ? "/p" : "/q"} onBack={() => {}} onOpenSettings={() => {}} />
+              </div>
+            </ViewActivityProvider>
+          ))}
+        </>
+      );
+      const view = render(views("s1"));
+      const first = view.container.querySelector<HTMLElement>('[data-work-session="s1"]')!;
+      await within(first).findByText("starting research");
+      const input = within(first).getByRole("textbox", { name: "Message" });
+      fireEvent.change(input, { target: { value: "mobile draft" } });
+      fireEvent.click(within(first).getByRole("tab", { name: "Files" }));
+      const tree = await within(first).findByRole("tree", { name: "Workspace files tree" });
+      const filter = within(first).getByRole("textbox", { name: "Filter files" });
+      fireEvent.change(filter, { target: { value: "notes" } });
+      fireEvent.click(within(first).getByRole("treeitem", { name: /notes\.md/ }));
+      const preview = await within(first).findByRole("heading", { name: "Mobile notes" });
+      if (choice === "tree") fireEvent.click(within(first).getByRole("button", { name: "Toggle file tree" }));
+      const reads = vi.mocked(api.listEntries).mock.calls.filter(([path]) => path === "/p").length;
+      view.rerender(views("s2"));
+      resize(820);
+      resize(819);
+      view.rerender(views("s1"));
+      expect(within(first).getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+      expect(within(first).getByRole("button", { name: "Toggle file tree" })).toHaveAttribute(
+        "aria-expanded",
+        String(choice === "tree"),
+      );
+      expect(tree).toHaveProperty("isConnected", true);
+      expect(filter).toHaveValue("notes");
+      expect(preview).toHaveProperty("isConnected", true);
+      if (choice === "tree") {
+        expect(tree).toBeVisible();
+        expect(preview).not.toBeVisible();
+      } else {
+        expect(tree).not.toBeVisible();
+        expect(preview).toBeVisible();
+      }
+      expect(input).toHaveValue("mobile draft");
+      expect(vi.mocked(api.listEntries).mock.calls.filter(([path]) => path === "/p")).toHaveLength(reads);
+      for (const release of releases) expect(release).not.toHaveBeenCalled();
+      expect(api.abortSession).not.toHaveBeenCalled();
+      expect(api.stopSession).not.toHaveBeenCalled();
+      // The same transition while presented still intentionally enters Chat.
+      resize(820);
+      resize(819);
+      expect(within(first).getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
+      await act(async () => {});
+    },
+  );
+
   it("portals only the visible embedded Work actions and emits hydrated root metadata without token churn", async () => {
     const slot = document.createElement("div");
     document.body.append(slot);

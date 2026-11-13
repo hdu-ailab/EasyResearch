@@ -38,8 +38,10 @@ import { filesystemPathName } from "../filesystem-path";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import { useTranscriptHistory } from "../hooks/useTranscriptHistory";
+import { useWorkBreakpoint } from "../hooks/useWorkBreakpoint";
 import { useI18n } from "../i18n/useI18n";
 import { buildMessageTreeMeta, versionTarget } from "../message-tree";
+import { usePreferences } from "../preferences/PreferencesProvider";
 import { shieldResizeIframes, suppressResizeSelection } from "../resize-iframe-shield";
 import {
   fromSnapshot,
@@ -214,8 +216,6 @@ const PANEL_MIN = 240;
 const PANEL_DEFAULT = 320;
 const CHAT_MIN = 400;
 
-const CONVERSATION_FIRST_BREAKPOINT = 820;
-
 export function WorkPage(props: WorkPageProps) {
   return <SessionWorkPage key={`${props.id}\0${props.cwd}`} {...props} />;
 }
@@ -235,6 +235,7 @@ function SessionWorkPage({
   onSessionDeleted,
 }: WorkPageProps) {
   const { t } = useI18n();
+  const { preferences } = usePreferences();
   const activity = useViewActivityRef();
   const { visible, interactive } = activity.current;
   const paneId = `work-${useId()}`;
@@ -251,7 +252,8 @@ function SessionWorkPage({
   const fileEventSequence = useRef(0);
   const fileEventsEnabled = useRef(false);
   const [panel, setPanel] = useState<Panel>(null);
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth < CONVERSATION_FIRST_BREAKPOINT);
+  const isMobile = useWorkBreakpoint();
+  const presentedMobile = useRef(isMobile);
   const [mobileView, setMobileView] = useState<WorkView>("chat");
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT);
   const [panelWidthTouched, setPanelWidthTouched] = useState(false);
@@ -318,14 +320,14 @@ function SessionWorkPage({
       const path = resolveTranscriptFilePath(cwd, reference);
       if (path === null) return;
       setPanel("files");
-      if (window.innerWidth < CONVERSATION_FIRST_BREAKPOINT) {
+      if (isMobile) {
         setMobileView("files");
         // Keep keyboard focus out of Chat before it becomes hidden.
         filesTabRef.current?.focus();
       }
       fileBrowserRef.current?.openPath(path);
     },
-    [cwd, activity],
+    [cwd, activity, isMobile],
   );
 
   const handleWorkEvent = useCallback(
@@ -690,22 +692,18 @@ function SessionWorkPage({
     [],
   );
 
-  useEffect(() => {
-    let wasMobile = window.innerWidth < CONVERSATION_FIRST_BREAKPOINT;
-    const onResize = () => {
-      const mobile = window.innerWidth < CONVERSATION_FIRST_BREAKPOINT;
-      if (mobile === wasMobile) return;
-      wasMobile = mobile;
-      setIsMobile(mobile);
-      if (mobile) {
-        activeResizeCleanup.current?.();
-        setMobileView("chat");
-        setPanel(null);
-      }
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+  useLayoutEffect(() => {
+    if (!visible) return;
+    const wasMobile = presentedMobile.current;
+    presentedMobile.current = isMobile;
+    // Hidden breakpoint changes describe geometry, not a user's pane transition.
+    // Activation while narrow still enters Chat before the retained view paints.
+    if (isMobile && !wasMobile) {
+      activeResizeCleanup.current?.();
+      setMobileView("chat");
+      setPanel(null);
+    }
+  }, [isMobile, visible]);
 
   useEffect(() => {
     previousPanel.current = panel;
@@ -1577,6 +1575,7 @@ function SessionWorkPage({
               ) : null}
               <ChatComposer
                 ref={composerRef}
+                chatFontSize={preferences.chatFontSize}
                 cwd={cwd}
                 disabled={composerDisabled}
                 streaming={activeTab === RESEARCH_ASSISTANT_AGENT && sessionView.isStreaming}
@@ -1627,6 +1626,7 @@ function SessionWorkPage({
             <ViewActivityProvider visible={!filesHidden} interactive={!filesHidden && (isMobile || panelInteractive)}>
               <FileBrowser
                 key={sessionId}
+                isMobile={isMobile}
                 ref={fileBrowserRef}
                 root={cwd}
                 loadEnabled={filesLoadEnabled}

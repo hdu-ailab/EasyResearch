@@ -368,6 +368,37 @@ it("uses active-branch-first order and roving tree keyboard navigation", async (
   expect(screen.getAllByRole("treeitem")[1]).toHaveFocus();
 });
 
+it.each([0, 1])("wraps modal Tab at the current roving history row %i without changing selection", async (index) => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  const onClose = vi.fn();
+  render(
+    <SessionHistoryDialog
+      value={linearTree}
+      busy={false}
+      onNavigate={onNavigate}
+      onRestoreDraft={vi.fn()}
+      onClose={onClose}
+    />,
+  );
+  await user.keyboard(index === 0 ? "{Home}" : "{Home}{ArrowDown}");
+  const selected = screen.getAllByRole("treeitem")[index]!;
+  expect(selected).toHaveFocus();
+  await user.tab({ shift: true });
+  await user.tab({ shift: true });
+  await user.tab({ shift: true });
+  const close = screen.getByRole("button", { name: "Close history" });
+  expect(close).toHaveFocus();
+  await user.tab({ shift: true });
+  expect(selected).toHaveFocus();
+  expect(screen.getByRole("treeitem", { selected: true })).toBe(selected);
+  await user.tab();
+  expect(close).toHaveFocus();
+  expect(screen.getByRole("treeitem", { selected: true })).toBe(selected);
+  expect(onNavigate).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});
+
 it("keeps history browseable but prevents navigation while the session tree is busy", async () => {
   const user = userEvent.setup();
   const onNavigate = vi.fn();

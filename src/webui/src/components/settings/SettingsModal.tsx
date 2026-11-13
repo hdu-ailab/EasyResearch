@@ -839,6 +839,7 @@ function AddAgentDialog({
   onCancel(): void;
 }) {
   const { t } = useI18n();
+  const composing = useRef(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const { zIndex, dialogProps } = useModalLayer(onCancel, dialogRef);
   return (
@@ -859,7 +860,25 @@ function AddAgentDialog({
           className="h-8 w-full rounded-md border border-v2-grey-200 px-2 font-mono text-[12px]"
           value={newAgentName}
           onChange={(event) => onNameChange(event.target.value)}
-          onKeyDown={(event) => event.key === "Enter" && onCreate()}
+          onCompositionStart={() => {
+            composing.current = true;
+          }}
+          onCompositionEnd={() => {
+            composing.current = false;
+          }}
+          onBlur={() => {
+            composing.current = false;
+          }}
+          onKeyDown={(event) => {
+            if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+              event.stopPropagation();
+              return;
+            }
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onCreate();
+            }
+          }}
         />
         <div className="mt-3 flex justify-end gap-2">
           <button type="button" className="px-3 py-1 text-[12px]" onClick={onCancel}>

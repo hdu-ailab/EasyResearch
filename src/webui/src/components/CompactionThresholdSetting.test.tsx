@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
@@ -50,6 +50,29 @@ describe("CompactionThresholdSetting", () => {
 
     await waitFor(() => expect(api.patchCompactionSettings).toHaveBeenCalledWith({ triggerPercent: 73 }));
     expect(input).toHaveValue(73);
+  });
+
+  it.each([
+    { isComposing: true, keyCode: 13, tracked: false },
+    { isComposing: false, keyCode: 229, tracked: false },
+    { isComposing: false, keyCode: 13, tracked: true },
+  ])("does not blur or persist a threshold on synthetic numeric IME Enter (%j)", async (flags) => {
+    const user = userEvent.setup();
+    renderSetting();
+    const input = await screen.findByRole("spinbutton", { name: /automatic compaction/i });
+    await waitFor(() => expect(input).toBeEnabled());
+    await user.click(input);
+    fireEvent.change(input, { target: { value: "73" } });
+    if (flags.tracked) fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: "Enter", ...flags });
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue(73);
+    expect(api.patchCompactionSettings).not.toHaveBeenCalled();
+    if (flags.tracked) fireEvent.compositionEnd(input);
+    await user.keyboard("{Enter}");
+    expect(input).not.toHaveFocus();
+    expect(api.patchCompactionSettings).toHaveBeenCalledExactlyOnceWith({ triggerPercent: 73 });
+    await waitFor(() => expect(input).toBeEnabled());
   });
 
   it("persists five-point step buttons immediately without a duplicate blur write", async () => {

@@ -50,10 +50,12 @@ export function ProviderConnectModalContent({
   const [actionBusy, setActionBusy] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const searchComposing = useRef(false);
 
   const selected = selectedId ? (f.providers.find((p) => p.id === selectedId) ?? null) : null;
 
   useEffect(() => {
+    searchComposing.current = false;
     if (f.view === "idle" && !selected) searchRef.current?.focus();
   }, [f.view, selected]);
 
@@ -137,6 +139,10 @@ export function ProviderConnectModalContent({
   };
 
   const handleListKeyDown = (event: React.KeyboardEvent) => {
+    if (searchComposing.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+      event.stopPropagation();
+      return;
+    }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       move(event.key === "ArrowDown" ? 1 : -1);
@@ -210,6 +216,15 @@ export function ProviderConnectModalContent({
                     setActiveId(undefined);
                   }}
                   onKeyDown={handleListKeyDown}
+                  onCompositionStart={() => {
+                    searchComposing.current = true;
+                  }}
+                  onCompositionEnd={() => {
+                    searchComposing.current = false;
+                  }}
+                  onBlur={() => {
+                    searchComposing.current = false;
+                  }}
                 />
               </div>
               <div ref={listRef} className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
@@ -591,6 +606,7 @@ function DeviceCodeView({ notify }: { notify: Extract<NotifyCard, { kind: "devic
 function PromptView({ prompt, onSubmit }: { prompt: PendingPrompt; onSubmit: (v: string) => void }) {
   const { t } = useI18n();
   const [value, setValue] = useState("");
+  const composing = useRef(false);
   const inputId = "provider-connect-prompt";
   const submit = () => {
     if (value.length === 0) return;
@@ -625,8 +641,24 @@ function PromptView({ prompt, onSubmit }: { prompt: PendingPrompt; onSubmit: (v:
           className={`${inputClass} font-mono`}
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
+          onCompositionStart={() => {
+            composing.current = true;
+          }}
+          onCompositionEnd={() => {
+            composing.current = false;
+          }}
+          onBlur={() => {
+            composing.current = false;
+          }}
+          onKeyDown={(event) => {
+            if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+              event.stopPropagation();
+              return;
+            }
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submit();
+            }
           }}
         />
       )}

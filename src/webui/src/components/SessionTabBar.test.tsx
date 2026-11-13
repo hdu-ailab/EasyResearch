@@ -101,6 +101,26 @@ afterEach(() => {
 });
 
 describe("SessionTabBar interactions", () => {
+  it.each(["newDisabled", "newPending"] as const)("limits %s to plus and preserves navigation/close", (state) => {
+    const { props, rerender } = renderStrip({ [state]: true, newLabel: "New session in this workspace" });
+    const plus = screen.getByRole("button", { name: "New session in this workspace" });
+    expect(plus).toBeDisabled();
+    expect(plus).toHaveAttribute("title", "New session in this workspace");
+    if (state === "newPending") expect(plus).toHaveAttribute("aria-busy", "true");
+    else expect(plus).not.toHaveAttribute("aria-busy");
+    fireEvent.click(plus);
+    expect(props.onNew).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("tab", { name: "Beta" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close Gamma" }));
+    expect(props.onSelect).toHaveBeenCalledExactlyOnceWith("b");
+    expect(props.onClose).toHaveBeenCalledExactlyOnceWith("c");
+    rerender(<SessionTabBar {...props} newDisabled={false} newPending={false} />);
+    expect(plus).toBeEnabled();
+    expect(plus).not.toHaveAttribute("aria-busy");
+    fireEvent.click(plus);
+    expect(props.onNew).toHaveBeenCalledOnce();
+  });
+
   it("pairs tabs with their instance-owned panels without colliding across identical session catalogs", () => {
     function PairedViews() {
       const prefix = useId();

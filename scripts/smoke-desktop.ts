@@ -102,7 +102,7 @@ async function runPackagedSmoke(pkg: DesktopSmokePackage, root: string): Promise
   const smokeDir = join(root, "smoke-control");
   const electronUserData = join(root, "electron-user-data");
   const desktopLogPath = join(electronUserData, "logs", "desktop.log");
-  const installRoot = join(root, "installed");
+  const installRoot = join(root, targetName === "windows-x64" ? "installed app" : "installed");
   const mountRoot = join(root, "mounted");
   const extractionRoot = join(root, "extracted");
   for (const path of [
@@ -726,6 +726,7 @@ function runNative(command: NativeCommand, label: string, env: NodeJS.ProcessEnv
     encoding: "utf8",
     timeout: 180_000,
     cwd: command.cwd,
+    windowsVerbatimArguments: command.windowsVerbatimArguments,
     env,
   });
   if (result.error || result.status !== 0) {
