@@ -211,7 +211,9 @@ describe("adapted Skill helper boundaries", () => {
       "draft.write_text('complete\\n', encoding='utf-8')",
       "original_unlink = os.unlink",
       "def failing_unlink(path, *args, **kwargs):",
-      "    if Path(path).name == draft.name: raise OSError('injected cleanup failure')",
+      // Windows stages the draft as .cleanup-<uuid>.md before deleting it, so
+      // match both spellings or the injection silently misses there.
+      "    if Path(path).name.startswith(('.draft-', '.cleanup-')): raise OSError('injected cleanup failure')",
       "    return original_unlink(path, *args, **kwargs)",
       "m['os'].unlink = failing_unlink",
       "try:",
