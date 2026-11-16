@@ -368,10 +368,7 @@ describe("release authentication admission", () => {
   }
 
   function exchangeBody(): Record<string, unknown> {
-    return {
-      token_type: "oidc", token: exchangeToken,
-      created: new Date(Date.now()).toISOString(), expires: new Date(Date.now() + 60_000).toISOString(),
-    };
+    return { token: exchangeToken };
   }
 
   function mockOidc(override?: (name: string | undefined, init: RequestInit) => Response | Promise<Response> | undefined): void {
@@ -533,27 +530,23 @@ describe("release authentication admission", () => {
   });
 
   it.each([
-    { label: "missing token type", change: { token_type: undefined } },
-    { label: "wrong token type", change: { token_type: "bearer" } },
     { label: "missing token", change: { token: undefined } },
     { label: "blank token", change: { token: " \t" } },
     { label: "non-string token", change: { token: 123 } },
-    { label: "missing expiry", change: { expires: undefined } },
-    { label: "invalid expiry", change: { expires: privateBody } },
-    { label: "non-string expiry", change: { expires: Number.MAX_SAFE_INTEGER } },
-    { label: "expired token", change: { expires: "2000-01-01T00:00:00.000Z" } },
   ])("rejects $label in the meta exchange, with no credential diagnostics or uploads", async ({ change }) => {
     setGitHubContext();
     mockOidc((name) => name === "easyresearch" ? Response.json({ ...exchangeBody(), ...change }, { status: 201 }) : undefined);
-    await expectAuthFailure(/Invalid npm OIDC exchange response for easyresearch/);
+    await expectAuthFailure(/npm OIDC exchange response for easyresearch requires a nonempty string token/);
   });
 
-  it("requires expiry to be strictly later than validation time", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-11-16T08:00:00Z"));
+  it("ignores extra exchange metadata because preflight credentials are discarded", async () => {
     setGitHubContext();
-    mockOidc((name) => name === "easyresearch" ? Response.json({ ...exchangeBody(), expires: new Date().toISOString() }, { status: 201 }) : undefined);
-    await expectAuthFailure(/Invalid npm OIDC exchange response for easyresearch/);
+    mockOidc((name) => name === undefined ? undefined : Response.json({
+      ...exchangeBody(), token_type: privateBody, expires: "2000-01-01T00:00:00.000Z",
+    }, { status: 201 }));
+    await releaseMain();
+    expect(uploads).toEqual(publishOrder);
+    expectSanitized();
   });
 
   describe.each(["identity", "exchange"] as const)("%s response failures", (stage) => {

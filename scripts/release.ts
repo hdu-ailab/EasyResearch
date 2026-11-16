@@ -127,8 +127,8 @@ async function requireNpmAuth(): Promise<void> {
     } catch {
       throw new Error("[release] Invalid GitHub OIDC request URL.");
     }
-    // npm 12.2.2 lib/utils/oidc.js (fd31aa66f0b715bbae1fc072d24fc7e8f23657ad),
-    // with response fields/status from https://api-docs.npmjs.com/.
+    // npm 12.2.2 lib/utils/oidc.js (fd31aa66f0b715bbae1fc072d24fc7e8f23657ad)
+    // consumes only response.token from the exchange; HTTP 201 follows https://api-docs.npmjs.com/.
     const identity = await oidcPreflightJson(
       identityUrl, env.ACTIONS_ID_TOKEN_REQUEST_TOKEN!, "GET", 200, "GitHub OIDC identity request",
     );
@@ -140,12 +140,11 @@ async function requireNpmAuth(): Promise<void> {
         new URL(`-/npm/v1/oidc/token/exchange/package/${encodeURIComponent(name)}`, NPM_REGISTRY),
         identity.value, "POST", 201, `npm OIDC exchange for ${name}`,
       );
-      const expires = typeof exchanged.expires === "string" ? Date.parse(exchanged.expires) : NaN;
-      if (exchanged.token_type !== "oidc" || typeof exchanged.token !== "string" || !exchanged.token.trim()
-        || !Number.isFinite(expires) || expires <= Date.now()) {
-        throw new Error(`[release] Invalid npm OIDC exchange response for ${name}.`);
+      if (typeof exchanged.token !== "string" || !exchanged.token.trim()) {
+        throw new Error(`[release] npm OIDC exchange response for ${name} requires a nonempty string token.`);
       }
       // Discard package credentials: npm publish obtains its own fresh credentials and provenance.
+      // No token_type/expiry metadata is required because these opaque credentials are not cached or reused.
       // Exchange proves package-specific identity coverage, not the independent createPackage permission.
     }
     console.log("[release] GitHub OIDC identity preflight passed for every release package.");
