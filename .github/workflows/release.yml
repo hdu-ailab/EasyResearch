@@ -23,6 +23,10 @@ jobs:
         with:
           bun-version: "1.4.0"
 
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -36,6 +40,8 @@ jobs:
           fi
 
       - name: Run checks
+        env:
+          EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/bin/python
         run: bun run check:web
 
   build:
