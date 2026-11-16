@@ -70,6 +70,7 @@ import { smokeEventChannel } from "./smoke-event-channel";
 import { verifyMacOsSignature } from "./macos-signing";
 import { smokeWorkspaceManagement } from "./smoke-workspace-management";
 import { smokeWorkFileOperations } from "./smoke-work-files-api";
+import { smokeImmutablePublisher } from "./smoke-immutable-publisher";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -1936,6 +1937,12 @@ try {
       validationStderr = result.stderr?.toString() ?? "";
       return result;
     },
+  });
+  smokeImmutablePublisher({
+    bundledDir,
+    python: venvPython,
+    workspace: join(root, "immutable-publisher"),
+    env: { ...env, EASYRESEARCH_VENV: join(agentDir, "venv") },
   });
   const createdFiles = treeFiles(root).filter((file) => !treeBefore.includes(file));
   console.log(`[smoke] files created by CLI run: ${createdFiles.length}`);

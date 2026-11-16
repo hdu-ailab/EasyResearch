@@ -2,27 +2,19 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.19 highlights
+## 0.1.20 highlights
 
-- The Work tab bar's plus button creates a new session in the current workspace,
-  while preserving the original session's draft, files and background work.
-- The Windows installation wizard now lets you choose the installation folder.
-- The chat input grows and shrinks with text and font-size changes, using native
-  browser sizing where available and an automatic-sizing fallback elsewhere.
-- Hidden session views retain their pane choices when the window is resized.
-- Home status refresh pauses while hidden and avoids overlapping slow requests.
-- Improved IME confirmation, keyboard and pointer selection, active-option
-  visibility, modal Tab order and file-menu focus restoration.
+- Fix session and workspace deletion for verified histories migrated between home
+  directories, while preserving project files and shared session histories.
+- Show clearer history-conflict errors and confirm affected workspaces before
+  stopping their running tasks.
+- Fix immutable specialist handoff publication on Windows.
 
-## 0.1.19 更新
+## 0.1.20 更新
 
-- 在 Work 页点击标签栏加号，直接在当前工作区新建会话；原会话的草稿、
-  文件视图和后台任务保持独立。
-- Windows 安装向导支持选择安装目录。
-- 聊天输入框随内容和字号自动伸缩，优先使用浏览器原生能力，并保留兼容方案。
-- 调整窗口大小时，隐藏会话保留原来的面板选择。
-- 首页隐藏后暂停状态刷新，慢请求也不会相互覆盖。
-- 改善输入法确认、键鼠切换选项、列表定位、弹窗 Tab 导航及文件菜单焦点恢复。
+- 修复用户目录迁移后，经核验的会话与工作区历史无法删除的问题，保留项目文件及共享会话历史。
+- 改善历史冲突提示，停止任务前明确确认受影响的工作区。
+- 修复 Windows 下专家 Agent 无法发布不可变交接文件的问题。
 
 ## Downloads
 
@@ -34,7 +26,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.19
+version=0.1.20
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -42,7 +34,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.19
+version=0.1.20
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 

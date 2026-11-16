@@ -72,6 +72,15 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Verify native Windows Skill helpers with CPython 3.12
+        if: runner.os == 'Windows'
+        env:
+          EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/python.exe
+          EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-helper-tests/agent
+          HOME: ${{ runner.temp }}/easyresearch-helper-tests/home
+          USERPROFILE: ${{ runner.temp }}/easyresearch-helper-tests/home
+        run: bun run test src/runtime/adapted-skill-helpers.test.ts
+
       - name: Build native platform binary
         run: bun scripts/build.ts --only ${{ matrix.target }}
 
