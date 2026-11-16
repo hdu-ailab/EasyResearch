@@ -429,11 +429,11 @@ export function HomePage({
           key={deletingSession.id}
           session={deletingSession}
           onClose={() => setDeletingSession(null)}
-          onDelete={async (force) => {
+          onDelete={async (force, expectedCwds) => {
             const mutation = callbacks.current.onCatalogMutationStart?.();
             cancelStatusRefresh();
             try {
-              await deleteSession(deletingSession.id, force);
+              await deleteSession(deletingSession.id, force, expectedCwds);
               mutation?.deleted(deletingSession.id);
               // Invalidate every pre-success poll before removing either projection.
               cancelStatusRefresh();

@@ -37,7 +37,7 @@ export class SessionLifecycleConflictError extends Error {
 
 export class SessionBusyError extends Error {
   readonly code = "SESSION_BUSY";
-  constructor() { super("The session has active work. Confirm Stop and delete to continue."); }
+  constructor(readonly affectedCwds?: string[]) { super("The session has active work. Confirm Stop and delete to continue."); }
 }
 
 export interface WorkspaceScope { cwd: string; descendants?: boolean }
@@ -51,7 +51,7 @@ export function matchesWorkspaceScope(cwd: string, scope: WorkspaceScope): boole
 
 export class WorkspaceBusyError extends Error {
   readonly code = "WORKSPACE_BUSY";
-  constructor() { super("The workspace has active work. Confirm Stop and continue."); }
+  constructor(readonly affectedCwds?: string[]) { super("The workspace has active work. Confirm Stop and continue."); }
 }
 
 interface LifecycleOperation {
@@ -489,7 +489,7 @@ export class ActiveSessionRegistry {
     const records = [...this.records.values()].filter((record) => matches(record.cwd));
     const pending = [...this.pendingLaunches].filter((launch) => matches(launch.options.cwd));
     if (!force && (pending.length || records.some((record) => this.isBusy(record)))) {
-      return Promise.reject(new WorkspaceBusyError());
+      return Promise.reject(new WorkspaceBusyError([...new Set(scopes.map((scope) => scope.cwd))]));
     }
     const operation = { scopes, promise: Promise.resolve() as Promise<unknown> };
     this.workspaceOperation = operation;

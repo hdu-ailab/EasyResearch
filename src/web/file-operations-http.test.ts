@@ -1,23 +1,26 @@
 import fs from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { createRouteHandler, type RouteHandler, type RouteServices } from "./routes";
 import { DirectoryService } from "./directories";
 import { DESKTOP_ACCESS_HEADER } from "./desktop-access";
-import { FILE_UPLOAD_LIMIT } from "./contracts";
+import { FILE_UPLOAD_LIMIT, type WorkspaceMutationResultDto } from "./contracts";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../cli/server-process";
 import type { HtmlPreviewDescriptor } from "./html-preview";
+import type { DeletionFileGuard } from "./session-deletion";
 
 describe("Work file HTTP contract", () => {
   let root: string;
   let cwd: string;
   let services: RouteServices;
   let handler: RouteHandler;
+  let commitWorkspaceDelete: Mock<() => Promise<WorkspaceMutationResultDto>>;
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "file-http-")));
     cwd = join(root, "project");
     fs.mkdirSync(cwd);
+    commitWorkspaceDelete = vi.fn(async () => ({ cwd, sessionIds: [] }));
     services = {
       bootId: "file-test",
       webuiDist: join(root, "webui-dist"),
@@ -27,7 +30,9 @@ describe("Work file HTTP contract", () => {
       workspaces: {
         rename: vi.fn(async () => ({ cwd, sessionIds: [] })),
         relocate: vi.fn(async () => ({ cwd, sessionIds: [] })),
-        delete: vi.fn(async () => ({ cwd, sessionIds: [] })),
+        // Deletion prepares its scopes before entering the route-owned file guard.
+        delete: vi.fn(async (targetCwd: string, _force: boolean, withFileMutation: DeletionFileGuard) =>
+          withFileMutation([targetCwd], commitWorkspaceDelete)),
       },
     } as unknown as RouteServices;
     handler = createRouteHandler(services);
@@ -122,7 +127,8 @@ describe("Work file HTTP contract", () => {
     }
     expect(services.workspaces!.rename).not.toHaveBeenCalled();
     expect(services.workspaces!.relocate).not.toHaveBeenCalled();
-    expect(services.workspaces!.delete).not.toHaveBeenCalled();
+    expect(services.workspaces!.delete).toHaveBeenCalledOnce();
+    expect(commitWorkspaceDelete).not.toHaveBeenCalled();
     await handler.close?.();
     const response = await pending;
     expect(response.status).toBe(499);
@@ -132,14 +138,19 @@ describe("Work file HTTP contract", () => {
     expect((await put()).status).toBe(503);
   });
 
-  it("reserves a root before awaiting the existing workspace mutation and releases on rejection", async () => {
+  it.each(["rename", "delete"] as const)("reserves a root before awaiting workspace %s commit and releases on rejection", async (action) => {
     let reject!: (error: Error) => void;
-    vi.mocked(services.workspaces!.rename).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
-    const pending = handler(new Request("http://localhost/api/workspaces/rename", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd, name: "new" }),
+    const commit = action === "rename" ? vi.mocked(services.workspaces!.rename) : commitWorkspaceDelete;
+    commit.mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+    const pending = handler(new Request(`http://localhost/api/workspaces${action === "rename" ? "/rename" : ""}`, {
+      method: action === "rename" ? "POST" : "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action === "rename" ? { cwd, name: "new" } : { cwd }),
     }));
     await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
-    expect((await put()).status).toBe(409);
+    expect(commit).toHaveBeenCalledOnce();
+    const blocked = await put();
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toMatchObject({ code: "FILE_OPERATION_CONFLICT" });
     reject(new Error("move failed"));
     expect((await pending).status).toBe(500);
     expect((await put()).status).toBe(201);

@@ -4,6 +4,7 @@ import { readAgentAliases } from "../subagent/agent-alias";
 import { readSubagentJournal } from "../subagent/job-journal";
 import { isSubagentSessionName, readSubagentSessionLinks } from "../subagent/session-links";
 import type { SubagentSessionStore } from "./subagent-sessions";
+import { prepareHistoryMigration } from "./session-history-migration";
 
 export interface SessionHistoryTarget {
   id: string;
@@ -21,7 +22,24 @@ export interface DeleteSessionHistoryOptions {
   onRemoved?: (id: string) => void;
 }
 
-export class SessionHistoryConflictError extends Error {}
+export class SessionHistoryConflictError extends Error {
+  readonly code = "SESSION_HISTORY_CONFLICT";
+}
+
+export type DeletionFileGuard = <T>(cwds: string[], run: () => Promise<T>) => Promise<T>;
+
+export interface SessionDeletionPlan {
+  cwds: string[];
+  identities: string[];
+  execute(): string[];
+}
+
+export function revalidateDeletionPlan(before: SessionDeletionPlan, after: SessionDeletionPlan): void {
+  if (after.cwds.some((cwd) => !before.cwds.includes(cwd))
+    || JSON.stringify(before.identities) !== JSON.stringify(after.identities)) {
+    throw new SessionHistoryConflictError("Session deletion identities changed while acquiring lifecycle ownership.");
+  }
+}
 
 export async function deleteSessionHistory(
   target: SessionHistoryTarget,
@@ -34,7 +52,14 @@ export async function deleteSessionHistories(
   targets: readonly SessionHistoryTarget[],
   options: DeleteSessionHistoryOptions,
 ): Promise<string[]> {
-  if (targets.length === 0) return [];
+  return (await prepareSessionDeletion(targets, options)).execute();
+}
+
+export async function prepareSessionDeletion(
+  targets: readonly SessionHistoryTarget[],
+  options: DeleteSessionHistoryOptions,
+): Promise<SessionDeletionPlan> {
+  if (targets.length === 0) return { cwds: [], identities: [], execute: () => [] };
   const { store, removeFile = unlinkSync } = options;
   const listed = await store.listAll();
   const sessionsDir = resolve(options.sessionsDir);
@@ -42,6 +67,7 @@ export async function deleteSessionHistories(
   const conflict = (message: string): never => { throw new SessionHistoryConflictError(message); };
   const isMissing = (error: unknown): boolean => (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
   const parentPaths = new Map<string, string>();
+  const inspectedFiles = new Map<string, string>();
 
   const inspect = (session: { id?: string; cwd?: string; path: string }, allowMissing: boolean) => {
     const within = relative(sessionsDir, session.path);
@@ -58,13 +84,14 @@ export async function deleteSessionHistories(
     try {
       for (const [index, part] of parts.entries()) {
         path = join(path, part);
-        const stat = lstatSync(path);
+        const stat = lstatSync(path, { bigint: true });
         if (stat.isSymbolicLink() || (index === parts.length - 1 ? !stat.isFile() : !stat.isDirectory())) {
           conflict("Session history must be an ordinary file without symlink redirection.");
         }
         if (realpathSync(path) !== join(physicalStore, ...parts.slice(0, index + 1))) {
           conflict("Session history has a redirected physical path.");
         }
+        if (index === parts.length - 1) inspectedFiles.set(path, `${stat.dev}:${stat.ino}`);
       }
       if (session.id === undefined) return conflict("Session fork source is missing from the verified inventory.");
       // Pi skips malformed lines and normalizes cwd in memory; neither may repair deletion authority.
@@ -111,7 +138,16 @@ export async function deleteSessionHistories(
     if (matches.length !== 1) conflict("Root session is missing from the native listing.");
     roots.set(target.id, root);
   }
-  if (roots.size === 0) return absent;
+  if (roots.size === 0) return { cwds: targets.map((target) => target.cwd), identities: absent.toSorted(), execute: () => absent };
+
+  const readers = new Map(roots);
+  for (const session of listed) {
+    if (readers.has(session.id)) continue;
+    const reader = inspect(session, true);
+    if (reader) readers.set(session.id, reader);
+  }
+  const migration = prepareHistoryMigration({ sessionsDir, listed, readers, parents: parentPaths, conflict });
+  for (const [id, path] of parentPaths) parentPaths.set(id, migration.resolveParent(path));
 
   type History = { id: string; cwd?: string; path?: string; children: Set<string> };
   const histories = new Map<string, History>();
@@ -143,7 +179,8 @@ export async function deleteSessionHistories(
 
   for (const history of pending) {
     if (!history.path) continue;
-    const manager = roots.get(history.id) ?? inspect({ ...history, path: history.path }, true);
+    const sourcePath = history.path;
+    const manager = readers.get(history.id) ?? inspect({ ...history, path: history.path }, true);
     if (!manager) continue;
     remember(history.id, manager.getCwd(), history.path);
     const entries = manager.getEntries();
@@ -151,10 +188,11 @@ export async function deleteSessionHistories(
     const aliases = readAgentAliases(entries);
     const aliasesById = new Map(aliases.map((alias) => [alias.id, alias]));
     const links = readSubagentSessionLinks(entries);
-    const mapped = (id: string, path?: string, owner?: string, launchId?: string) => {
+    const mapped = (id: string, agent: string, path?: string, owner?: string, launchId?: string) => {
       // Forks supply references, not a cwd for children that may never have existed.
-      const cwd = parentPaths.has(history.id) ? undefined : history.cwd;
-      remember(id, cwd, path);
+      const cwd = parentPaths.has(history.id) ? undefined
+        : migration.allows(history.cwd, id) ? histories.get(id)?.cwd : history.cwd;
+      remember(id, cwd, migration.resolveChild(id, path, agent, sourcePath));
       history.children.add(id);
       let edges = ownerEdges.get(history.id);
       if (!edges) ownerEdges.set(history.id, edges = []);
@@ -166,9 +204,9 @@ export async function deleteSessionHistories(
       if (alias && job.childSessionId && (
         alias.sessionId !== job.childSessionId || alias.sessionPath !== job.sessionPath || alias.agent !== job.agent
       )) conflict("Session alias contradicts its journaled identity.");
-      if (job.childSessionId && job.sessionPath) mapped(job.childSessionId, job.sessionPath, job.ownerSessionId, job.launchId);
+      if (job.childSessionId && job.sessionPath) mapped(job.childSessionId, job.agent, job.sessionPath, job.ownerSessionId, job.launchId);
     }
-    for (const alias of aliases) mapped(alias.sessionId, alias.sessionPath);
+    for (const alias of aliases) mapped(alias.sessionId, alias.agent, alias.sessionPath);
     for (const link of links) {
       const job = link.launchId === undefined ? undefined : jobs.get(link.launchId);
       const alias = link.agentId === undefined ? undefined : aliasesById.get(link.agentId);
@@ -179,7 +217,7 @@ export async function deleteSessionHistories(
       ) || alias && (alias.sessionId !== link.childSessionId || alias.agent !== link.agent)) {
         conflict("Session link contradicts its journaled or aliased identity.");
       }
-      mapped(link.childSessionId, histories.get(link.childSessionId)?.path, link.ownerSessionId, link.launchId);
+      mapped(link.childSessionId, link.agent, histories.get(link.childSessionId)?.path, link.ownerSessionId, link.launchId);
     }
   }
 
@@ -222,7 +260,7 @@ export async function deleteSessionHistories(
     const visiting = new Set<string>();
     const ordered: string[] = [];
     const visit = (id: string) => {
-      if (cwd !== undefined && histories.get(id)!.cwd !== cwd) return;
+      if (cwd !== undefined && histories.get(id)!.cwd !== cwd && !migration.allows(cwd, id)) return;
       if (visiting.has(id)) conflict("Session history ownership contains a cycle.");
       if (visited.has(id)) return;
       visiting.add(id);
@@ -263,13 +301,13 @@ export async function deleteSessionHistories(
           || ownerId !== sourceId && (owner.cwd === undefined || child.cwd === undefined || owner.cwd === child.cwd) && (reachable.has(ownerId)
             || edge.launchId !== undefined && ownerEdges.get(ownerId)?.some((record) =>
               record.launchId === edge.launchId && record.owner === ownerId && record.child === edge.child)));
-      if (child.cwd !== undefined && child.cwd !== source.cwd && !inherited) conflict("Session history has an unverifiable foreign-cwd reference.");
+      if (child.cwd !== undefined && child.cwd !== source.cwd && !inherited && !migration.allows(source.cwd, child.id)) conflict("Session history has an unverifiable foreign-cwd reference.");
       if (!reachable.has(ownerId)) {
         if (!inherited) conflict("Session history owner is outside its recorded tree.");
         continue;
       }
       // Implicit aliases in a foreign fork are references, not new dispatch owners.
-      if (!owner || owner.cwd !== undefined && child.cwd !== undefined && owner.cwd !== child.cwd) {
+      if (!owner || owner.cwd !== undefined && child.cwd !== undefined && owner.cwd !== child.cwd && !migration.allows(owner.cwd, child.id)) {
         if (edge.owner === undefined && inherited) continue;
         return conflict("Session history has an unknown owner.");
       }
@@ -289,19 +327,54 @@ export async function deleteSessionHistories(
       conflict("The root history is referenced by another surviving session.");
     }
   }
-  const removed: string[] = [...absent];
-  for (const id of intended) {
-    if (protectedIds.has(id)) continue;
-    const history = histories.get(id)!;
-    if (history.path && inspect({ ...history, path: history.path }, !roots.has(id))) {
-      try {
-        removeFile(history.path);
-      } catch (error) {
-        if (roots.has(id) || !isMissing(error)) throw error;
-      }
+  const selected = intended.filter((id) => !protectedIds.has(id));
+  const fileIdentity = (path: string): string | undefined => {
+    try {
+      const stat = lstatSync(path, { bigint: true });
+      return `${stat.dev}:${stat.ino}`;
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
     }
-    removed.push(id);
-    options.onRemoved?.(id);
-  }
-  return removed;
+  };
+  const physicalIdentities = new Map(selected.flatMap((id) => {
+    const path = histories.get(id)!.path;
+    return path ? [[path, inspectedFiles.get(path)] as const] : [];
+  }));
+  const validateRemoval = (id: string) => {
+    const history = histories.get(id)!;
+    if (!history.path) return;
+    const current = fileIdentity(history.path);
+    if (current !== undefined && current !== physicalIdentities.get(history.path)) {
+      conflict("Session history file was replaced after deletion preparation.");
+    }
+    return inspect({ ...history, path: history.path }, !roots.has(id));
+  };
+  return {
+    cwds: [...new Set([...targets.map((target) => target.cwd), ...selected.flatMap((id) => histories.get(id)!.cwd ?? [])])],
+    identities: selected.map((id) => {
+      const history = histories.get(id)!;
+      return JSON.stringify([id, history.cwd, history.path, history.path && physicalIdentities.get(history.path)]);
+    }).concat(absent).sort(),
+    execute() {
+      migration.revalidate();
+      // Recheck the complete removal set before the first irreversible operation.
+      for (const id of selected) validateRemoval(id);
+      const removed: string[] = [...absent];
+      for (const id of selected) {
+        const history = histories.get(id)!;
+        migration.revalidate();
+        if (history.path && validateRemoval(id)) {
+          try {
+            removeFile(history.path);
+          } catch (error) {
+            if (roots.has(id) || !isMissing(error)) throw error;
+          }
+        }
+        removed.push(id);
+        options.onRemoved?.(id);
+      }
+      return removed;
+    },
+  };
 }

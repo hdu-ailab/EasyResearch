@@ -300,10 +300,15 @@ describe("HomePage", () => {
     expect(screen.getByText("Fault diagnosis")).toBeVisible();
   });
 
-  it("confirms busy workspace deletion and removes only the selected workspace's sessions", async () => {
+  it("renews expanded workspace scope confirmation before removing the selected workspace's sessions", async () => {
     const user = userEvent.setup();
+    const initial = ["/proj", "/migrated/proj"];
+    const expanded = [...initial, "/migrated/another"];
     vi.mocked(api.deleteWorkspace)
-      .mockRejectedValueOnce(new ApiError(409, { code: "WORKSPACE_BUSY", error: "busy" }))
+      .mockRejectedValueOnce(new ApiError(409, { code: "WORKSPACE_BUSY", error: "busy", affectedCwds: initial }))
+      .mockRejectedValueOnce(
+        new ApiError(409, { code: "WORKSPACE_BUSY", error: "scope expanded", affectedCwds: expanded }),
+      )
       .mockImplementationOnce(async () => {
         vi.mocked(api.listStatus).mockResolvedValue({
           agentDir: "/agent",
@@ -320,11 +325,20 @@ describe("HomePage", () => {
     const dialog = screen.getByRole("dialog", { name: "Delete workspace" });
     expect(dialog).toHaveTextContent("project files are kept");
     await user.click(within(dialog).getByRole("button", { name: "Delete workspace" }));
+    expect(within(dialog).getByText("/migrated/proj")).toBeVisible();
+    expect(api.deleteWorkspace).toHaveBeenCalledExactlyOnceWith("/proj", false, undefined);
     await user.click(await within(dialog).findByRole("button", { name: "Stop and continue" }));
+    expect(api.deleteWorkspace).toHaveBeenCalledTimes(2);
+    expect(api.deleteWorkspace).toHaveBeenNthCalledWith(2, "/proj", true, initial);
+    expect(within(dialog).getByText("/migrated/another")).toBeVisible();
+    expect(screen.getByText("Fault diagnosis")).toBeVisible();
+    expect(screen.getByText("Other paper")).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Stop and continue" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(vi.mocked(api.deleteWorkspace).mock.calls).toEqual([
-      ["/proj", false],
-      ["/proj", true],
+      ["/proj", false, undefined],
+      ["/proj", true, initial],
+      ["/proj", true, expanded],
     ]);
     expect(screen.queryByText("Fault diagnosis")).toBeNull();
     expect(screen.getByText("Other paper")).toBeVisible();
@@ -381,7 +395,7 @@ describe("HomePage", () => {
       const cancel = within(dialog).getByRole("button", { name: "Cancel" });
       expect(cancel).toHaveFocus();
       await user.tab();
-      expect(within(dialog).getByRole("button", { name: title === "a1" ? "Stop and delete" : "Delete" })).toHaveFocus();
+      expect(within(dialog).getByRole("button", { name: "Delete" })).toHaveFocus();
       await user.tab();
       expect(cancel).toHaveFocus();
       await user.click(cancel);
@@ -394,26 +408,39 @@ describe("HomePage", () => {
     },
   );
 
-  it.each(["running", "starting"] as const)("requires explicit stop and delete for known %s work", async (status) => {
-    vi.mocked(api.listStatus).mockResolvedValue({
-      bootId: "boot-a",
-      agentDir: "/agent",
-      homeDir: "/home/user",
-      sessions: [],
-      activeSessions: [{ ...active[0]!, status, isStreaming: false }],
-    });
-    const user = userEvent.setup();
-    renderHome();
-    await user.click(await screen.findByRole("button", { name: /^delete session/i }));
-    const dialog = screen.getByRole("dialog");
-    expect(within(dialog).queryByRole("button", { name: "Delete" })).toBeNull();
-    expect(api.deleteSession).not.toHaveBeenCalled();
-    vi.mocked(api.listStatus).mockReturnValue(new Promise(() => {}));
-    await user.click(within(dialog).getByRole("button", { name: "Stop and delete" }));
-    expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith("a1", true);
-    expect(screen.queryByText("a1")).toBeNull();
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
+  it.each(["running", "starting"] as const)(
+    "discovers affected scopes before explicit stop and delete for known %s work",
+    async (status) => {
+      vi.mocked(api.listStatus).mockResolvedValue({
+        bootId: "boot-a",
+        agentDir: "/agent",
+        homeDir: "/home/user",
+        sessions: [],
+        activeSessions: [{ ...active[0]!, status, isStreaming: false }],
+      });
+      const user = userEvent.setup();
+      renderHome();
+      await user.click(await screen.findByRole("button", { name: /^delete session/i }));
+      const dialog = screen.getByRole("dialog");
+      expect(within(dialog).queryByRole("button", { name: "Stop and delete" })).toBeNull();
+      expect(api.deleteSession).not.toHaveBeenCalled();
+      vi.mocked(api.deleteSession).mockRejectedValueOnce(
+        new ApiError(409, {
+          code: "SESSION_BUSY",
+          error: "busy",
+          affectedCwds: ["/proj", "/migrated/proj"],
+        }),
+      );
+      await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+      expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith("a1", false, undefined);
+      expect(within(dialog).getByText("/migrated/proj")).toBeVisible();
+      vi.mocked(api.listStatus).mockReturnValue(new Promise(() => {}));
+      await user.click(within(dialog).getByRole("button", { name: "Stop and delete" }));
+      expect(api.deleteSession).toHaveBeenNthCalledWith(2, "a1", true, ["/proj", "/migrated/proj"]);
+      expect(screen.queryByText("a1")).toBeNull();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    },
+  );
 
   it("requires a separate force confirmation after an apparently idle session returns busy", async () => {
     const user = userEvent.setup();
@@ -424,11 +451,11 @@ describe("HomePage", () => {
     await user.click(await screen.findByRole("button", { name: "Delete session: Fault diagnosis" }));
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
     const force = await screen.findByRole("button", { name: "Stop and delete" });
-    expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith("h1", false);
+    expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith("h1", false, undefined);
     expect(screen.getByRole("dialog")).toHaveTextContent(/stop/i);
     vi.mocked(api.listStatus).mockReturnValue(new Promise(() => {}));
     await user.click(force);
-    expect(api.deleteSession).toHaveBeenNthCalledWith(2, "h1", true);
+    expect(api.deleteSession).toHaveBeenNthCalledWith(2, "h1", true, undefined);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByText("Fault diagnosis")).toBeNull();
   });
@@ -458,7 +485,7 @@ describe("HomePage", () => {
     expect(within(dialog).queryByRole("button", { name: "Stop and delete" })).toBeNull();
     vi.mocked(api.listStatus).mockReturnValue(new Promise(() => {}));
     await user.click(within(dialog).getByRole("button", { name: /retry/i }));
-    expect(api.deleteSession).toHaveBeenNthCalledWith(2, "h1", false);
+    expect(api.deleteSession).toHaveBeenNthCalledWith(2, "h1", false, undefined);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -474,6 +501,15 @@ describe("HomePage", () => {
 
   it("keeps deletion localized including the target, scope, and busy action", async () => {
     const user = userEvent.setup();
+    vi.mocked(api.deleteSession)
+      .mockRejectedValueOnce(
+        new ApiError(409, {
+          code: "SESSION_BUSY",
+          error: "busy",
+          affectedCwds: ["/migrated/proj"],
+        }),
+      )
+      .mockRejectedValueOnce(new ApiError(409, { code: "SESSION_HISTORY_CONFLICT", error: "identity mismatch" }));
     render(
       <I18nContext.Provider value={{ language: "zh-CN", setLanguage: () => {}, t: (key) => messages["zh-CN"][key] }}>
         <HomePage onOpenSession={() => {}} onOpenSettings={() => {}} settingsButton={null} />
@@ -485,7 +521,16 @@ describe("HomePage", () => {
     expect(dialog).toHaveTextContent("永久");
     expect(dialog).toHaveTextContent(/工作区文件.*保留/);
     expect(within(dialog).getByRole("button", { name: "取消" })).toHaveFocus();
+    await user.click(within(dialog).getByRole("button", { name: "删除" }));
+    expect(api.deleteSession).toHaveBeenCalledExactlyOnceWith("a1", false, undefined);
+    expect(dialog).toHaveTextContent("以下工作区中正在进行的工作也将停止");
+    expect(within(dialog).getByText("/migrated/proj")).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "停止并删除" })).toBeEnabled();
+    await user.click(within(dialog).getByRole("button", { name: "停止并删除" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(messages["zh-CN"]["history.conflict"]);
+    expect(within(dialog).getByRole("alert")).not.toHaveTextContent("刷新");
+    expect(api.deleteSession).toHaveBeenCalledTimes(2);
+    expect(within(dialog).queryByRole("button", { name: "停止并删除" })).not.toBeInTheDocument();
   });
 
   it.each(["resolve", "reject"])(

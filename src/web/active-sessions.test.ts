@@ -267,6 +267,31 @@ describe("ActiveSessionRegistry", () => {
   });
 
   describe("workspace mutation admission", () => {
+    it("owns both migration cwds, discloses busy scope, and waits for recovered writers", async () => {
+      const recoveredCwd = `${cwd}-recovered`;
+      const recovered = await registry.create({ cwd: recoveredCwd });
+      const adapter = factory.created[0]!;
+      adapter.backgroundWork = true;
+      const scopes = [{ cwd }, { cwd: recoveredCwd }];
+      const changed = vi.fn(async () => {});
+      await expect(registry.withWorkspaceMutation(scopes, false, changed)).rejects.toMatchObject({
+        code: "WORKSPACE_BUSY", affectedCwds: [cwd, recoveredCwd],
+      });
+      expect(adapter.stats.stopped).toBe(0);
+      expect(changed).not.toHaveBeenCalled();
+      const stopping = deferred<void>();
+      adapter.stopImpl = () => stopping.promise;
+      const mutation = registry.withWorkspaceMutation(scopes, true, changed);
+      await expect(registry.create({ cwd })).rejects.toThrow(/conflicting/i);
+      await expect(registry.create({ cwd: recoveredCwd })).rejects.toThrow(/conflicting/i);
+      await expect(registry.prompt(recovered.id, "late")).rejects.toThrow(/conflicting/i);
+      expect(changed).not.toHaveBeenCalled();
+      stopping.resolve();
+      await mutation;
+      expect(changed).toHaveBeenCalledOnce();
+      expect(adapter.stats.stopped).toBe(1);
+    });
+
     it("requires explicit cancellation of active work before invoking disk mutation", async () => {
       factory.backgroundWork = true;
       const session = await registry.create({ cwd });

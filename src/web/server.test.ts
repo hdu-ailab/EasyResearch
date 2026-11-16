@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -7,7 +7,7 @@ import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import type { RouteServices } from "./routes";
 import { createRouteHandler } from "./routes";
 import { PiSessionFactory, type SessionAdapter, type SessionFactory, type SessionState, type StartSessionOptions, type SteerPromptOptions, type WebSlashCommand } from "./session-adapter";
-import { ActiveSessionRegistry, UnknownSessionError } from "./active-sessions";
+import { ActiveSessionRegistry, SessionBusyError, SessionLifecycleConflictError, UnknownSessionError } from "./active-sessions";
 import { DirectoryService } from "./directories";
 import { ConfigFileService, ConfigServiceError } from "./config-files";
 import type {
@@ -35,6 +35,8 @@ import { createReadonlySubagentSessionStore, SubagentSessionNotFoundError, Subag
 import { createSessionHistoryLifecycle, validateHistoricalSession } from "./session-lifecycle";
 import { resolveRenameSessionService } from "./session-rename";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "../subagent/session-links";
+import { SubagentCoordinator } from "../subagent/coordinator";
+import type { AgentConfig } from "../subagent/agents";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
 import { createAgentPatchService, patchGlobalAgent } from "./agent-configuration";
 import * as piImportModule from "../runtime/pi-import";
@@ -64,6 +66,7 @@ import * as networkRoutingModule from "../runtime/network-routing";
 import { createNetworkProxyProbe } from "./network-proxy-probe";
 import { NetworkProxySettingsService } from "./network-proxy-settings";
 import { WorkspaceService } from "./workspaces";
+import { SessionHistoryConflictError } from "./session-deletion";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -581,6 +584,53 @@ describe("web routes", () => {
       method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
 
+    it("distinguishes persistent history evidence from transient lifecycle conflicts", async () => {
+      setup({ deleteSession: async () => { throw new SessionHistoryConflictError("Recorded child path still exists."); } });
+      const persistent = await handler(request("root"));
+      expect(persistent.status).toBe(409);
+      expect(await persistent.json()).toEqual({ code: "SESSION_HISTORY_CONFLICT", error: "Recorded child path still exists." });
+      setup({ deleteSession: async () => { throw new SessionLifecycleConflictError(); } });
+      const transient = await handler(request("root"));
+      expect(transient.status).toBe(409);
+      expect(await transient.json()).toEqual({ error: "Session history or lifecycle changed. Refresh and try again." });
+    });
+
+    it("returns recovered cwd scopes for explicit busy confirmation", async () => {
+      const affectedCwds = [projectDir, join(homeDir, "recovered-project")];
+      setup({ deleteSession: async () => { throw new SessionBusyError(affectedCwds); } });
+      const response = await handler(request("root"));
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: "SESSION_BUSY", affectedCwds });
+    });
+
+    describe.each(["workspace", "individual"] as const)("%s expectedCwds body", (mode) => {
+      function fixture(expectedCwds: unknown) {
+        const deleteSession = vi.fn(async () => {});
+        const removeWorkspace = vi.fn(async () => ({ cwd: projectDir, sessionIds: [] }));
+        setup({ deleteSession, workspaces: { delete: removeWorkspace } as unknown as WorkspaceService });
+        const req = new Request(mode === "workspace" ? "http://localhost/api/workspaces" : "http://localhost/api/sessions/root", {
+          method: "DELETE", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...(mode === "workspace" ? { cwd: projectDir } : {}), force: true, expectedCwds }),
+        });
+        return { req, deleteSession, removeWorkspace };
+      }
+      it.each([null, "bad", {}, [null], [1], [[]], [""], ["relative"], ["/absolute/../other"], ["/bad\0path"]].map((expected) => ({ expected })))(
+        "rejects malformed scope acknowledgments before calling the service: $expected", async ({ expected }) => {
+          const { req, deleteSession, removeWorkspace } = fixture(expected);
+          expect((await handler(req)).status).toBe(400);
+          expect(deleteSession).not.toHaveBeenCalled();
+          expect(removeWorkspace).not.toHaveBeenCalled();
+        },
+      );
+      it.each(["complete set", "empty set"])("passes the explicit %s unchanged to owned deletion", async (kind) => {
+        const expected = kind === "empty set" ? [] : [projectDir, join(homeDir, "recovered-project")];
+        const { req, deleteSession, removeWorkspace } = fixture(expected);
+        expect((await handler(req)).status).toBe(mode === "workspace" ? 200 : 204);
+        if (mode === "workspace") expect(removeWorkspace).toHaveBeenCalledWith(projectDir, true, expect.any(Function), expected);
+        else expect(deleteSession).toHaveBeenCalledWith("root", true, expect.any(Function), expected);
+      });
+    });
+
     async function persistentFixture(removeFile?: (path: string) => void) {
       vi.stubEnv("HOME", homeDir);
       vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", agentDir);
@@ -843,8 +893,7 @@ describe("web routes", () => {
       expect(readFileSync(root.path, "utf8")).toBe(bytes);
     });
 
-    it("wires production startServer to the native store, registry cleanup and removal", async () => {
-      const { root, child, other } = await persistentFixture();
+    async function startProductionRoutes() {
       const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(factory as never);
       const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(fakeConfiguration().live);
       onTestFinished(() => { resolveFactory.mockRestore(); createLive.mockRestore(); vi.unstubAllGlobals(); });
@@ -856,6 +905,12 @@ describe("web routes", () => {
         },
       });
       const server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
+      return { server, productionHandler };
+    }
+
+    it("wires production startServer to the native store, registry cleanup and removal", async () => {
+      const { root, child, other } = await persistentFixture();
+      const { server, productionHandler } = await startProductionRoutes();
       try {
         const openRequest = () => new Request("http://localhost/api/sessions/open", {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: root.path }),
@@ -870,13 +925,91 @@ describe("web routes", () => {
       } finally { await server.stop(); }
     });
 
+    it.each(["scope acknowledgment", "file guard"])("preserves %s through production startServer for individual migrated deletion", async (boundary) => {
+      const unusedAgentDir = agentDir;
+      onTestFinished(() => rmSync(unusedAgentDir, { recursive: true, force: true }));
+      agentDir = join(homeDir, ".easyresearch", "agent");
+      mkdirSync(agentDir, { recursive: true });
+      const { pi } = await persistentFixture();
+      const oldHome = join(homeDir, "old-home");
+      const oldCwd = join(oldHome, "migration");
+      const currentCwd = join(homeDir, "migration");
+      mkdirSync(currentCwd);
+      const history = (cwd: string, directory?: string) => {
+        const manager = pi.SessionManager.create(cwd, directory);
+        manager.appendMessage(userMessage("migration fixture"));
+        manager.appendMessage(assistant("migration response"));
+        return { manager, id: manager.getSessionId(), path: manager.getSessionFile()! };
+      };
+      const root = history(oldCwd);
+      const child = history(currentCwd, parse(root.path).dir);
+      child.manager.appendSessionInfo("easyresearch:search");
+      const unrelated = history(currentCwd);
+      const agent: AgentConfig = { name: "search", description: "fixture", enabled: true, builtin: false,
+        systemPrompt: "fixture", source: "global", filePath: "unused", effectiveTools: [], effectiveSkills: [],
+        effectiveSkillPaths: [], missingSkills: [] };
+      const coordinator = new SubagentCoordinator(root.manager);
+      const reservation = coordinator.reserveDispatch({ ownerSessionId: root.id, toolCallId: "migration",
+        requested: "search", catalog: { all: [agent], available: [agent] } });
+      const oldPath = child.path.replace(agentDir, join(oldHome, ".easyresearch", "agent"));
+      coordinator.recordChildCreated(reservation, { childSessionId: child.id, sessionPath: oldPath });
+      coordinator.recordMaterialized(reservation, { childSessionId: child.id, sessionPath: oldPath });
+      coordinator.recordLaunchAcknowledged(reservation.launchId);
+      coordinator.recordTerminal({ launchId: reservation.launchId, status: "complete" });
+      const originals = [root, child, unrelated].map((item) => readFileSync(item.path));
+      const sentinel = join(currentCwd, "keep.txt");
+      writeFileSync(sentinel, "project evidence");
+      const { server, productionHandler } = await startProductionRoutes();
+      let upload: Promise<Response> | undefined;
+      const abortUpload = new AbortController();
+      try {
+        expect((await productionHandler(new Request("http://localhost/api/sessions/open", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: unrelated.path }),
+        }))).status).toBe(200);
+        const busy = await productionHandler(request(root.id, { force: true }));
+        expect(busy.status).toBe(409);
+        const disclosed = await busy.json() as { code: string; affectedCwds: string[] };
+        expect(disclosed).toMatchObject({ code: "SESSION_BUSY", affectedCwds: [oldCwd, currentCwd] });
+        expect([root, child, unrelated].map((item) => readFileSync(item.path))).toEqual(originals);
+        if (boundary === "file guard") {
+          const cancel = vi.fn();
+          const beforeUpload = readdirSync(currentCwd).length;
+          upload = productionHandler(new Request(`http://localhost/api/file/upload?${new URLSearchParams({ cwd: currentCwd, directory: currentCwd, name: "pending.bin" })}`, {
+            method: "PUT", headers: { "Content-Type": "application/octet-stream" }, signal: abortUpload.signal,
+            body: new ReadableStream({ start(controller) { controller.enqueue(Uint8Array.of(1)); }, cancel }), duplex: "half",
+          } as RequestInit));
+          await vi.waitFor(() => expect(readdirSync(currentCwd)).toHaveLength(beforeUpload + 1));
+          const blocked = await productionHandler(request(root.id, { force: false, expectedCwds: disclosed.affectedCwds }));
+          expect(blocked.status).toBe(409);
+          expect(await blocked.json()).toMatchObject({ code: "FILE_OPERATION_CONFLICT" });
+          expect(factory.created[0]!.stopped).toBe(0);
+          expect([root, child, unrelated].map((item) => readFileSync(item.path))).toEqual(originals);
+          abortUpload.abort();
+          expect((await upload).status).toBe(499);
+          expect(cancel).toHaveBeenCalledOnce();
+        }
+        const removed = await productionHandler(request(root.id, { force: true, expectedCwds: disclosed.affectedCwds }));
+        expect(removed.status).toBe(204);
+        expect(existsSync(root.path)).toBe(false);
+        expect(existsSync(child.path)).toBe(false);
+        expect(readFileSync(unrelated.path)).toEqual(originals[2]);
+        expect(factory.created[0]!.stopped).toBe(1);
+        expect(readFileSync(sentinel, "utf8")).toBe("project evidence");
+        expect(existsSync(oldCwd)).toBe(false);
+      } finally {
+        abortUpload.abort();
+        await upload;
+        await server.stop();
+      }
+    });
+
     it("returns 204 only after the owned deletion service settles", async () => {
       const deletion = deferred<void>();
       const deleteSession = vi.fn(() => deletion.promise);
       setup({ deleteSession });
       let responded = false;
       const response = handler(request("root")).then((result) => { responded = true; return result; });
-      await vi.waitFor(() => expect(deleteSession).toHaveBeenCalledWith("root", false));
+      await vi.waitFor(() => expect(deleteSession).toHaveBeenCalledWith("root", false, expect.any(Function), undefined));
       expect(responded).toBe(false);
       deletion.resolve();
       expect((await response).status).toBe(204);
@@ -897,7 +1030,7 @@ describe("web routes", () => {
       setup({ deleteSession });
       const response = await handler(request("root", { force: true }));
       expect(response.status).toBe(500);
-      expect(deleteSession).toHaveBeenCalledWith("root", true);
+      expect(deleteSession).toHaveBeenCalledWith("root", true, expect.any(Function), undefined);
       expect(await response.text()).not.toContain("private");
     });
 

@@ -29,10 +29,27 @@ export interface RuntimeRestartRequestDto {
 
 export interface SessionDeletionRequestDto {
   force?: boolean;
+  expectedCwds?: string[];
+}
+
+export interface WorkspaceDeletionRequestDto extends SessionDeletionRequestDto {
+  cwd: string;
 }
 
 export interface SessionBusyDto {
   code: "SESSION_BUSY";
+  error: string;
+  affectedCwds?: string[];
+}
+
+export interface WorkspaceBusyDto {
+  code: "WORKSPACE_BUSY";
+  error: string;
+  affectedCwds?: string[];
+}
+
+export interface SessionHistoryConflictDto {
+  code: "SESSION_HISTORY_CONFLICT";
   error: string;
 }
 

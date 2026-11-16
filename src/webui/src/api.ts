@@ -36,6 +36,7 @@ import type {
   RuntimeRestartBusyDto,
   SessionBusyDto,
   SessionDeletionRequestDto,
+  SessionHistoryConflictDto,
   SessionSnapshotDto,
   SessionTreeDto,
   SkillCommandDto,
@@ -45,6 +46,7 @@ import type {
   TreeNavigationOptionsDto,
   TreeNavigationResultDto,
   UpdateCheckDto,
+  WorkspaceBusyDto,
   WorkspaceMutationResultDto,
 } from "../../web/contracts";
 import {
@@ -133,21 +135,50 @@ export function workspaceMissingCwd(error: unknown): string | null {
 }
 
 export function isWorkspaceBusy(error: unknown): boolean {
-  return (
-    error instanceof ApiError &&
-    error.status === 409 &&
-    !!error.details &&
-    typeof error.details === "object" &&
-    (error.details as { code?: unknown }).code === "WORKSPACE_BUSY"
-  );
+  return parseWorkspaceBusyError(error) !== null;
+}
+
+export function parseWorkspaceBusyError(error: unknown): WorkspaceBusyDto | null {
+  return parseHistoryOperationError(error, "WORKSPACE_BUSY");
+}
+
+export function parseSessionHistoryConflict(error: unknown): SessionHistoryConflictDto | null {
+  return parseHistoryOperationError(error, "SESSION_HISTORY_CONFLICT");
+}
+
+function parseHistoryOperationError<
+  Code extends SessionBusyDto["code"] | WorkspaceBusyDto["code"] | SessionHistoryConflictDto["code"],
+>(error: unknown, code: Code): { code: Code; error: string; affectedCwds?: string[] } | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const details = error.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const source = details as Record<string, unknown>;
+  if (source.code !== code || typeof source.error !== "string") return null;
+  if (code === "SESSION_HISTORY_CONFLICT" || source.affectedCwds === undefined) return { code, error: source.error };
+  // A malformed scope list must not authorize stopping undisclosed work.
+  if (
+    !Array.isArray(source.affectedCwds) ||
+    !source.affectedCwds.every((cwd) => typeof cwd === "string" && cwd.trim())
+  ) {
+    return null;
+  }
+  return { code, error: source.error, affectedCwds: [...new Set<string>(source.affectedCwds)] };
 }
 
 export function validateWorkspace(cwd: string): Promise<void> {
   return requestVoid(routes.workspace("validate"), json("POST", { cwd }));
 }
 
-export function deleteWorkspace(cwd: string, force: boolean): Promise<WorkspaceMutationResultDto> {
-  return requestJson(routes.workspaces(), parseWorkspaceResult, json("DELETE", { cwd, force }));
+export function deleteWorkspace(
+  cwd: string,
+  force: boolean,
+  expectedCwds?: string[],
+): Promise<WorkspaceMutationResultDto> {
+  return requestJson(
+    routes.workspaces(),
+    parseWorkspaceResult,
+    json("DELETE", { cwd, force, expectedCwds: force ? expectedCwds : undefined }),
+  );
 }
 
 export function renameWorkspace(cwd: string, name: string, force: boolean): Promise<WorkspaceMutationResultDto> {
@@ -326,19 +357,16 @@ export function renameSession(id: string, name: string): Promise<void> {
   return requestVoid(routes.sessionName(id), json("PUT", { name }));
 }
 
-export function deleteSession(id: string, force = false): Promise<void> {
-  const request: SessionDeletionRequestDto = { force };
+export function deleteSession(id: string, force = false, expectedCwds?: string[]): Promise<void> {
+  const request: SessionDeletionRequestDto = {
+    force,
+    expectedCwds: force ? expectedCwds : undefined,
+  };
   return requestVoid(routes.deleteSession(id), json("DELETE", request));
 }
 
 export function parseSessionBusyError(error: unknown): SessionBusyDto | null {
-  if (!(error instanceof ApiError) || error.status !== 409) return null;
-  const details = error.details;
-  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
-  const source = details as Record<string, unknown>;
-  return source.code === "SESSION_BUSY" && typeof source.error === "string"
-    ? { code: "SESSION_BUSY", error: source.error }
-    : null;
+  return parseHistoryOperationError(error, "SESSION_BUSY");
 }
 
 export function listDirectories(path: string): Promise<DirectoryListingDto> {

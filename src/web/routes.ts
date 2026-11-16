@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { bundledFilePath } from "../runtime/bundled-assets";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
 import type {
@@ -41,7 +41,7 @@ import {
   UnknownSessionError, SessionBusyError, SessionLifecycleConflictError, WorkspaceBusyError,
   SessionRegistryShuttingDownError, type ActiveSessionRegistry,
 } from "./active-sessions";
-import { SessionHistoryConflictError } from "./session-deletion";
+import { SessionHistoryConflictError, type DeletionFileGuard } from "./session-deletion";
 import { WorkspaceError, requireWorkspaceDirectory, type WorkspaceService } from "./workspaces";
 import { flattenMessageTree } from "./session-tree";
 import { ExtensionGuardError } from "../runtime/extensions-guard";
@@ -106,7 +106,7 @@ export interface RouteServices {
   listModels: () => Promise<ModelOptionDto[]>;
   checkForUpdate: () => Promise<UpdateCheckDto>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
-  deleteSession: (sessionId: string, force: boolean) => Promise<void>;
+  deleteSession: (sessionId: string, force: boolean, files?: DeletionFileGuard, expectedCwds?: readonly string[]) => Promise<void>;
   workspaces?: WorkspaceService;
   listConfigProjects: () => Promise<{ home: string; projects: Array<{ cwd: string }> }>;
   directories: DirectoryService;
@@ -389,18 +389,20 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         if (!isObject(body) || typeof body.cwd !== "string" || !body.cwd
           || (body.force !== undefined && typeof body.force !== "boolean")
           || (extra && (typeof body[extra] !== "string" || !body[extra]))
-          || Object.keys(body).some((key) => key !== "cwd" && key !== "force" && key !== extra)) {
+          || Object.keys(body).some((key) => key !== "cwd" && key !== "force" && key !== extra
+            && !(action === "delete" && key === "expectedCwds"))) {
           throw new BodyError("Invalid workspace operation");
         }
         if (action === "validate") return jsonResponse(await services.workspaces.validate(body.cwd));
         const cwd = body.cwd;
         const workspaces = services.workspaces;
+        if (action === "delete") return jsonResponse(await workspaces.delete(cwd, body.force === true,
+          (cwds, run) => files.withWorkspaceMutation(cwds, run), deletionExpectedCwds(body.expectedCwds)));
         const scopes = action === "rename" ? [cwd, join(dirname(cwd), body.name as string)]
           : action === "relocate" ? [cwd, body.directory as string] : [cwd];
         return jsonResponse(await files.withWorkspaceMutation(scopes, () => {
           if (action === "rename") return workspaces.rename(cwd, body.name as string, body.force === true);
-          if (action === "relocate") return workspaces.relocate(cwd, body.directory as string, body.force === true);
-          return workspaces.delete(cwd, body.force === true);
+          return workspaces.relocate(cwd, body.directory as string, body.force === true);
         }));
       }
 
@@ -411,11 +413,12 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       const deleteMatch = path.match(/^\/api\/sessions\/([^/]+)$/);
       if (req.method === "DELETE" && deleteMatch) {
         const body = await jsonBody<unknown>(req);
-        if (!isObject(body) || Object.keys(body).some((key) => key !== "force")
+        if (!isObject(body) || Object.keys(body).some((key) => key !== "force" && key !== "expectedCwds")
           || ("force" in body && typeof body.force !== "boolean")) {
           throw new BodyError("Session deletion requires an object with optional boolean force");
         }
-        await services.deleteSession(deleteMatch[1]!, body.force === true);
+        await services.deleteSession(deleteMatch[1]!, body.force === true,
+          (cwds, run) => files.withWorkspaceMutation(cwds, run), deletionExpectedCwds(body.expectedCwds));
         return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
       }
 
@@ -732,7 +735,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
     } catch (error) {
       if (error instanceof FileOperationError) return errorResponse(error.status, error.message, { code: error.code });
       if (error instanceof WorkspaceError) return errorResponse(error.status, error.message, { code: error.code, cwd: error.cwd });
-      if (error instanceof WorkspaceBusyError) return errorResponse(409, error.message, { code: error.code });
+      if (error instanceof WorkspaceBusyError) return errorResponse(409, error.message, { code: error.code, affectedCwds: error.affectedCwds });
       if (error instanceof ConfigPathError) return errorResponse(403, error.message);
       if (error instanceof ConfigServiceError) {
         return errorResponse(error.status, error.message, error.code ? { code: error.code } : undefined);
@@ -741,8 +744,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof ExtensionGuardError) return errorResponse(400, error.message);
       if (error instanceof UnknownSessionError) return errorResponse(404, error.message);
       if (error instanceof TranscriptCursorError) return errorResponse(409, error.message, { code: "HISTORY_CHANGED" });
-      if (error instanceof SessionBusyError) return errorResponse(409, error.message, { code: error.code });
-      if (error instanceof SessionLifecycleConflictError || error instanceof SessionHistoryConflictError
+      if (error instanceof SessionBusyError) return errorResponse(409, error.message, { code: error.code, affectedCwds: error.affectedCwds });
+      if (error instanceof SessionHistoryConflictError) return errorResponse(409,
+        error.message || "Session history identities cannot be verified. Check the recorded session paths before retrying.", { code: error.code });
+      if (error instanceof SessionLifecycleConflictError
         || error instanceof SessionRegistryShuttingDownError) {
         return errorResponse(409, "Session history or lifecycle changed. Refresh and try again.");
       }
@@ -1199,6 +1204,15 @@ function isSubagentSupervisorEvent(event: unknown): boolean {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function deletionExpectedCwds(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((cwd) => typeof cwd === "string"
+    && !cwd.includes("\0") && isAbsolute(cwd) && resolve(cwd) === cwd)) {
+    throw new BodyError("expectedCwds must be an array of exact absolute workspace paths");
+  }
+  return value;
 }
 
 function runtimeRestartBody(value: unknown): RuntimeRestartRequestDto {

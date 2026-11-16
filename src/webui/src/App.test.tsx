@@ -1203,7 +1203,7 @@ describe("App routing", () => {
     expect(confirmation).toHaveTextContent("project files are kept");
     await user.click(within(confirmation).getByRole("button", { name: "Delete workspace" }));
     await waitFor(() => expect(window.location.hash).toBe("#/"));
-    expect(api.deleteWorkspace).toHaveBeenCalledWith("/p", false);
+    expect(vi.mocked(api.deleteWorkspace).mock.lastCall?.slice(0, 2)).toEqual(["/p", false]);
   });
 
   it("renders Home on an empty hash", async () => {
@@ -1355,7 +1355,7 @@ describe("App routing", () => {
     vi.mocked(api.listStatus).mockResolvedValue({ ...persisted, sessions: [] });
     await user.click(within(dialog).getByRole("button", { name: "Retry deletion" }));
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
-    expect(api.deleteSession).toHaveBeenNthCalledWith(2, "s1", false);
+    expect(vi.mocked(api.deleteSession).mock.calls[1]?.slice(0, 2)).toEqual(["s1", false]);
     expect(screen.queryByText("write a paper")).toBeNull();
   });
 

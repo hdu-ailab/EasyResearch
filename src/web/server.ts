@@ -422,7 +422,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       patchNetworkProxySettings: (patch) => networkProxySettings.patch(patch),
       testNetworkProxy: (request, signal) => networkProxyProbe.test(request, signal),
       renameSession: (sessionId, name) => renameSessions.rename(sessionId, name),
-      deleteSession: (sessionId, force) => historyLifecycle.deleteSession(sessionId, force),
+      deleteSession: historyLifecycle.deleteSession,
       workspaces,
       listConfigProjects,
       directories,

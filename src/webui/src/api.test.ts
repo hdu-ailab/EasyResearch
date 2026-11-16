@@ -164,6 +164,74 @@ describe("api transport", () => {
       expect(apiModule.parseSessionBusyError(other)).toBeNull();
   });
 
+  it.each(["session", "workspace"])(
+    "sends only explicitly acknowledged scopes for forced %s deletion",
+    async (target) => {
+      const scopes = ["/paper", "/migrated/paper"];
+      const cases: Array<[boolean, string[] | undefined]> = [
+        [true, scopes],
+        [true, []],
+        [true, undefined],
+        [false, scopes],
+      ];
+      for (const [force, expectedCwds] of cases) {
+        fetchMock.mockResolvedValueOnce(
+          target === "session"
+            ? new Response(null, { status: 204 })
+            : new Response(JSON.stringify({ cwd: "/paper", sessionIds: [] }), { status: 200 }),
+        );
+        if (target === "session") await apiModule.deleteSession("root", force, expectedCwds);
+        else await apiModule.deleteWorkspace("/paper", force, expectedCwds);
+        const request = fetchMock.mock.lastCall?.[1] as RequestInit;
+        expect(request.method).toBe("DELETE");
+        expect(JSON.parse(request.body as string)).toEqual({
+          ...(target === "workspace" ? { cwd: "/paper" } : {}),
+          force,
+          ...(force && expectedCwds !== undefined ? { expectedCwds } : {}),
+        });
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    },
+  );
+
+  it.each(["SESSION_BUSY", "WORKSPACE_BUSY"] as const)(
+    "validates %s affected scopes before force confirmation",
+    (code) => {
+      const parse = code === "SESSION_BUSY" ? apiModule.parseSessionBusyError : apiModule.parseWorkspaceBusyError;
+      const details = { code, error: "Active migrated work", affectedCwds: ["/old/paper", "/new/paper", "/new/paper"] };
+      expect(parse(new ApiError(409, details))).toEqual({ ...details, affectedCwds: ["/old/paper", "/new/paper"] });
+      expect(parse(new ApiError(409, { code, error: "busy" }))).toEqual({ code, error: "busy" });
+      expect(parse(new ApiError(409, { code, error: "busy", affectedCwds: [] }))?.affectedCwds).toEqual([]);
+      for (const affectedCwds of [null, {}, "/new/paper", ["/new/paper", {}], [false], [""], ["  "]]) {
+        const error = new ApiError(409, { code, error: "Scope response is invalid", affectedCwds });
+        expect(parse(error)).toBeNull();
+        expect(apiModule.isWorkspaceBusy(error)).toBe(false);
+        expect(error.message).toBe("Scope response is invalid");
+      }
+      expect(parse(new ApiError(500, details))).toBeNull();
+      expect(parse(new ApiError(409, [details]))).toBeNull();
+    },
+  );
+
+  it.each(["session", "workspace"])(
+    "keeps persistent %s history conflicts distinct and never retries",
+    async (target) => {
+      const details = { code: "SESSION_HISTORY_CONFLICT", error: "Recorded child identity conflicts" };
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(details), { status: 409 }));
+      const error = await (target === "session"
+        ? apiModule.deleteSession("s1")
+        : apiModule.deleteWorkspace("/paper", false)
+      ).catch((failure: unknown) => failure);
+      expect(apiModule.parseSessionHistoryConflict(error)).toEqual(details);
+      expect(apiModule.parseSessionBusyError(error)).toBeNull();
+      expect(apiModule.parseWorkspaceBusyError(error)).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(apiModule.parseSessionHistoryConflict(new ApiError(500, details))).toBeNull();
+      expect(apiModule.parseSessionHistoryConflict(new ApiError(409, { ...details, error: {} }))).toBeNull();
+      expect(apiModule.parseSessionHistoryConflict(new Error(details.error))).toBeNull();
+    },
+  );
+
   it("listStatus bypasses caches and forwards the expected-restart abort signal", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

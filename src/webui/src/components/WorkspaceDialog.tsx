@@ -1,6 +1,13 @@
 import { useId, useRef, useState } from "react";
 import type { WorkspaceMutationResultDto } from "../../../web/contracts";
-import { deleteWorkspace, isWorkspaceBusy, relocateWorkspace, renameWorkspace, workspaceMissingCwd } from "../api";
+import {
+  deleteWorkspace,
+  parseSessionHistoryConflict,
+  parseWorkspaceBusyError,
+  relocateWorkspace,
+  renameWorkspace,
+  workspaceMissingCwd,
+} from "../api";
 import { useModalLayer } from "../hooks/useModalLayer";
 import { useI18n } from "../i18n/useI18n";
 import { directoryName } from "../pages/home-view-model";
@@ -15,6 +22,10 @@ export interface WorkspaceDialogProps {
 }
 
 export function WorkspaceDialog(props: WorkspaceDialogProps) {
+  return <WorkspaceDialogContent key={`${props.cwd}:${props.mode}`} {...props} />;
+}
+
+function WorkspaceDialogContent(props: WorkspaceDialogProps) {
   const { t } = useI18n();
   const [mode, setMode] = useState<WorkspaceDialogProps["mode"] | "relocate">(props.mode);
   const [name, setName] = useState(directoryName(props.cwd));
@@ -22,6 +33,8 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
   const [choosing, setChoosing] = useState(false);
   const [pending, setPending] = useState(false);
   const [force, setForce] = useState(false);
+  const [affectedCwds, setAffectedCwds] = useState<string[] | undefined>();
+  const additionalCwds = (affectedCwds ?? []).filter((cwd) => cwd !== props.cwd);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
@@ -33,6 +46,11 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
   const title = t(
     mode === "rename" ? "workspace.rename" : mode === "delete" ? "workspace.delete" : "workspace.missing",
   );
+  const resetConfirmation = () => {
+    setForce(false);
+    setAffectedCwds(undefined);
+    setError(null);
+  };
   const submit = async (destination?: string) => {
     if (inFlight.current || (mode === "missing" && !destination)) return;
     inFlight.current = true;
@@ -41,16 +59,27 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
     try {
       const result =
         mode === "delete"
-          ? await deleteWorkspace(props.cwd, force)
+          ? await deleteWorkspace(props.cwd, force, force ? affectedCwds : undefined)
           : mode === "rename"
             ? await renameWorkspace(props.cwd, name, force)
             : await relocateWorkspace(props.cwd, destination ?? directory, force);
       await props.onComplete(result, mode === "delete");
       props.onClose();
     } catch (failure) {
-      if (isWorkspaceBusy(failure)) setForce(true);
-      else if (workspaceMissingCwd(failure)) setMode("missing");
-      else setError(failure instanceof Error ? failure.message : String(failure));
+      const busy = parseWorkspaceBusyError(failure);
+      if (busy) {
+        setForce(true);
+        setAffectedCwds(busy.affectedCwds);
+      } else if (parseSessionHistoryConflict(failure)) {
+        resetConfirmation();
+        setError(t("history.conflict"));
+      } else if (workspaceMissingCwd(failure)) {
+        resetConfirmation();
+        setMode("missing");
+      } else {
+        resetConfirmation();
+        setError(failure instanceof Error ? failure.message : String(failure));
+      }
     } finally {
       inFlight.current = false;
       setPending(false);
@@ -78,6 +107,11 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.nativeEvent.isComposing || event.keyCode === 229 || event.repeat)) {
+            event.preventDefault();
+          }
         }}
       >
         <h2 className="text-[14px] font-semibold text-v2-text-text-base">{title}</h2>
@@ -108,6 +142,16 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
             {t("workspace.busy")}
           </p>
         )}
+        {additionalCwds.length > 0 && (
+          <div role="status" className="mt-3 text-[13px] text-v2-text-text-muted">
+            <p>{t("history.additionalStopScopes")}</p>
+            <ul className="mt-1 space-y-1 break-all font-mono text-[12px]">
+              {additionalCwds.map((cwd) => (
+                <li key={cwd}>{cwd}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         {error && (
           <p role="alert" className="mt-3 break-words text-[13px] text-v2-status-error">
             {error}
@@ -125,8 +169,7 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
                 disabled={pending}
                 onClick={() => {
                   setMode("delete");
-                  setForce(false);
-                  setError(null);
+                  resetConfirmation();
                 }}
               >
                 {t("workspace.delete")}
@@ -136,7 +179,7 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
                 className="er-outlined-button"
                 disabled={pending}
                 onClick={() => {
-                  setForce(false);
+                  resetConfirmation();
                   setChoosing(true);
                 }}
               >
@@ -147,6 +190,9 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
           {mode !== "missing" && (
             <button
               type="submit"
+              onClick={(event) => {
+                if (event.detail > 1) event.preventDefault();
+              }}
               disabled={pending || (mode === "rename" && !name.trim())}
               className={`er-outlined-button ${mode === "delete" ? "er-danger-action" : "font-medium"}`}
             >

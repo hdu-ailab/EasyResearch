@@ -1,8 +1,8 @@
 import { isAbsolute, dirname, join, basename, resolve } from "node:path";
 import { existsSync, lstatSync } from "node:fs";
-import { matchesWorkspaceScope, type ActiveSessionRegistry } from "./active-sessions";
+import { matchesWorkspaceScope, WorkspaceBusyError, type ActiveSessionRegistry } from "./active-sessions";
 import { DirectoryService, DirectoryServiceError } from "./directories";
-import { deleteSessionHistories } from "./session-deletion";
+import { prepareSessionDeletion, revalidateDeletionPlan, type DeletionFileGuard } from "./session-deletion";
 import type { SubagentSessionStore } from "./subagent-sessions";
 import { rebaseWorkspacePath, relocateWorkspaceHistories, workspaceHistoryInventory } from "./workspace-history";
 import type { WorkspaceMutationResultDto } from "./contracts";
@@ -38,21 +38,32 @@ export class WorkspaceService {
     return { cwd };
   }
 
-  async delete(cwd: string, force = false): Promise<WorkspaceMutationResultDto> {
+  async delete(
+    cwd: string, force = false, files: DeletionFileGuard = (_cwds, run) => run(), expectedCwds?: readonly string[],
+  ): Promise<WorkspaceMutationResultDto> {
     await this.known(cwd);
     const { registry, store, sessionsDir } = this.input;
-    return registry.withWorkspaceMutation([{ cwd }], force, async (stopped) => {
-      const histories = (await workspaceHistoryInventory(store, sessionsDir)).filter((entry) => entry.cwd === cwd);
+    const prepare = async () => prepareSessionDeletion(
+      (await workspaceHistoryInventory(store, sessionsDir)).filter((entry) => entry.cwd === cwd), {
+        sessionsDir, store, preserveSharedChildren: true,
+        onRemoved: (sessionId) => registry.publishSessionEvent(sessionId, { type: "session_deleted", sessionId }),
+      });
+    const before = await prepare();
+    const cwds = [...new Set([cwd, ...before.cwds])];
+    if (force && cwds.some((scope) => !(expectedCwds ?? [cwd]).includes(scope))) {
+      throw new WorkspaceBusyError(cwds);
+    }
+    return files(cwds, () => registry.withWorkspaceMutation(cwds.map((cwd) => ({ cwd })), force, async (stopped) => {
       try {
-        const removed = await deleteSessionHistories(histories, {
-          sessionsDir, store, preserveSharedChildren: true,
-          onRemoved: (sessionId) => registry.publishSessionEvent(sessionId, { type: "session_deleted", sessionId }),
-        });
-        const ids = [...new Set([...removed, ...stopped.filter((session) => !session.sessionFile || !existsSync(session.sessionFile)).map((session) => session.id)])];
+        const after = await prepare();
+        revalidateDeletionPlan(before, after);
+        const removed = after.execute();
+        const ids = [...new Set([...removed, ...stopped.filter((session) => session.cwd === cwd
+          && (!session.sessionFile || !existsSync(session.sessionFile))).map((session) => session.id)])];
         for (const sessionId of ids) if (!removed.includes(sessionId)) registry.publishSessionEvent(sessionId, { type: "session_deleted", sessionId });
         return { cwd, sessionIds: ids };
       } finally { this.input.invalidateUsage(); }
-    });
+    }));
   }
 
   async rename(cwd: string, name: string, force = false): Promise<WorkspaceMutationResultDto> {
