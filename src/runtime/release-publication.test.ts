@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -17,6 +17,22 @@ vi.mock("node:child_process", () => {
 
 const version = "1.2.3";
 const packageNames = ["easyresearch", ...TARGETS.map((target) => `easyresearch-${target.name}`)];
+const publishOrder = [...packageNames.slice(1), "easyresearch"];
+const githubEnv = {
+  GITHUB_ACTIONS: "true",
+  RUNNER_ENVIRONMENT: "github-hosted",
+  GITHUB_REPOSITORY: "hdu-ailab/EasyResearch",
+  GITHUB_REF: `refs/tags/v${version}`,
+  GITHUB_WORKFLOW_REF: `hdu-ailab/EasyResearch/.github/workflows/release.yml@refs/tags/v${version}`,
+  ACTIONS_ID_TOKEN_REQUEST_URL: "https://fixture.actions.githubusercontent.com/idtoken?request=private-request-url&audience=old",
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN: "private-request-token",
+};
+const tokenEnvKeys = ["NPM_TOKEN", "NODE_AUTH_TOKEN", "NPM_ID_TOKEN"];
+const identityToken = "private-github-identity-token";
+const exchangeToken = "private-npm-exchange-token";
+const privateBody = "private-response-body";
+const privateError = "private-transport-error";
+const fetchMock = vi.fn<typeof fetch>();
 let root: string;
 let published: Set<string>;
 let operations: string[];
@@ -30,10 +46,21 @@ let visibilityQueries: Array<{ args: string[]; timeout?: number; killSignal?: st
 let postUploadFailure: string | undefined;
 let postUploadResult: ReturnType<typeof spawnSync> | undefined;
 let lookupCostMs: number;
+let loginResult: { status: number | null; stdout: string; stderr: string; error?: Error; signal?: string | null };
+let loginThrows: boolean;
+let npmCalls: Array<{ args: string[]; options?: { cwd?: string; timeout?: number; killSignal?: string; env?: NodeJS.ProcessEnv } }>;
 const argv = process.argv;
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "release-publication-"));
+  const home = join(root, "home");
+  mkdirSync(home);
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("USERPROFILE", home);
+  vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", join(home, ".easyresearch", "agent"));
+  for (const key of ["NPM_CONFIG_USERCONFIG", "npm_config_userconfig"]) vi.stubEnv(key, join(home, "user.npmrc"));
+  for (const key of ["NPM_CONFIG_GLOBALCONFIG", "npm_config_globalconfig"]) vi.stubEnv(key, join(home, "global.npmrc"));
+  for (const key of [...Object.keys(githubEnv), ...tokenEnvKeys]) vi.stubEnv(key, undefined);
   published = new Set();
   operations = [];
   buildCount = 0;
@@ -46,7 +73,11 @@ beforeEach(async () => {
   postUploadFailure = undefined;
   postUploadResult = undefined;
   lookupCostMs = 0;
-  vi.stubGlobal("fetch", () => { throw new Error("Network access is forbidden in release tests"); });
+  loginResult = { status: 0, stdout: "fixture-user", stderr: "" };
+  loginThrows = false;
+  npmCalls = [];
+  fetchMock.mockReset().mockRejectedValue(new Error("Network access is forbidden in release tests"));
+  vi.stubGlobal("fetch", fetchMock);
   const bytes = Buffer.from("accepted fixture binary");
   writeFileSync(join(root, "manifest.json"), JSON.stringify({
     version,
@@ -83,8 +114,9 @@ beforeEach(async () => {
         expect(args).toEqual(["--version"]);
         return { status: 0, stdout: `easyresearch ${version}\n`, stderr: "" };
       }
-      expect(args).toContain("--registry=https://registry.npmjs.org/");
-      operations.push(args[0]!);
+       expect(args).toContain("--registry=https://registry.npmjs.org/");
+       npmCalls.push({ args: [...args], options });
+       operations.push(args[0]!);
       if (args[0] === "view") {
         if (uploads.length === TARGETS.length) {
           visibilityQueries.push({ args: [...args], timeout: options?.timeout, killSignal: options?.killSignal });
@@ -104,7 +136,10 @@ beforeEach(async () => {
         const exists = published.has(name) && Date.now() >= (visibleAfter.get(name) ?? 0);
         return { status: exists ? 0 : 1, stdout: exists ? version : "", stderr: exists ? "" : "npm error code E404" };
       }
-      if (args[0] === "whoami") return { status: 0, stdout: "fixture-user", stderr: "" };
+       if (args[0] === "whoami") {
+         if (loginThrows) throw new Error(privateError);
+         return loginResult;
+       }
       if (args[0] === "pack") return {
         status: 0, stdout: JSON.stringify([{ files: ["package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.txt"].map((path) => ({ path })) }]), stderr: "",
       };
@@ -125,6 +160,7 @@ afterEach(() => {
   process.argv = argv;
   vi.mocked(spawnSync).mockReset();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.doUnmock("../../scripts/build");
   vi.doUnmock("../../scripts/third-party-notices");
   vi.resetModules();
@@ -311,5 +347,329 @@ describe("immutable publication admission", () => {
     await expect(main()).rejects.toThrow(/immutable.*advance.*version/i);
     expect(operations).not.toContain("publish");
     expect([...published]).toEqual(["easyresearch-linux-x64"]);
+  });
+});
+
+describe("release authentication admission", () => {
+  let releaseMain: () => Promise<void>;
+  let diagnostics: unknown[][];
+
+  beforeEach(async () => {
+    process.argv = ["bun", "release.ts", "--skip-build"];
+    diagnostics = [];
+    for (const method of ["log", "info", "warn", "error", "debug"] as const) {
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => { diagnostics.push(args); });
+    }
+    releaseMain = (await import("../../scripts/release")).main;
+  });
+
+  function setGitHubContext(): void {
+    for (const [key, value] of Object.entries(githubEnv)) vi.stubEnv(key, value);
+  }
+
+  function exchangeBody(): Record<string, unknown> {
+    return {
+      token_type: "oidc", token: exchangeToken,
+      created: new Date(Date.now()).toISOString(), expires: new Date(Date.now() + 60_000).toISOString(),
+    };
+  }
+
+  function mockOidc(override?: (name: string | undefined, init: RequestInit) => Response | Promise<Response> | undefined): void {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const isIdentity = url.origin === new URL(githubEnv.ACTIONS_ID_TOKEN_REQUEST_URL).origin;
+      const name = isIdentity ? undefined : decodeURIComponent(url.pathname.split("/").at(-1)!);
+      operations.push(isIdentity ? "identity" : `exchange:${name}`);
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(init?.redirect).toBe("error");
+      expect(init?.cache).toBe("no-store");
+      expect(init?.body).toBeUndefined();
+      expect(new Headers(init?.headers).get("accept")).toBe("application/json");
+      expect(new Headers(init?.headers).get("authorization"))
+        .toBe(`Bearer ${isIdentity ? githubEnv.ACTIONS_ID_TOKEN_REQUEST_TOKEN : identityToken}`);
+      if (isIdentity) {
+        expect(init?.method).toBe("GET");
+        expect(url.searchParams.getAll("audience")).toEqual(["npm:registry.npmjs.org"]);
+        expect(url.searchParams.get("request")).toBe("private-request-url");
+      } else {
+        expect(init?.method).toBe("POST");
+        expect(packageNames).toContain(name);
+        expect(url.href).toBe(`https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${name}`);
+      }
+      return override?.(name, init!) ?? Response.json(
+        isIdentity ? { value: identityToken } : exchangeBody(), { status: isIdentity ? 200 : 201 },
+      );
+    });
+  }
+
+  function expectSanitized(error?: Error): void {
+    expect(error?.cause).toBeUndefined();
+    const output = [String(error ?? ""), error?.stack, JSON.stringify(error), JSON.stringify(diagnostics)].join("\n");
+    for (const secret of [
+      "private-request-url", githubEnv.ACTIONS_ID_TOKEN_REQUEST_TOKEN, identityToken, exchangeToken,
+      privateBody, privateError, "private-env-value",
+    ]) expect(output).not.toContain(secret);
+    expect(readdirSync(join(root, "home"), { recursive: true })).toEqual([]);
+  }
+
+  async function expectAuthFailure(message: RegExp, github = true): Promise<void> {
+    const result = await releaseMain().then(() => undefined, (error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toMatch(message);
+    expectSanitized(result as Error);
+    expect(uploads).toEqual([]);
+    expect(operations).not.toContain("publish");
+    if (github) expect(operations).not.toContain("whoami");
+  }
+
+  it("preflights every platform and meta identity before any upload, then lets npm publish with provenance", async () => {
+    setGitHubContext();
+    mockOidc();
+    const envKeys = Object.keys(process.env).sort();
+    await releaseMain();
+
+    expect(fetchMock).toHaveBeenCalledTimes(packageNames.length + 1);
+    expect(operations.filter((operation) => operation.startsWith("exchange:")))
+      .toEqual(publishOrder.map((name) => `exchange:${name}`));
+    for (const name of packageNames) {
+      expect(operations.indexOf(`exchange:${name}`)).toBeLessThan(operations.indexOf("publish"));
+    }
+    expect(operations).not.toContain("whoami");
+    expect(uploads).toEqual(publishOrder);
+    for (const call of npmCalls.filter((call) => call.args[0] === "publish")) {
+      expect(call.args).toContain("--provenance");
+      expect(call.options?.env).toBeUndefined();
+    }
+    expect(JSON.stringify(npmCalls)).not.toContain(identityToken);
+    expect(JSON.stringify(npmCalls)).not.toContain(exchangeToken);
+    expect(Object.keys(process.env).sort()).toEqual(envKeys);
+    for (const [key, value] of Object.entries(githubEnv)) expect(process.env[key]).toBe(value);
+    for (const key of tokenEnvKeys) expect(process.env[key]).toBeUndefined();
+    expectSanitized();
+  });
+
+  it("waits for the meta exchange response body before allowing the first platform upload", async () => {
+    setGitHubContext();
+    let finishMeta: ((body: unknown) => void) | undefined;
+    mockOidc((name) => {
+      if (name !== "easyresearch") return undefined;
+      return {
+        status: 201,
+        json: () => new Promise((resolve) => { finishMeta = resolve; }),
+      } as Response;
+    });
+    const outcome = releaseMain();
+    await vi.waitFor(() => { expect(finishMeta).toBeTypeOf("function"); });
+    expect(uploads).toEqual([]);
+    expect(operations).not.toContain("whoami");
+    finishMeta!(exchangeBody());
+    await outcome;
+    expect(uploads).toEqual(publishOrder);
+    expectSanitized();
+  });
+
+  it.each(Object.keys(githubEnv))("rejects missing %s instead of falling back to login", async (key) => {
+    setGitHubContext();
+    vi.stubEnv(key, undefined);
+    await expectAuthFailure(/GitHub OIDC.*complete.*context/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(Object.keys(githubEnv))("rejects a partial context containing only %s", async (key) => {
+    vi.stubEnv(key, githubEnv[key as keyof typeof githubEnv]);
+    await expectAuthFailure(/GitHub OIDC.*complete.*context/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["GITHUB_ACTIONS", "false"],
+    ["RUNNER_ENVIRONMENT", "self-hosted"],
+    ["GITHUB_REPOSITORY", "private-env-value"],
+    ["GITHUB_REF", "refs/heads/private-env-value"],
+    ["GITHUB_WORKFLOW_REF", "private-env-value"],
+    ["ACTIONS_ID_TOKEN_REQUEST_TOKEN", " \t"],
+    ["ACTIONS_ID_TOKEN_REQUEST_URL", ""],
+  ])("rejects invalid %s context without exposing its value", async (key, value) => {
+    setGitHubContext();
+    vi.stubEnv(key, value);
+    await expectAuthFailure(/GitHub OIDC.*complete.*context/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "private-env-value", "http://fixture.invalid/private-env-value",
+    "https://private-env-value@fixture.invalid/", "https://fixture.invalid/#private-env-value",
+  ])("rejects an invalid identity request URL without disclosing it (%#)", async (url) => {
+    setGitHubContext();
+    vi.stubEnv("ACTIONS_ID_TOKEN_REQUEST_URL", url);
+    await expectAuthFailure(/Invalid GitHub OIDC request URL/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe.each(tokenEnvKeys)("ambient %s", (key) => {
+    it.each(["private-env-value", ""])("blocks GitHub publication when the variable is present (%#)", async (value) => {
+      setGitHubContext();
+      vi.stubEnv(key, value);
+      await expectAuthFailure(/requires.*to be unset/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(publishOrder)("leaves zero uploads when identity exchange fails for %s", async (failedName) => {
+    setGitHubContext();
+    const rejected = Response.json({ token: exchangeToken, message: privateBody }, { status: 401 });
+    const readBody = vi.spyOn(rejected, "json");
+    mockOidc((name) => name === failedName ? rejected : undefined);
+    await expectAuthFailure(new RegExp(`npm OIDC exchange for ${failedName} failed \\(HTTP 401\\)`));
+    expect(readBody).not.toHaveBeenCalled();
+    expect(operations.filter((operation) => operation.startsWith("exchange:")))
+      .toEqual(publishOrder.slice(0, publishOrder.indexOf(failedName) + 1).map((name) => `exchange:${name}`));
+  });
+
+  it.each([200, 202, 302, 403, 404, 429, 500])("rejects meta exchange HTTP %s before uploading platforms", async (status) => {
+    setGitHubContext();
+    mockOidc((name) => name === "easyresearch" ? Response.json({ ...exchangeBody(), message: privateBody }, { status }) : undefined);
+    await expectAuthFailure(new RegExp(`npm OIDC exchange for easyresearch failed \\(HTTP ${status}\\)`));
+  });
+
+  it.each([
+    { label: "missing token type", change: { token_type: undefined } },
+    { label: "wrong token type", change: { token_type: "bearer" } },
+    { label: "missing token", change: { token: undefined } },
+    { label: "blank token", change: { token: " \t" } },
+    { label: "non-string token", change: { token: 123 } },
+    { label: "missing expiry", change: { expires: undefined } },
+    { label: "invalid expiry", change: { expires: privateBody } },
+    { label: "non-string expiry", change: { expires: Number.MAX_SAFE_INTEGER } },
+    { label: "expired token", change: { expires: "2000-01-01T00:00:00.000Z" } },
+  ])("rejects $label in the meta exchange, with no credential diagnostics or uploads", async ({ change }) => {
+    setGitHubContext();
+    mockOidc((name) => name === "easyresearch" ? Response.json({ ...exchangeBody(), ...change }, { status: 201 }) : undefined);
+    await expectAuthFailure(/Invalid npm OIDC exchange response for easyresearch/);
+  });
+
+  it("requires expiry to be strictly later than validation time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-16T08:00:00Z"));
+    setGitHubContext();
+    mockOidc((name) => name === "easyresearch" ? Response.json({ ...exchangeBody(), expires: new Date().toISOString() }, { status: 201 }) : undefined);
+    await expectAuthFailure(/Invalid npm OIDC exchange response for easyresearch/);
+  });
+
+  describe.each(["identity", "exchange"] as const)("%s response failures", (stage) => {
+    function isStage(name: string | undefined): boolean {
+      return stage === "identity" ? name === undefined : name === "easyresearch";
+    }
+
+    it.each(["null", "array", "malformed JSON", "body failure", "transport failure"])("rejects %s without leaking response or cause", async (kind) => {
+      setGitHubContext();
+      mockOidc((name) => {
+        if (!isStage(name)) return undefined;
+        const status = stage === "identity" ? 200 : 201;
+        if (kind === "null") return Response.json(null, { status });
+        if (kind === "array") return Response.json([privateBody], { status });
+        if (kind === "malformed JSON") return new Response(`{"token":"${exchangeToken}",${privateBody}`, { status });
+        const error = new Error(privateError, { cause: { token: exchangeToken, body: privateBody } });
+        if (kind === "transport failure") throw error;
+        return { status, json: async () => { throw error; } } as unknown as Response;
+      });
+      await expectAuthFailure(/OIDC.*failed/);
+    });
+
+    it.each(["headers", "body"])("bounds stalled %s, aborts the request and ignores late completion", async (part) => {
+      vi.useFakeTimers();
+      setGitHubContext();
+      let signal: AbortSignal | null | undefined;
+      let completeLate: (() => void) | undefined;
+      mockOidc((name, init) => {
+        if (!isStage(name)) return undefined;
+        signal = init.signal;
+        const status = stage === "identity" ? 200 : 201;
+        const data = stage === "identity" ? { value: identityToken } : exchangeBody();
+        if (part === "headers") {
+          return new Promise<Response>((resolve) => { completeLate = () => resolve(Response.json(data, { status })); });
+        }
+        return {
+          status,
+          json: () => new Promise((resolve) => { completeLate = () => resolve(data); }),
+        } as Response;
+      });
+      const started = Date.now();
+      const outcome = expectAuthFailure(/OIDC.*timed out/);
+      await vi.runAllTimersAsync();
+      await outcome;
+      expect(Date.now() - started).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeLessThanOrEqual(30_000);
+      expect(signal?.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      completeLate!();
+      await vi.runAllTimersAsync();
+      expect(uploads).toEqual([]);
+      expectSanitized();
+    });
+  });
+
+  it.each([undefined, "", " \n", 123])("rejects an invalid GitHub identity value before exchanges (%#)", async (value) => {
+    setGitHubContext();
+    mockOidc((name) => name === undefined ? Response.json({ value, message: privateBody }) : undefined);
+    await expectAuthFailure(/Invalid GitHub OIDC identity response/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a failed GitHub identity request even if the response contains a token", async () => {
+    setGitHubContext();
+    mockOidc((name) => name === undefined ? Response.json({ value: identityToken, message: privateBody }, { status: 403 }) : undefined);
+    await expectAuthFailure(/GitHub OIDC identity request failed \(HTTP 403\)/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a bounded official-registry whoami for local manual publication", async () => {
+    await releaseMain();
+    expect(fetchMock).not.toHaveBeenCalled();
+    const login = npmCalls.filter((call) => call.args[0] === "whoami");
+    expect(login).toHaveLength(1);
+    expect(login[0]!.args).toContain("--fetch-retries=0");
+    const fetchTimeout = Number(login[0]!.args.find((arg) => arg.startsWith("--fetch-timeout="))?.split("=")[1]);
+    expect(fetchTimeout).toBeGreaterThan(0);
+    expect(fetchTimeout).toBeLessThanOrEqual(login[0]!.options!.timeout!);
+    expect(login[0]!.options!.timeout).toBeLessThanOrEqual(30_000);
+    expect(login[0]!.options!.killSignal).toBe("SIGKILL");
+    expect(operations.indexOf("whoami")).toBeLessThan(operations.indexOf("publish"));
+    expect(uploads).toEqual(publishOrder);
+    for (const call of npmCalls.filter((call) => call.args[0] === "publish")) expect(call.args).not.toContain("--provenance");
+    expectSanitized();
+  });
+
+  it.each([
+    { label: "not logged in", status: 1, stdout: privateBody, stderr: privateError },
+    { label: "empty identity", status: 0, stdout: " \n", stderr: privateError },
+    { label: "spawn failure", status: null, stdout: privateBody, stderr: privateError, error: new Error(privateError) },
+    { label: "timeout with output", status: 0, stdout: privateBody, stderr: privateError, error: new Error(privateError) },
+    { label: "signal termination", status: 0, stdout: privateBody, stderr: privateError, signal: "SIGTERM" },
+  ])("blocks local publication on $label without exposing subprocess diagnostics", async (result) => {
+    loginResult = result;
+    await expectAuthFailure(/npm login check failed.*npm login/, false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(operations).toContain("whoami");
+  });
+
+  it("sanitizes a thrown local login subprocess error", async () => {
+    loginThrows = true;
+    await expectAuthFailure(/npm login check failed/, false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["local", "GitHub", "partial GitHub", "legacy token"])("skips all authentication for a %s dry run", async (context) => {
+    if (context !== "local") setGitHubContext();
+    if (context === "partial GitHub") vi.stubEnv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", undefined);
+    if (context === "legacy token") vi.stubEnv("NPM_TOKEN", "private-env-value");
+    process.argv = ["bun", "release.ts", "--skip-build", "--dry-run"];
+    await releaseMain();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(operations).not.toContain("whoami");
+    expect(operations).not.toContain("publish");
+    expect(uploads).toEqual([]);
+    expect(operations.filter((operation) => operation === "pack")).toHaveLength(packageNames.length);
+    expectSanitized();
   });
 });

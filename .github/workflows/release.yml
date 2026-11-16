@@ -373,10 +373,16 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.22.3"
+          package-manager-cache: false
+
+      - name: Install trusted-publishing npm
+        run: npm install --global npm@12.2.2 --registry=https://registry.npmjs.org/
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -394,10 +400,7 @@ jobs:
       - name: Restore packaged executable permissions
         run: chmod +x release/easyresearch-linux-x64/bin/easyresearch release/easyresearch-linux-arm64/bin/easyresearch release/easyresearch-darwin-arm64/bin/easyresearch
 
-      - name: Configure npm registry
-        run: npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
-
-      - name: Publish verified packages
+      - name: Publish verified packages with OIDC
         run: bun scripts/release.ts --skip-build
 
   verify-installed-npm-package:

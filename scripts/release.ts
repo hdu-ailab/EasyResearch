@@ -25,6 +25,12 @@ import {
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MAIN_PACKAGE = "easyresearch";
 export const NPM_REGISTRY = "https://registry.npmjs.org/";
+const RELEASE_PACKAGES = [...TARGETS.map((target) => `easyresearch-${target.name}`), MAIN_PACKAGE];
+const NPM_AUTH_TIMEOUT_MS = 30_000;
+const GITHUB_OIDC_ENV = [
+  "GITHUB_ACTIONS", "RUNNER_ENVIRONMENT", "GITHUB_REPOSITORY", "GITHUB_REF", "GITHUB_WORKFLOW_REF",
+  "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+] as const;
 
 export interface CliFlags {
   dryRun: boolean;
@@ -51,13 +57,109 @@ export function parseFlags(args = process.argv.slice(2)): CliFlags {
   return flags;
 }
 
-function requireNpmAuth(): void {
-  const result = spawnSync("npm", ["whoami", `--registry=${NPM_REGISTRY}`], { encoding: "utf8" });
-  if (result.status !== 0) {
-    console.error("[release] Not logged in to npm. Run `npm login` first.");
-    process.exit(1);
+async function oidcPreflightJson(
+  url: URL,
+  token: string,
+  method: "GET" | "POST",
+  expectedStatus: number,
+  operation: string,
+): Promise<Record<string, unknown>> {
+  const controller = new AbortController();
+  const deadline = performance.now() + NPM_AUTH_TIMEOUT_MS;
+  let status: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const data: unknown = await Promise.race([
+      (async () => {
+        const response = await fetch(url, {
+          method,
+          headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+          redirect: "error",
+          cache: "no-store",
+        });
+        status = response.status;
+        if (status !== expectedStatus) throw new Error();
+        return response.json();
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error());
+        }, NPM_AUTH_TIMEOUT_MS);
+      }),
+    ]);
+    if (controller.signal.aborted || performance.now() >= deadline
+      || data === null || typeof data !== "object" || Array.isArray(data)) throw new Error();
+    return data as Record<string, unknown>;
+  } catch {
+    // Neither transport errors nor response bodies are safe diagnostics: both can contain credentials.
+    const reason = controller.signal.aborted || performance.now() >= deadline ? " timed out" : " failed";
+    throw new Error(`[release] ${operation}${reason}${status === undefined ? "" : ` (HTTP ${status})`}.`);
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
   }
-  console.log(`[release] Publishing as ${(result.stdout ?? "").trim()}`);
+}
+
+async function requireNpmAuth(): Promise<void> {
+  // Partial workflow context must not turn a failed CI preflight into a local-login fallback.
+  if (GITHUB_OIDC_ENV.some((key) => process.env[key] !== undefined)) {
+    const env = process.env;
+    if (GITHUB_OIDC_ENV.some((key) => !env[key]?.trim())
+      || env.GITHUB_ACTIONS !== "true" || env.RUNNER_ENVIRONMENT !== "github-hosted"
+      || env.GITHUB_REPOSITORY !== "hdu-ailab/EasyResearch"
+      || !env.GITHUB_REF?.startsWith("refs/tags/v")
+      || env.GITHUB_WORKFLOW_REF !== `${env.GITHUB_REPOSITORY}/.github/workflows/release.yml@${env.GITHUB_REF}`) {
+      throw new Error("[release] GitHub OIDC requires the complete hosted release.yml context and id-token: write permission.");
+    }
+    // NPM_ID_TOKEN also overrides npm's GitHub request flow; the publish CLI must use the same identity source.
+    if (["NPM_TOKEN", "NODE_AUTH_TOKEN", "NPM_ID_TOKEN"].some((key) => env[key] !== undefined)) {
+      throw new Error("[release] GitHub OIDC requires NPM_TOKEN, NODE_AUTH_TOKEN and NPM_ID_TOKEN to be unset.");
+    }
+    let identityUrl: URL;
+    try {
+      identityUrl = new URL(env.ACTIONS_ID_TOKEN_REQUEST_URL!);
+      if (identityUrl.protocol !== "https:" || identityUrl.username || identityUrl.password || identityUrl.hash) {
+        throw new Error();
+      }
+      identityUrl.searchParams.set("audience", "npm:registry.npmjs.org");
+    } catch {
+      throw new Error("[release] Invalid GitHub OIDC request URL.");
+    }
+    // npm 12.2.2 lib/utils/oidc.js (fd31aa66f0b715bbae1fc072d24fc7e8f23657ad),
+    // with response fields/status from https://api-docs.npmjs.com/.
+    const identity = await oidcPreflightJson(
+      identityUrl, env.ACTIONS_ID_TOKEN_REQUEST_TOKEN!, "GET", 200, "GitHub OIDC identity request",
+    );
+    if (typeof identity.value !== "string" || !identity.value.trim()) {
+      throw new Error("[release] Invalid GitHub OIDC identity response.");
+    }
+    for (const name of RELEASE_PACKAGES) {
+      const exchanged = await oidcPreflightJson(
+        new URL(`-/npm/v1/oidc/token/exchange/package/${encodeURIComponent(name)}`, NPM_REGISTRY),
+        identity.value, "POST", 201, `npm OIDC exchange for ${name}`,
+      );
+      const expires = typeof exchanged.expires === "string" ? Date.parse(exchanged.expires) : NaN;
+      if (exchanged.token_type !== "oidc" || typeof exchanged.token !== "string" || !exchanged.token.trim()
+        || !Number.isFinite(expires) || expires <= Date.now()) {
+        throw new Error(`[release] Invalid npm OIDC exchange response for ${name}.`);
+      }
+      // Discard package credentials: npm publish obtains its own fresh credentials and provenance.
+      // Exchange proves package-specific identity coverage, not the independent createPackage permission.
+    }
+    console.log("[release] GitHub OIDC identity preflight passed for every release package.");
+    return;
+  }
+  try {
+    const result = spawnSync("npm", [
+      "whoami", `--registry=${NPM_REGISTRY}`, "--fetch-retries=0", "--fetch-timeout=20000",
+    ], { encoding: "utf8", timeout: NPM_AUTH_TIMEOUT_MS, killSignal: "SIGKILL" });
+    if (result.error || result.signal != null || result.status !== 0 || !result.stdout?.trim()) throw new Error();
+  } catch {
+    throw new Error("[release] npm login check failed. Run `npm login --registry=https://registry.npmjs.org/` first.");
+  }
+  console.log("[release] npm login verified.");
 }
 
 async function publishPackage(dir: string, name: string, version: string, dryRun: boolean): Promise<void> {
@@ -358,8 +460,7 @@ export async function main(): Promise<void> {
   const version = repoPackageVersion();
   const targets = TARGETS.filter((t) => flags.only === undefined || t.name === flags.only);
   // Check the complete release, even with --only or --dry-run, before building.
-  const published = [MAIN_PACKAGE, ...TARGETS.map((target) => `easyresearch-${target.name}`)]
-    .filter((name) => isAlreadyPublished(name, version));
+  const published = RELEASE_PACKAGES.filter((name) => isAlreadyPublished(name, version));
   if (published.length > 0) throw immutablePublicationError(published, version);
 
   if (!flags.skipBuild) {
@@ -368,7 +469,7 @@ export async function main(): Promise<void> {
   }
   validateBuildArtifacts(targets, version);
 
-  if (!flags.dryRun) requireNpmAuth();
+  if (!flags.dryRun) await requireNpmAuth();
 
   for (const t of targets) {
     assemblePlatformPackage(t.name, version);
