@@ -3159,6 +3159,7 @@ describe("session reducer", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     const state = reduceSessionEvent(emptyState, retryStartEvent());
     expect(state.retry).toEqual({
+      source: "agent",
       attempt: 2,
       maxAttempts: 3,
       errorMessage: "rate limit exceeded",
@@ -3174,9 +3175,12 @@ describe("session reducer", () => {
     expect(second.retry?.endsAt).toBeGreaterThan(first.retry?.endsAt ?? 0);
   });
 
-  it("normalizes malformed auto_retry_start payloads", () => {
-    const state = reduceSessionEvent(emptyState, { type: "auto_retry_start" } as AgentSessionEvent);
-    expect(state.retry).toEqual({ attempt: 1, maxAttempts: 1, errorMessage: "", endsAt: expect.any(Number) });
+  it("rejects malformed auto_retry_start payloads without inventing retry state", () => {
+    expect(reduceSessionEvent(emptyState, { type: "auto_retry_start" } as AgentSessionEvent)).toBe(emptyState);
+    const current = reduceSessionEvent(emptyState, retryStartEvent());
+    for (const invalid of [{ attempt: -1 }, { maxAttempts: 0 }, { delayMs: Number.NaN }, { delayMs: -1 }]) {
+      expect(reduceSessionEvent(current, retryStartEvent(invalid))).toBe(current);
+    }
   });
 
   it("clears retry state on auto_retry_end", () => {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
@@ -27,6 +27,9 @@ import {
   type ManagedAgentSession,
   type PiRuntimeDependencies,
 } from "./session-adapter";
+import { LLM_RETRY_CONTROL_TYPE } from "../runtime/llm-recovery";
+
+vi.mock("../runtime/logger", () => ({ createLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }) }));
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -58,6 +61,8 @@ async function harness(options: {
   filesystemExtensions?: boolean;
   failAfterAttach?: boolean;
   schedule?: (run: () => void) => void;
+  dispatch?: boolean;
+  retry?: { enabled: boolean; maxRetries?: number; baseDelayMs?: number };
 } = {}) {
   const pi = await importPi();
   const ai = await import("@earendil-works/pi-ai");
@@ -67,12 +72,12 @@ async function harness(options: {
     tokenSize: { min: 10_000, max: 10_000 },
   });
   provider.setResponses([ai.fauxAssistantMessage("complete")]);
-  const rows = ["research-assistant", "search"].map((name): AgentConfig => ({
+  const rows = ["research-assistant", "search", ...(options.dispatch ? ["reviewer"] : [])].map((name): AgentConfig => ({
     name, description: name, enabled: true, builtin: true, source: "bundled",
     filePath: join(root, `${name}.md`), systemPrompt: `${name} test role`,
-    tools: ["hold"], effectiveTools: ["hold"],
+    tools: options.dispatch ? ["hold", "subagent"] : ["hold"], effectiveTools: options.dispatch ? ["hold", "subagent"] : ["hold"],
     skills: [], effectiveSkills: [], effectiveSkillPaths: [], missingSkills: [],
-    subagents: name === "research-assistant" ? ["search"] : [],
+    subagents: name === "research-assistant" ? ["search"] : options.dispatch && name === "search" ? ["reviewer"] : [],
     model: "lifecycle-faux/test", thinking: "off",
   }));
   const configListeners = new Set<(event: ConfigurationEvent) => void>();
@@ -107,7 +112,7 @@ async function harness(options: {
     createSessionManager: (cwd: string) => pi.SessionManager.create(cwd, join(root, "sessions")),
     openSessionManager: (path: string) => pi.SessionManager.open(path, join(root, "sessions")),
     createSettingsManager: () => pi.SettingsManager.inMemory({
-      compaction: { enabled: options.compact ?? false, keepRecentTokens: options.keepRecentTokens ?? 100 }, retry: { enabled: false },
+      compaction: { enabled: options.compact ?? false, keepRecentTokens: options.keepRecentTokens ?? 100 }, retry: options.retry ?? { enabled: false },
     }),
     createModelRuntime: async () => {
       const runtime = await pi.ModelRuntime.create({
@@ -130,6 +135,7 @@ async function harness(options: {
     resolveAutomaticModel: async () => provider.getModel(),
   };
   const extra = (options.extensions ?? []).map((factory, index) => ({ name: `fixture-${index}`, factory }));
+  const { createSubagentExtension } = await import("../extensions/subagent");
   const launchStage = createStageSessionLauncher({
     ...common,
     createDirectChildSupervisor: (coordinator, launch) => {
@@ -137,9 +143,11 @@ async function harness(options: {
       supervisors.push(supervisor);
       return supervisor;
     },
-    createExtensionFactories: ({ binding }) => {
+    createExtensionFactories: ({ binding, coordinator, supervisor }) => {
       trackBinding(binding);
-      return [{ name: "agent-definition", factory: createAgentDefinitionExtension(binding) }, ...extra];
+      return [{ name: "agent-definition", factory: createAgentDefinitionExtension(binding) },
+        ...(options.dispatch ? [{ name: "subagent", factory: createSubagentExtension({ binding, coordinator, supervisor, liveConfiguration: live }) }] : []),
+        ...extra];
     },
   } as StageSessionDependencies);
   let managed!: ManagedAgentSession;
@@ -152,10 +160,11 @@ async function harness(options: {
       supervisors.push(supervisor);
       return supervisor;
     },
-    createExtensionFactories: ({ binding, compaction, stats }) => {
+    createExtensionFactories: ({ binding, compaction, stats, coordinator, supervisor }) => {
       trackBinding(binding);
       return [
         { name: "agent-definition", factory: createAgentDefinitionExtension(binding) },
+        ...(options.dispatch ? [{ name: "subagent", factory: createSubagentExtension({ binding, coordinator, supervisor, liveConfiguration: live }) }] : []),
         { name: "session-stats", factory: createSessionStatsExtension(stats) },
         { name: "manual-compaction", factory: createManualCompactionExtension(compaction) }, ...extra,
       ];
@@ -191,6 +200,372 @@ async function harness(options: {
 }
 
 describe("Pinned Pi lifecycle ownership", () => {
+  it("retains a parked root's idle lease until Stop releases the checkpoint", async () => {
+    const h = await harness();
+    h.provider.setResponses([h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" })]);
+    const registry = new ActiveSessionRegistry(h.factory, undefined, { idleTimeoutMs: 0 });
+    try {
+      const rootSession = await registry.create({ cwd: join(root, "project") });
+      await registry.prompt(rootSession.id, "request");
+      await vi.waitFor(() => expect(registry.retryState(rootSession.id, rootSession.id).llmRecovery?.status).toBe("available"));
+      expect(registry.has(rootSession.id)).toBe(true);
+      expect(await registry.snapshot(rootSession.id)).toMatchObject({ llmRecovery: { status: "available" } });
+      await registry.abort(rootSession.id);
+      await vi.waitFor(() => expect(registry.has(rootSession.id)).toBe(false));
+    } finally { await registry.shutdown(); }
+  });
+
+  it("does not turn a failed tool or explicit summarization failure into request recovery", async () => {
+    const h = await harness({ extensions: [(api) => api.registerTool({ name: "hold", label: "Write", description: "Denied write",
+      parameters: Type.Object({}), execute: async () => { throw new Error("EACCES permission denied"); } })] });
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    try {
+      await adapter.start();
+      const session = h.sessions[0]!;
+      await adapter.compact();
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(adapter.getRetryState!(session.sessionId)?.llmRecovery).toBeNull();
+      h.provider.setResponses([
+        h.ai.fauxAssistantMessage(h.ai.fauxToolCall("hold", {}), { stopReason: "toolUse" }),
+        h.ai.fauxAssistantMessage("write permission is missing"),
+      ]);
+      await adapter.prompt("write");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(session.sessionManager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.isError)).toBe(true);
+      expect(adapter.getRetryState!(session.sessionId)?.llmRecovery).toBeNull();
+    } finally { await adapter.stop(); }
+  });
+
+  it.each(["root", "stage"] as const)("cancels %s manual recovery during native backoff", async (scope) => {
+    let manual = false;
+    const h = await harness({ dispatch: scope === "stage", retry: { enabled: true, maxRetries: 1, baseDelayMs: 60_000 } });
+    const responder: FauxResponseFactory = (context) => {
+      const target = scope === "root" || context.systemPrompt?.includes("search test role");
+      if (target) return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: manual ? "503 overloaded" : "400 invalid request" });
+      if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original task" }), { stopReason: "toolUse" });
+      }
+      return h.ai.fauxAssistantMessage("waiting");
+    };
+    h.provider.setResponses(Array.from({ length: 20 }, () => responder));
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    try {
+      await adapter.start(); await adapter.prompt("start");
+      await vi.waitFor(() => expect(h.sessions[scope === "root" ? 0 : 1]
+        && adapter.getRetryState!(h.sessions[scope === "root" ? 0 : 1]!.sessionId)?.llmRecovery?.status).toBe("available"));
+      const target = h.sessions[scope === "root" ? 0 : 1]!;
+      const checkpoint = adapter.getRetryState!(target.sessionId)!.llmRecovery!;
+      manual = true;
+      await adapter.retry!(target.sessionId, checkpoint.failureId);
+      await vi.waitFor(() => expect(adapter.getRetryState!(target.sessionId)?.automaticRetry?.delayMs).toBe(60_000));
+      await adapter.abort();
+      expect(adapter.getRetryState!(target.sessionId)?.llmRecovery ?? null).toBeNull();
+      expect(adapter.getRetryState!(target.sessionId)?.automaticRetry ?? null).toBeNull();
+      expect(adapter.hasBackgroundWork()).toBe(false);
+      h.provider.setResponses([h.ai.fauxAssistantMessage("new user task")]);
+      await adapter.prompt("new task after Stop");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+    } finally { await adapter.stop(); }
+  });
+
+  it.each(["root", "stage"] as const)("owns and cancels %s recovery configuration preflight without a late native wake", async (scope) => {
+    const h = await harness({ dispatch: scope === "stage" });
+    const responder: FauxResponseFactory = (context) => {
+      if (scope === "root" || context.systemPrompt?.includes("search test role")) {
+        return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" });
+      }
+      if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original task" }), { stopReason: "toolUse" });
+      }
+      return h.ai.fauxAssistantMessage("waiting");
+    };
+    h.provider.setResponses(Array.from({ length: 20 }, () => responder));
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    const entered = deferred();
+    const release = deferred();
+    try {
+      await adapter.start(); await adapter.prompt("start");
+      const index = scope === "root" ? 0 : 1;
+      await vi.waitFor(() => expect(h.sessions[index] && adapter.getRetryState!(h.sessions[index]!.sessionId)?.llmRecovery?.status).toBe("available"));
+      await h.sessions[0]!.waitForIdle();
+      const target = h.sessions[index]!;
+      const checkpoint = adapter.getRetryState!(target.sessionId)!.llmRecovery!;
+      vi.spyOn(h.bindings[index]!, "ensureCurrent").mockImplementationOnce(async () => { entered.resolve(); await release.promise; });
+      const attempts = h.provider.state.callCount;
+      const request = adapter.retry!(target.sessionId, checkpoint.failureId);
+      const rejected = expect(request).rejects.toThrow();
+      await entered.promise;
+      const stop = adapter.abort();
+      expect(h.managed().coordinator.retryState(target.sessionId)?.llmRecovery ?? null).toBeNull();
+      release.resolve();
+      await rejected;
+      await stop;
+      expect(h.provider.state.callCount).toBe(attempts);
+      expect(adapter.hasBackgroundWork()).toBe(false);
+      expect(target.sessionManager.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === LLM_RETRY_CONTROL_TYPE)).toBe(false);
+    } finally { release.resolve(); await adapter.stop(); }
+  });
+
+  it("revalidates a parked stage's original caller authority and rotates failed admission", async () => {
+    const h = await harness({ dispatch: true });
+    h.provider.setResponses([
+      h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original" }), { stopReason: "toolUse" }),
+      h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" }),
+      h.ai.fauxAssistantMessage("waiting"),
+    ]);
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    try {
+      await adapter.start(); await adapter.prompt("start");
+      await vi.waitFor(() => expect(h.sessions[1] && adapter.getRetryState!(h.sessions[1]!.sessionId)?.llmRecovery?.status).toBe("available"));
+      const target = h.sessions[1]!;
+      const checkpoint = adapter.getRetryState!(target.sessionId)!.llmRecovery!;
+      const calls = h.provider.state.callCount;
+      h.rows[0]!.subagents = [];
+      h.publishConfiguration();
+      await expect(adapter.retry!(target.sessionId, checkpoint.failureId)).rejects.toMatchObject({ code: "LLM_RETRY_UNAVAILABLE" });
+      await vi.waitFor(() => expect(adapter.getRetryState!(target.sessionId)?.llmRecovery?.status).toBe("available"));
+      const repaired = adapter.getRetryState!(target.sessionId)!.llmRecovery!;
+      expect(repaired.failureId).not.toBe(checkpoint.failureId);
+      expect(h.provider.state.callCount).toBe(calls);
+      h.rows[0]!.subagents = ["search"];
+      h.publishConfiguration();
+      h.provider.setResponses([h.ai.fauxAssistantMessage("recovered"), h.ai.fauxAssistantMessage("accepted")]);
+      await adapter.retry!(target.sessionId, repaired.failureId);
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+    } finally { await adapter.stop(); }
+  });
+
+  it("recovers a genuine overflow-failed Agent from current context without treating its compaction diagnostic as a request", async () => {
+    const h = await harness({ compact: true });
+    h.provider.setResponses([h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "maximum context length exceeded" })]);
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    try {
+      await adapter.start(); await adapter.prompt("small original request");
+      const session = h.sessions[0]!;
+      await vi.waitFor(() => expect(adapter.getRetryState!(session.sessionId)?.llmRecovery?.status).toBe("available"));
+      const checkpoint = adapter.getRetryState!(session.sessionId)!.llmRecovery!;
+      const entry = session.sessionManager.getEntries().find((entry) => entry.id === checkpoint.failedEntryId);
+      expect(entry).toMatchObject({ type: "message", message: { role: "assistant", stopReason: "error" } });
+      const contexts: string[] = [];
+      h.provider.setResponses([(context) => { contexts.push(JSON.stringify(context.messages)); return h.ai.fauxAssistantMessage("recovered"); }]);
+      await adapter.retry!(session.sessionId, checkpoint.failureId);
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0]).toContain("small original request");
+      expect(contexts[0]).not.toContain("maximum context length exceeded");
+      expect(session.sessionManager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user")).toHaveLength(1);
+    } finally { await adapter.stop(); }
+  });
+
+  it("parks a completion-woken stage after its original finish has begun waiting for quiescence", async () => {
+    const releaseChild = deferred();
+    const childEntered = deferred();
+    let searchFailures = 0;
+    const h = await harness({ dispatch: true, retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 }, extensions: [(api) => {
+      api.registerTool({ name: "hold", label: "Hold", description: "Hold child", parameters: Type.Object({}), execute: async () => {
+        childEntered.resolve();
+        await releaseChild.promise;
+        return { content: [{ type: "text", text: "child tool finished" }], details: {} };
+      } });
+    }] });
+    const responder: FauxResponseFactory = (context) => {
+      const role = context.systemPrompt?.includes("reviewer test role") ? "reviewer"
+        : context.systemPrompt?.includes("search test role") ? "search" : "research-assistant";
+      const toolDone = (name: string) => context.messages.some((message) => message.role === "toolResult" && message.toolName === name);
+      if (role === "reviewer") return h.ai.fauxAssistantMessage(toolDone("hold") ? "nested completed"
+        : h.ai.fauxToolCall("hold", {}), { stopReason: toolDone("hold") ? "stop" : "toolUse" });
+      if (!toolDone("subagent")) return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", {
+        agent: role === "research-assistant" ? "search" : "reviewer", task: "nested task",
+      }), { stopReason: "toolUse" });
+      if (role === "search" && JSON.stringify(context.messages).includes("<agent_status>")) {
+        searchFailures += 1;
+        if (searchFailures <= 2) return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" });
+        return h.ai.fauxAssistantMessage("recovered completion wake");
+      }
+      return h.ai.fauxAssistantMessage("waiting for child");
+    };
+    h.provider.setResponses(Array.from({ length: 35 }, () => responder));
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    try {
+      await adapter.start();
+      await adapter.prompt("start nested work");
+      await childEntered.promise;
+      await vi.waitFor(() => expect(h.sessions.find((session) => session.systemPrompt.includes("search test role"))?.isIdle).toBe(true));
+      const caller = h.sessions.find((session) => session.systemPrompt.includes("search test role"))!;
+      releaseChild.resolve();
+      await vi.waitFor(() => expect(adapter.getRetryState!(caller.sessionId)?.llmRecovery?.status).toBe("available"));
+      const job = [...h.managed().coordinator.journal().jobs.values()].find((job) => job.childSessionId === caller.sessionId)!;
+      expect(job.terminalStatus).toBeUndefined();
+      expect(adapter.hasBackgroundWork()).toBe(true);
+      const checkpoint = adapter.getRetryState!(caller.sessionId)!.llmRecovery!;
+      await adapter.retry!(caller.sessionId, checkpoint.failureId);
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(searchFailures).toBe(3);
+      expect([...h.managed().coordinator.journal().jobs.values()]).toHaveLength(2);
+      expect(h.managed().coordinator.journal().jobs.get(job.launchId)?.terminalStatus).toBe("complete");
+      expect(caller.sessionManager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user")).toHaveLength(1);
+    } finally {
+      releaseChild.resolve();
+      await adapter.stop();
+    }
+  });
+
+  it("holds pending completion wakes through configuration recovery until manual admission", async () => {
+    const h = await harness();
+    h.provider.setResponses([h.ai.fauxAssistantMessage("partial", { stopReason: "error", errorMessage: "503 overloaded" })]);
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    try {
+      await adapter.start();
+      await adapter.prompt("original task");
+      const rootSession = h.sessions[0]!;
+      await vi.waitFor(() => expect(adapter.getRetryState!(rootSession.sessionId)?.llmRecovery?.status).toBe("available"));
+      const { coordinator, supervisor } = h.managed();
+      const checkpoint = adapter.getRetryState!(rootSession.sessionId)!.llmRecovery!;
+      coordinator.recordNotificationBatch({ batchId: "held-handoff", ownerSessionId: rootSession.sessionId,
+        launchIds: ["finished-child"], content: "<agent_status>complete</agent_status>\n<agent_handoff>held handoff</agent_handoff>", triggerTurn: true });
+      await supervisor.flushNotifications();
+      h.publishConfiguration();
+      await h.managed().binding.ensureCurrent();
+      await supervisor.flushNotifications();
+      expect(h.provider.state.callCount).toBe(1);
+      expect(coordinator.journal().pendingBatches.map((batch) => batch.batchId)).toEqual(["held-handoff"]);
+      const contexts: string[] = [];
+      h.provider.setResponses([(context) => { contexts.push(JSON.stringify(context.messages)); return h.ai.fauxAssistantMessage("recovered"); }]);
+      await adapter.retry!(rootSession.sessionId, checkpoint.failureId);
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0]).toContain("held handoff");
+      expect(contexts[0]).not.toContain(LLM_RETRY_CONTROL_TYPE);
+      expect(coordinator.journal().pendingBatches).toEqual([]);
+    } finally { await adapter.stop(); }
+  });
+
+  it.each(["abort", "stop"] as const)("%s releases a parked child and publishes one terminal outcome without another model turn", async (action) => {
+    const h = await harness({ dispatch: true });
+    const responder: FauxResponseFactory = (context) => {
+      if (context.systemPrompt?.includes("search test role")) return h.ai.fauxAssistantMessage("partial", { stopReason: "error", errorMessage: "503 overloaded" });
+      if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original task" }), { stopReason: "toolUse" });
+      }
+      return h.ai.fauxAssistantMessage("owner waiting");
+    };
+    h.provider.setResponses(Array.from({ length: 20 }, () => responder));
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    const events: any[] = [];
+    adapter.onEvent((event) => events.push(event));
+    try {
+      await adapter.start(); await adapter.prompt("start");
+      await vi.waitFor(() => expect(h.sessions[1] && adapter.getRetryState!(h.sessions[1]!.sessionId)?.llmRecovery?.status).toBe("available"));
+      await h.sessions[0]!.waitForIdle();
+      const calls = h.provider.state.callCount;
+      const coordinator = h.managed().coordinator;
+      await adapter[action]();
+      expect(h.provider.state.callCount).toBe(calls);
+      expect(coordinator.journal().pendingBatches).toEqual([]);
+      expect(events.filter((event) => event.type === "subagent_supervisor" && event.status === "error")).toHaveLength(1);
+      expect(coordinator.retryState(h.sessions[1]!.sessionId)).toBeUndefined();
+      expect(adapter.hasBackgroundWork()).toBe(false);
+    } finally { await adapter.stop(); }
+  });
+
+  it.each(["research-assistant", "search", "reviewer"] as const)(
+    "recovers the same %s request with a fresh native budget and one side effect",
+    async (targetAgent) => {
+      const sideEffect = join(root, "project", "side-effect.txt");
+      let toolCalls = 0;
+      let failedRequestCalls = 0;
+      const requestContexts: Context[] = [];
+      const h = await harness({
+        dispatch: targetAgent !== "research-assistant",
+        retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
+        extensions: [(api) => api.registerTool({
+          name: "hold", label: "Write evidence", description: "Write evidence once", parameters: Type.Object({}),
+          execute: async () => {
+            toolCalls += 1;
+            appendFileSync(sideEffect, "completed\n");
+            return { content: [{ type: "text", text: "side effect completed" }], details: {} };
+          },
+        })],
+      });
+      h.rows.find((row) => row.name === "reviewer")?.builtin && (h.rows.find((row) => row.name === "reviewer")!.builtin = false);
+      const response: FauxResponseFactory = (context) => {
+        const role = context.systemPrompt?.includes("reviewer test role") ? "reviewer"
+          : context.systemPrompt?.includes("search test role") ? "search" : "research-assistant";
+        const hasTool = (name: string) => context.messages.some((message) => message.role === "toolResult" && message.toolName === name);
+        if (role === targetAgent) {
+          if (!hasTool("hold")) return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("hold", {}), { stopReason: "toolUse" });
+          requestContexts.push(context);
+          failedRequestCalls += 1;
+          return failedRequestCalls < 6
+            ? h.ai.fauxAssistantMessage("partial response", { stopReason: "error", errorMessage: "503 overloaded" })
+            : h.ai.fauxAssistantMessage("recovered response");
+        }
+        if (!hasTool("subagent")) return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", {
+          agent: role === "research-assistant" ? "search" : "reviewer", task: "finish the original task",
+        }), { stopReason: "toolUse" });
+        return h.ai.fauxAssistantMessage("owner accepted");
+      };
+      h.provider.setResponses(Array.from({ length: 40 }, () => response));
+      const adapter = h.factory.create({ cwd: join(root, "project") });
+      const events: any[] = [];
+      adapter.onEvent((event) => events.push(event));
+      try {
+        await adapter.start();
+        await adapter.prompt("complete exactly one side effect");
+        await vi.waitFor(() => expect(h.sessions.find((session) => session.systemPrompt.includes(`${targetAgent} test role`))
+          && failedRequestCalls).toBe(2));
+        const target = h.sessions.find((session) => session.systemPrompt.includes(`${targetAgent} test role`))!;
+        await vi.waitFor(() => expect(adapter.getRetryState!(target.sessionId)?.llmRecovery?.status).toBe("available"));
+        const checkpoint = adapter.getRetryState!(target.sessionId)!.llmRecovery!;
+        const originalUsers = target.sessionManager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user");
+        const jobs = [...h.managed().coordinator.journal().jobs.values()];
+        if (targetAgent !== "research-assistant") {
+          const job = jobs.find((job) => job.childSessionId === target.sessionId)!;
+          expect(job.terminalStatus).toBeUndefined();
+          expect(job.launchAcknowledged).toBe(true);
+          expect(h.managed().coordinator.journal().acknowledgedNotificationLaunchIds.has(job.launchId)).toBe(false);
+          if (targetAgent === "reviewer") expect(job.ownerSessionId).not.toBe(h.sessions[0]!.sessionId);
+        }
+        expect(adapter.hasBackgroundWork()).toBe(true);
+        h.publishConfiguration();
+        const accepted = adapter.retry!(target.sessionId, checkpoint.failureId);
+        expect(() => adapter.retry!(target.sessionId, checkpoint.failureId)).toThrow();
+        await expect(accepted).resolves.toEqual({ accepted: true, targetSessionId: target.sessionId, failureId: checkpoint.failureId });
+        await vi.waitFor(() => expect(adapter.getRetryState!(target.sessionId)?.llmRecovery?.status).toBe("available"));
+        const secondFailure = adapter.getRetryState!(target.sessionId)!.llmRecovery!;
+        expect(secondFailure.failureId).not.toBe(checkpoint.failureId);
+        expect(() => adapter.retry!(target.sessionId, checkpoint.failureId)).toThrow();
+        await adapter.retry!(target.sessionId, secondFailure.failureId);
+        await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+        expect(failedRequestCalls).toBe(6);
+        expect(toolCalls).toBe(1);
+        expect(readFileSync(sideEffect, "utf8")).toBe("completed\n");
+        const entries = target.sessionManager.getEntries();
+        expect(entries.filter((entry) => entry.type === "message" && entry.message.role === "user")).toEqual(originalUsers);
+        expect(entries.filter((entry) => entry.type === "custom_message" && entry.customType === LLM_RETRY_CONTROL_TYPE)).toHaveLength(2);
+        expect(entries.some((entry) => entry.id === checkpoint.failedEntryId)).toBe(true);
+        expect(requestContexts.every((context) => context.messages.filter((message) => message.role === "user").length === 1)).toBe(true);
+        expect(requestContexts.every((context) => !JSON.stringify(context.messages).includes(LLM_RETRY_CONTROL_TYPE))).toBe(true);
+        expect(requestContexts.every((context) => !context.messages.some((message) => message.role === "assistant" && message.stopReason === "error"))).toBe(true);
+        expect(requestContexts.slice(2).every((context) => context.systemPrompt?.includes("updated"))).toBe(true);
+        const retryEvents = events.flatMap((event) => event.type === "subagent_supervisor" ? [event.event] : [event])
+          .filter((event) => event?.type === "auto_retry_start");
+        expect(retryEvents.map((event) => event.attempt)).toEqual([1, 1, 1]);
+        expect(JSON.stringify(events)).not.toContain(LLM_RETRY_CONTROL_TYPE);
+        expect(adapter.getRetryState!(target.sessionId)?.llmRecovery ?? null).toBeNull();
+        const finalJobs = [...h.managed().coordinator.journal().jobs.values()];
+        expect(finalJobs.map(({ launchId, childSessionId, ownerSessionId, sessionPath }) => ({ launchId, childSessionId, ownerSessionId, sessionPath })))
+          .toEqual(jobs.map(({ launchId, childSessionId, ownerSessionId, sessionPath }) => ({ launchId, childSessionId, ownerSessionId, sessionPath })));
+        for (const job of finalJobs) {
+          expect(job.terminalStatus).toBe("complete");
+          const terminal = events.filter((event) => event.type === "subagent_supervisor" && event.launchId === job.launchId && event.status === "complete");
+          expect(terminal).toHaveLength(1);
+          expect(h.managed().coordinator.journal().acknowledgedNotificationLaunchIds.has(job.launchId)).toBe(true);
+        }
+      } finally { await adapter.stop(); }
+    },
+  );
+
   it.each(["root", "stage"] as const)("applies slow-provider and write-recovery policies in the real %s factory", async (scope) => {
     const h = await harness();
     for (const row of h.rows) { row.tools = ["write"]; row.effectiveTools = ["write"]; }

@@ -55,6 +55,7 @@ export const routes = {
   childSnapshot: (parentId: string, childId: string) =>
     `${session(parentId)}/subagents/${encodeURIComponent(childId)}/snapshot`,
   messages: (id: string) => `${session(id)}/messages`,
+  retry: (id: string) => `${session(id)}/retry`,
   commands: (id: string) => `${session(id)}/commands`,
   tree: (id: string, preview = true) => `${session(id)}/tree${preview ? "?preview=1" : ""}`,
   treeNavigate: (id: string) => `${session(id)}/tree/navigate`,

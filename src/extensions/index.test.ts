@@ -11,7 +11,12 @@ import type { SubagentCoordinator } from "../subagent/coordinator";
 import type { SubagentSupervisor } from "../subagent/supervisor";
 import { ManualCompactionController } from "../web/manual-compaction";
 import { SessionStatsNotifier } from "../web/session-stats";
-import { createResearchAssistantExtensions, type ResearchAssistantExtensionRuntime } from "./index";
+import { createResearchAssistantExtensions, createSearchExtensions, type ResearchAssistantExtensionRuntime } from "./index";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+vi.mock("../runtime/logger", () => ({
+  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+}));
 
 const platformFetch = globalThis.fetch;
 
@@ -154,6 +159,86 @@ describe("bundled extension runtime builder", () => {
 
     expect(result.content).toEqual([{ type: "text", text: "root fetch" }]);
     expect(scopes).toEqual(["search"]);
+  });
+
+  it("shares provider cooldown between search and extraction in each root/stage search factory", async () => {
+    const fetch = vi.fn(async () => new Response("untrusted quota body", {
+      status: 429, headers: { "retry-after": "60" },
+    }));
+    globalThis.fetch = Object.assign(fetch, { preconnect: platformFetch.preconnect });
+    const route: AppliedSearchRoute = {
+      policyFingerprint: "direct", applyProxyConfiguration: (target) => { target.useProxy = false; },
+      invalidError: () => undefined, sanitizeError: () => "safe",
+    };
+    // Root and stage production paths consume this same factory; each call owns
+    // an independent client while its two tools share that client's cooldown.
+    for (const extensions of [
+      createResearchAssistantExtensions({ ...runtime("shared-root"), networkRouter: networkRouter(route) }),
+      createSearchExtensions(networkRouter(route)),
+    ]) {
+      const tools = new Map<string, any>();
+      for (const extension of extensions.filter((entry) => ["web-search", "webfetch"].includes(entry.name))) {
+        await extension.factory({ registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
+      }
+      const search = await tools.get("web-search").execute("search", { query: "q", provider: "tavily" }, undefined, undefined, {});
+      expect(search.details.code).toBe("RATE_LIMITED");
+      await expect(tools.get("webfetch").execute("extract", {
+        url: "https://source.example/paper", provider: "tavily",
+      }, undefined, undefined, {})).rejects.toMatchObject({ code: "PROVIDER_COOLDOWN" });
+    }
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps keyless search and extraction body reads in Search scope", async () => {
+    const scope = new AsyncLocalStorage<string>();
+    const observations: Array<string | undefined> = [];
+    const route: AppliedSearchRoute = {
+      policyFingerprint: "direct", applyProxyConfiguration: (target) => { target.useProxy = false; },
+      invalidError: () => undefined, sanitizeError: () => "safe",
+    };
+    globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
+      observations.push(scope.getStore());
+      const data = String(input).endsWith("/search")
+        ? { results: [{ url: "https://source.example/paper", title: "Source", content: "Snippet" }] }
+        : { results: [{ url: "https://source.example/paper", raw_content: "Extracted text" }], failed_results: [] };
+      return new Response(new ReadableStream({ pull(controller) {
+        observations.push(scope.getStore());
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(data)));
+        controller.close();
+      } }));
+    }, { preconnect: platformFetch.preconnect });
+    const tools = new Map<string, any>();
+    for (const extension of createSearchExtensions({
+      ...networkRouter(route), withScope: (name, operation) => scope.run(name, operation),
+    })) {
+      await extension.factory({ registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
+    }
+    const result = await tools.get("web-search").execute("search", { query: "q", provider: "tavily" }, undefined, undefined, {});
+    expect(result.details.count).toBe(1);
+    await tools.get("webfetch").execute("extract", { url: "https://source.example/paper", provider: "tavily" }, undefined, undefined, {});
+    expect(observations).toEqual(["search", "search", "search", "search"]);
+  });
+
+  it("fails new branches closed under invalid Search policy without making HTTP requests", async () => {
+    const invalid = Object.assign(new Error("Invalid Search proxy"), { code: "NETWORK_PROXY_INVALID" });
+    const route: AppliedSearchRoute = {
+      policyFingerprint: "invalid:search", applyProxyConfiguration: () => { throw invalid; },
+      invalidError: () => invalid, sanitizeError: () => "NETWORK_PROXY_INVALID",
+    };
+    const fetch = vi.fn(async () => new Response("unexpected"));
+    globalThis.fetch = Object.assign(fetch, { preconnect: platformFetch.preconnect });
+    const tools = new Map<string, any>();
+    for (const extension of createSearchExtensions(networkRouter(route))) {
+      await extension.factory({ registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
+    }
+    for (const provider of ["firecrawl", "tavily", "firecrawl-research"]) {
+      const result = await tools.get("web-search").execute("search", { query: "q", provider }, undefined, undefined, {});
+      expect(result.details.error).toContain("NETWORK_PROXY_INVALID");
+    }
+    await expect(tools.get("webfetch").execute("extract", {
+      url: "https://source.example/paper", provider: "firecrawl",
+    }, undefined, undefined, {})).rejects.toMatchObject({ code: "NETWORK_PROXY_INVALID" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("forwards exact persisted summary entries without appending plugin state", async () => {

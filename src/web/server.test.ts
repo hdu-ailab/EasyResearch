@@ -67,6 +67,8 @@ import { createNetworkProxyProbe } from "./network-proxy-probe";
 import { NetworkProxySettingsService } from "./network-proxy-settings";
 import { WorkspaceService } from "./workspaces";
 import { SessionHistoryConflictError } from "./session-deletion";
+import { LlmRetryError } from "../runtime/llm-recovery";
+import type { LlmRetryStateEventDto } from "./contracts";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -2199,7 +2201,7 @@ describe("web routes", () => {
     const res = await handler(new Request("http://localhost/api/sessions/parent-1/subagents/child-1/snapshot"));
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(childSnapshot);
+    expect(await res.json()).toMatchObject(childSnapshot);
   });
 
   it("maps an unmapped child snapshot to JSON 404", async () => {
@@ -3719,7 +3721,7 @@ describe("web routes", () => {
     await reader.cancel();
     const payload = new TextDecoder().decode(first.value);
 
-    expect(payload).toContain(`"subagents":${JSON.stringify(subagents)}`);
+    expect(JSON.parse(payload.slice("data: ".length)).subagents).toMatchObject(subagents);
   });
 
   it("logs SSE connect on subscribe and disconnect on cancel", async () => {
@@ -3776,6 +3778,74 @@ describe("web routes", () => {
     }
     const snap = await handler(new Request(`http://localhost/api/sessions/${created.id}/snapshot`));
     expect(snap.status).toBe(404);
+  });
+
+  it("admits only typed root-owned model retry requests without using the message route", async () => {
+    setup();
+    const active = await registry.create({ cwd: projectDir });
+    const adapter: SessionAdapter = factory.created[0]!;
+    const retry = vi.fn(async (targetSessionId: string, failureId: string) => {
+      if (failureId === "stale") throw new LlmRetryError("LLM_RETRY_STALE");
+      if (targetSessionId === "foreign") throw new LlmRetryError("LLM_RETRY_UNAVAILABLE");
+      return { accepted: true as const, targetSessionId, failureId };
+    });
+    adapter.retry = retry;
+    const send = (body: unknown) => handler(new Request(`http://localhost/api/sessions/${active.id}/retry`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }));
+    for (const body of [{}, { targetSessionId: "child", failureId: "" }, { targetSessionId: "child", failureId: "f", task: "new task" },
+      { targetSessionId: "child", failureId: "f", sessionPath: "/private/history.jsonl" }, []]) {
+      expect((await send(body)).status).toBe(400);
+    }
+    expect(retry).not.toHaveBeenCalled();
+    const accepted = await send({ targetSessionId: "nested-child", failureId: "f" });
+    expect(accepted.status).toBe(202);
+    expect(await accepted.json()).toEqual({ accepted: true, targetSessionId: "nested-child", failureId: "f" });
+    const stale = await send({ targetSessionId: "nested-child", failureId: "stale" });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ code: "LLM_RETRY_STALE" });
+    const foreign = await send({ targetSessionId: "foreign", failureId: "f" });
+    expect(foreign.status).toBe(409);
+    expect(await foreign.json()).toMatchObject({ code: "LLM_RETRY_UNAVAILABLE" });
+    expect(factory.created[0]!.prompts).toEqual([]);
+  });
+
+  it("overlays live retry authority onto readonly child snapshots and clears it after disposal", async () => {
+    const child = { session: { id: "child", cwd: projectDir }, timeline: [], subagents: [] };
+    setup({ subagentSessions: { snapshot: async () => child } });
+    const active = await registry.create({ cwd: projectDir });
+    const adapter: SessionAdapter = factory.created[0]!;
+    const state: LlmRetryStateEventDto = { type: "llm_retry_state", targetSessionId: "child", automaticRetry: null,
+      llmRecovery: { targetSessionId: "child", failureId: "f", failedEntryId: "entry", status: "available" } };
+    adapter.getRetryState = (target) => target === "child" ? state : undefined;
+    const get = () => handler(new Request(`http://localhost/api/sessions/${active.id}/subagents/child/snapshot`));
+    expect(await (await get()).json()).toMatchObject({ llmRecovery: state.llmRecovery, automaticRetry: null });
+    expect(factory.created).toHaveLength(1);
+    await registry.stop(active.id);
+    expect(await (await get()).json()).toMatchObject({ llmRecovery: null, automaticRetry: null });
+    expect(factory.created).toHaveLength(1);
+  });
+
+  it("keeps retry replacement events behind the snapshot barrier without replaying stale eligibility", async () => {
+    setup();
+    const active = await registry.create({ cwd: projectDir });
+    const adapter = factory.created[0]!;
+    const timeline = deferred<Awaited<ReturnType<SessionAdapter["getTranscriptSnapshot"]>>["timeline"]>();
+    adapter.timelinePromise = timeline.promise;
+    let state: LlmRetryStateEventDto = { type: "llm_retry_state", targetSessionId: active.id, automaticRetry: null,
+      llmRecovery: { targetSessionId: active.id, failureId: "old", failedEntryId: "entry", status: "available" } };
+    (adapter as SessionAdapter).getRetryState = () => state;
+    const response = await handler(new Request(`http://localhost/api/sessions/${active.id}/events`));
+    const reader = response.body!.getReader();
+    try {
+      for (const listener of adapter.events) listener(state);
+      state = { ...state, llmRecovery: null };
+      timeline.resolve([]);
+      expect(await readSseEvent(reader)).toMatchObject({ type: "snapshot", llmRecovery: null });
+      const current = { ...state, llmRecovery: { targetSessionId: active.id, failureId: "current", failedEntryId: "next", status: "available" as const } };
+      for (const listener of adapter.events) listener(current);
+      expect(await readSseEvent(reader)).toEqual(current);
+    } finally { await reader.cancel(); }
   });
 
   it("posts a prompt to the active session", async () => {

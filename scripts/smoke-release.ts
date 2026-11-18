@@ -66,11 +66,15 @@ import type { SubagentCompletionEntryDto } from "../src/web/contracts";
 import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
 import { assertBundledAgentCapabilities } from "./smoke-agent-scenario";
 import { createWriteRecoverySmoke, runWriteRecoverySmoke } from "./smoke-write-recovery";
+import { createLlmRetryFixture } from "./smoke-llm-retry-fixture";
+import { runLlmRetrySmoke } from "./smoke-llm-retry";
 import { smokeEventChannel } from "./smoke-event-channel";
 import { verifyMacOsSignature } from "./macos-signing";
 import { smokeWorkspaceManagement } from "./smoke-workspace-management";
 import { smokeWorkFileOperations } from "./smoke-work-files-api";
 import { smokeImmutablePublisher } from "./smoke-immutable-publisher";
+import { createKeylessSearchSmoke, KEYLESS_HOSTS, runInvalidKeylessSearchSmoke, runKeylessSearchSmoke, startKeylessSmokeOrigin } from "./smoke-keyless-search";
+import { SMOKE_KEYLESS_CA } from "./smoke-keyless-tls";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -103,6 +107,7 @@ const validationScript = join(root, "validate-easyresearch-venv.py");
 const stageValidationScript = join(root, "validate-easyresearch-agent-network.py");
 const setupRunId = randomUUID();
 const writeRecoverySmoke = createWriteRecoverySmoke(setupRunId);
+const llmRetrySmoke = createLlmRetryFixture({ runId: setupRunId, directory: join(root, "llm-retry-fixture"), venv: true });
 const googleCredentialsPath = join(root, "gaxios-adc.json");
 const firstRunStdoutPath = join(root, "first-run-stdout.txt");
 const firstRunStderrPath = join(root, "first-run-stderr.txt");
@@ -113,6 +118,11 @@ const shutdownStatusPath = join(root, "shutdown-status.txt");
 const daemonPidPath = join(agentDir, "server.pid");
 writeVenvValidationScript(validationScript);
 const smokeAgentName = "smoke-reviewer";
+const keylessAgentName = "smoke-keyless-reviewer";
+const keylessSmoke = createKeylessSearchSmoke(setupRunId, keylessAgentName);
+const keylessOrigin = await startKeylessSmokeOrigin(setupRunId);
+const keylessCaPath = join(root, "keyless-smoke-ca.pem");
+writeFileSync(keylessCaPath, SMOKE_KEYLESS_CA);
 const smokeAgentPromptMarker = "NATIVE_SMOKE_CUSTOM_REVIEWER_PROMPT";
 const smokeSkillName = "native-smoke-resource";
 const smokeSkillPromptMarker = `NATIVE_SMOKE_SKILL_${setupRunId}`;
@@ -368,6 +378,17 @@ const modelServer = Bun.serve({
       tools?: Array<{ function?: { name?: string; description?: string } }>;
     };
     modelRequests += 1;
+    if (llmRetrySmoke.laneFor(body)) return llmRetrySmoke.respond(body);
+    if (keylessSmoke.laneFor(body)) {
+      try {
+        const action = keylessSmoke.select(body);
+        return action.kind === "tool"
+          ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
+          : openAiStream({ text: action.text });
+      } catch (error) {
+        return Response.json({ error: { message: String(error) } }, { status: 400 });
+      }
+    }
     if (writeRecoverySmoke.laneFor(body)) {
       try {
         const action = writeRecoverySmoke.select(body);
@@ -520,6 +541,7 @@ async function startProxySet(
   onAllRecord?: (record: SmokeProxyRecord) => void,
 ): Promise<SmokeProxySet> {
   const fakeTargets = {
+    ...Object.fromEntries(KEYLESS_HOSTS.map(host => [host, keylessOrigin.origin])),
     [fakeChildHost]: fakeTargetOrigin,
     [fakeGaxiosHost]: modelOrigin,
     [fakeLlmHost]: modelOrigin,
@@ -563,7 +585,7 @@ invalidSearchWebFetchScenario = {
   toolArguments: {
     query: "native smoke fail closed",
     engines: ["duckduckgo"],
-    limit: 1,
+    num: 1,
   },
   forbiddenResultText: [
     initialProxies.search.url,
@@ -679,6 +701,8 @@ const env = createCompiledChildEnv({
     GOOGLE_APPLICATION_CREDENTIALS: googleCredentialsPath,
     GOOGLE_CLOUD_LOCATION: "native-smoke-location",
     GOOGLE_CLOUD_PROJECT: "native-smoke-project",
+    NODE_EXTRA_CA_CERTS: keylessCaPath,
+    NODE_TLS_REJECT_UNAUTHORIZED: "1",
     PIP_PROXY: ambientPipProxy,
     npm_config_proxy: "http://ambient-npm.invalid:8080",
     npm_config_https_proxy: "http://ambient-npm.invalid:8443",
@@ -1316,6 +1340,10 @@ function smokeProgressDiagnostics(): string {
     windowsSystem32: windowsSystem32 ?? null,
     childPath: env.PATH,
     modelRequests,
+    keylessRequests: keylessSmoke.requests,
+    keylessFailure: keylessSmoke.failure ? safeSmokeDiagnostic(keylessSmoke.failure) : undefined,
+    keylessProviderRequests: keylessOrigin.records,
+    keylessFixtureFailures: keylessOrigin.failures.map(safeSmokeDiagnostic),
     gaxiosRequests,
     vertexProviderRequests,
     smokeModelState,
@@ -2382,6 +2410,24 @@ try {
 
   await runWriteRecoverySmoke({ base, project, deadline: firstRunDeadline, scenario: writeRecoverySmoke });
   console.log("[smoke] root and child failed-write guidance, section preservation, recovery and terminal handoff passed");
+  await runLlmRetrySmoke({ base, root, agentDir, deadline: firstRunDeadline, fixture: llmRetrySmoke });
+
+  writeFileSync(join(agentDir, "agents", `${keylessAgentName}.md`), [
+    "---", `name: ${keylessAgentName}`, "description: Native keyless tool acceptance", "enable: true",
+    "tools:", "  - web-search", "  - webfetch", "skills:", `  - ${smokeSkillName}`, "subagents: []", "---",
+    keylessSmoke.agentPrompt,
+    "Execute the requested native keyless search/extraction probes and return the terminal handoff.", "",
+  ].join("\n"));
+  await pollSmokeCondition("keyless global custom-Agent acceptance", async () => {
+    const agents = await requestSmokeJsonBeforeDeadline({ url: `${base}/api/agents`, deadline: firstRunDeadline,
+      label: "keyless custom-Agent catalog" }) as Array<{ name: string; effectiveTools: string[]; effectiveSkills: string[] }>;
+    const agent = agents.find(row => row.name === keylessAgentName);
+    return agent && agent.effectiveTools.includes("web-search") && agent.effectiveTools.includes("webfetch")
+      && agent.effectiveSkills.includes(smokeSkillName) ? true : undefined;
+  });
+  await runKeylessSearchSmoke({ base, project, deadline: firstRunDeadline, scenario: keylessSmoke,
+    origin: keylessOrigin, proxyRecords: () => recordsFor(initialProxies) });
+  console.log("[smoke] compiled keyless root/custom-stage search+extraction, provenance, TLS Search routing, errors, cooldown and body Stop passed");
 
   const beforeOauth = classifySmokeProxyRoutes(recordsFor(initialProxies), {
     allHost: fakeChildHost,
@@ -2632,6 +2678,7 @@ try {
   smokeNetworkState = recordSmokeNetworkMilestone(smokeNetworkState, {
     kind: "invalid-search-rejected",
   });
+  await runInvalidKeylessSearchSmoke({ base, project, deadline: firstRunDeadline, scenario: keylessSmoke, origin: keylessOrigin });
 
   // Reuse the real, accepted Agent-generated tree only after all of its resume probes.
   // Run before the intentionally failed LLM turn can leave an unlisted JSONL.
@@ -2793,6 +2840,8 @@ try {
   }
 
   const expectedModelRequests = smokeModelState.completedRequests
+    + llmRetrySmoke.requests
+    + keylessSmoke.requests
     + writeRecoverySmoke.requests
     + loopbackProviderRequests
     + loopbackWebFetchState.completedRequests
@@ -2887,6 +2936,7 @@ await finishSmokeCleanup({
       successorProxies.llm.close(),
       successorProxies.search.close(),
       candidateProxy.close(),
+      keylessOrigin.close(),
     ]);
     modelServer.stop(true);
     fakeTargetServer.stop(true);

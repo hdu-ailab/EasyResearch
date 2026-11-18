@@ -19,6 +19,7 @@ import type {
   ApiUsageTotalsDto,
   AuthFlowEventDto,
   AuthProviderInfoDto,
+  AutomaticRetryDto,
   ChildSessionSnapshotDto,
   CompactionPolicyDto,
   CompactionRequestResultDto,
@@ -33,6 +34,9 @@ import type {
   FileEntryDto,
   FileRenameResultDto,
   FileUploadResultDto,
+  LlmRecoveryDto,
+  LlmRetryAcceptedDto,
+  LlmRetryStateEventDto,
   NetworkProxySettingsDto,
   NetworkProxySettingsErrorDto,
   NetworkProxySettingsSourceDto,
@@ -152,6 +156,69 @@ function requiredSafeGeneration(source: RecordValue, key: string, minimum: numbe
     throw new Error(`Invalid API response: ${key} must be an integer of at least ${minimum}`);
   }
   return generation;
+}
+
+function parseAutomaticRetry(value: unknown): AutomaticRetryDto | null {
+  if (value === null) return null;
+  const item = record(value, "automatic retry");
+  const source = item.source;
+  if (source !== "agent" && source !== "compaction" && source !== "branchSummary") {
+    throw new Error("Invalid API response: retry source");
+  }
+  const attempt = requiredSafeGeneration(item, "attempt", 1);
+  const maxAttempts = requiredSafeGeneration(item, "maxAttempts", 1);
+  const delayMs = requiredNumber(item, "delayMs");
+  const remainingMs = requiredNumber(item, "remainingMs");
+  if (attempt > maxAttempts || delayMs < 0 || remainingMs < 0 || remainingMs > delayMs) {
+    throw new Error("Invalid API response: retry bounds");
+  }
+  return { source, attempt, maxAttempts, delayMs, remainingMs, errorMessage: requiredString(item, "errorMessage") };
+}
+
+function parseLlmRecovery(value: unknown, targetSessionId: string): LlmRecoveryDto | null {
+  if (value === null) return null;
+  const source = record(value, "model recovery");
+  if (
+    requiredIdentityString(source, "targetSessionId") !== targetSessionId ||
+    (source.status !== "available" && source.status !== "starting")
+  ) {
+    throw new Error("Invalid API response: model recovery target or status");
+  }
+  return {
+    targetSessionId,
+    failureId: requiredIdentityString(source, "failureId"),
+    failedEntryId: requiredIdentityString(source, "failedEntryId"),
+    status: source.status,
+  };
+}
+
+function parseRetryFields(source: RecordValue, targetSessionId: string) {
+  return {
+    ...(source.automaticRetry === undefined ? {} : { automaticRetry: parseAutomaticRetry(source.automaticRetry) }),
+    ...(source.llmRecovery === undefined ? {} : { llmRecovery: parseLlmRecovery(source.llmRecovery, targetSessionId) }),
+  };
+}
+
+export function parseLlmRetryState(value: unknown): LlmRetryStateEventDto {
+  const source = record(value, "model retry state");
+  if (source.type !== "llm_retry_state") throw new Error("Invalid API response: model retry event type");
+  const targetSessionId = requiredIdentityString(source, "targetSessionId");
+  return {
+    type: "llm_retry_state" as const,
+    targetSessionId,
+    automaticRetry: parseAutomaticRetry(source.automaticRetry),
+    llmRecovery: parseLlmRecovery(source.llmRecovery, targetSessionId),
+  };
+}
+
+export function parseLlmRetryAccepted(value: unknown): LlmRetryAcceptedDto {
+  const source = record(value, "model retry acceptance");
+  if (source.accepted !== true) throw new Error("Invalid API response: model retry not accepted");
+  return {
+    accepted: true as const,
+    targetSessionId: requiredIdentityString(source, "targetSessionId"),
+    failureId: requiredIdentityString(source, "failureId"),
+  };
 }
 
 function nullableNumber(source: RecordValue, key: string): number | null {
@@ -621,6 +688,7 @@ function parseSubagentSummary(value: unknown): SubagentSessionSummaryDto {
     childSessionId: requiredIdentityString(source, "childSessionId"),
     agent: requiredIdentityString(source, "agent"),
     status: parseSubagentStatus(source.status),
+    ...parseRetryFields(source, requiredIdentityString(source, "childSessionId")),
     ...(launchId !== undefined ? { launchId } : {}),
     ...(agentId !== undefined ? { agentId } : {}),
     ...(step !== undefined ? { step } : {}),
@@ -638,6 +706,7 @@ function parseNestedSessionEvent(value: unknown): NonNullable<SubagentSupervisor
   const privateData = privateSubagentEventDataReason(source);
   if (privateData) throw new Error(`Invalid API response: nested subagent event must not contain a ${privateData}`);
   requiredIdentityString(source, "type");
+  if (source.type === "llm_retry_state") return parseLlmRetryState(source);
   if (source.type === "timeline_entry_appended") {
     return parseTimelineEntryAppendedEvent(source) as NonNullable<SubagentSupervisorEventDto["event"]>;
   }
@@ -662,6 +731,9 @@ export function parseSubagentSupervisorEvent(value: unknown): SubagentSupervisor
   }
   const latestMessage = optionalString(source, "latestMessage");
   const event = source.event === undefined ? undefined : parseNestedSessionEvent(source.event);
+  if (event?.type === "llm_retry_state" && event.targetSessionId !== source.childSessionId) {
+    throw new Error("Invalid API response: nested model retry target");
+  }
   return {
     type: "subagent_supervisor",
     launchId: requiredIdentityString(source, "launchId"),
@@ -1028,6 +1100,7 @@ export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
   const apiUsage = source.apiUsage;
   return {
     session: parseActiveSessionValue(source.session),
+    ...parseRetryFields(source, requiredIdentityString(record(source.session, "session"), "id")),
     runtimeConfigurationGeneration: requiredSafeGeneration(source, "runtimeConfigurationGeneration", 0),
     timeline: parseTimeline(source.timeline),
     ...(source.history === undefined ? {} : { history: parseHistory(source.history) }),
@@ -1049,6 +1122,7 @@ export function parseChildSnapshot(value: unknown): ChildSessionSnapshotDto {
   const session = record(source.session, "child session");
   const sessionName = optionalString(session, "sessionName");
   return {
+    ...parseRetryFields(source, requiredIdentityString(session, "id")),
     session: {
       id: requiredString(session, "id"),
       cwd: requiredString(session, "cwd"),

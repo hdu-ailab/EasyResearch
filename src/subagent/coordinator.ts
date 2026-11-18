@@ -20,6 +20,8 @@ import {
 } from "./job-journal";
 import { privateSubagentEventDataReason, readCompletionOutcomes } from "./notifications";
 import { SUBAGENT_SESSION_LINK_ENTRY } from "./session-links";
+import { LlmRetryError, type LlmRecoveryController } from "../runtime/llm-recovery";
+import type { LlmRetryAcceptedDto, LlmRetryStateEventDto } from "../web/contracts";
 
 export interface CoordinatorSessionManager {
   getSessionId(): string;
@@ -62,6 +64,12 @@ export class SubagentCoordinator {
   private readonly listeners = new Set<(event: SubagentSupervisorEvent) => void>();
   private researchAssistantState?: { model(): string | undefined; thinking(): string | undefined };
   private lifecycle: "open" | "cancelling" | "closing" = "open";
+  private readonly recoveryOwners = new Map<string, {
+    sessionPath: string;
+    ownerSessionId?: string;
+    launchId?: string;
+    recovery: LlmRecoveryController;
+  }>();
 
   constructor(private readonly rootSessionManager: CoordinatorSessionManager) {
     this.state = readSubagentJournal(rootSessionManager.getEntries());
@@ -294,6 +302,8 @@ export class SubagentCoordinator {
       childSessionId: event.childSessionId,
       status: event.status,
       ...(event.latestMessage === undefined ? {} : { latestMessage: event.latestMessage }),
+      ...(event.automaticRetry === undefined ? {} : { automaticRetry: event.automaticRetry }),
+      ...(event.llmRecovery === undefined ? {} : { llmRecovery: event.llmRecovery }),
       ...(event.event === undefined || privateSubagentEventDataReason(event.event)
         ? {}
         : { event: event.event }),
@@ -312,16 +322,73 @@ export class SubagentCoordinator {
     return () => this.listeners.delete(listener);
   }
 
+  registerRecovery(input: {
+    sessionId: string;
+    sessionPath: string;
+    ownerSessionId?: string;
+    launchId?: string;
+    recovery: LlmRecoveryController;
+  }): () => void {
+    if (this.lifecycle !== "open" || this.recoveryOwners.has(input.sessionId)
+      || input.recovery.state().targetSessionId !== input.sessionId) {
+      throw new Error("Cannot register duplicate or closing Agent recovery ownership.");
+    }
+    if (input.launchId) {
+      const job = this.journal().jobs.get(input.launchId);
+      if (!job || job.ownerSessionId !== input.ownerSessionId || job.terminalSuppressed || job.terminalStatus
+        || (job.childSessionId !== undefined && job.childSessionId !== input.sessionId)
+        || (job.sessionPath !== undefined && job.sessionPath !== input.sessionPath)) {
+        throw new Error("Agent recovery does not match its original child reservation.");
+      }
+    } else if (input.sessionId !== this.rootSessionManager.getSessionId()
+      || input.sessionPath !== this.rootSessionManager.getSessionFile() || input.ownerSessionId !== undefined) {
+      throw new Error("Agent recovery does not match its root session owner.");
+    }
+    this.recoveryOwners.set(input.sessionId, input);
+    return () => {
+      if (this.recoveryOwners.get(input.sessionId) === input) this.recoveryOwners.delete(input.sessionId);
+    };
+  }
+
+  retry(targetSessionId: string, failureId: string): Promise<LlmRetryAcceptedDto> {
+    if (this.lifecycle !== "open") throw new LlmRetryError("LLM_RETRY_BUSY");
+    const owner = this.recoveryOwners.get(targetSessionId);
+    if (!owner) throw new LlmRetryError("LLM_RETRY_UNAVAILABLE");
+    if (owner.launchId) {
+      const job = this.journal().jobs.get(owner.launchId);
+      if (!job || job.childSessionId !== targetSessionId || job.sessionPath !== owner.sessionPath
+        || job.ownerSessionId !== owner.ownerSessionId || !job.launchAcknowledged
+        || job.terminalStatus || job.terminalSuppressed
+        || !this.recoveryOwners.has(job.ownerSessionId)) throw new LlmRetryError("LLM_RETRY_UNAVAILABLE");
+    }
+    return owner.recovery.retry(failureId);
+  }
+
+  retryState(targetSessionId: string, launchId?: string): LlmRetryStateEventDto | undefined {
+    const owner = this.recoveryOwners.get(targetSessionId);
+    if (!owner || (launchId !== undefined && launchId !== owner.launchId)) return undefined;
+    const state = owner.recovery.state();
+    if (!owner.launchId) return state;
+    const job = this.journal().jobs.get(owner.launchId);
+    if (!job || job.terminalSuppressed || job.terminalStatus) return undefined;
+    return job.launchAcknowledged ? state : { ...state, llmRecovery: null };
+  }
+
   beginCancellation(): void {
     if (this.lifecycle === "open") this.lifecycle = "cancelling";
+    for (const owner of this.recoveryOwners.values()) owner.recovery.cancel();
   }
 
   finishCancellation(): void {
-    if (this.lifecycle === "cancelling") this.lifecycle = "open";
+    if (this.lifecycle === "cancelling") {
+      this.lifecycle = "open";
+      for (const owner of this.recoveryOwners.values()) owner.recovery.finishCancellation();
+    }
   }
 
   beginClosing(): void {
     this.lifecycle = "closing";
+    for (const owner of this.recoveryOwners.values()) owner.recovery.cancel();
   }
 
   getRootSessionManager(): CoordinatorSessionManager {

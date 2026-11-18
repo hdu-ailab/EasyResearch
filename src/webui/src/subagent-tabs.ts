@@ -13,6 +13,7 @@ export interface SubagentTabState {
   retained: boolean;
   running: boolean;
   error: boolean;
+  awaitingRetry?: boolean;
   latestMessage?: string;
 }
 
@@ -70,6 +71,7 @@ function updateTabFromTool(tab: SubagentTabState, tool: ToolView, step = tool.st
     {
       ...tab,
       agent: tool.agentName ?? tab.agent,
+      awaitingRetry: tool.llmRecovery?.status === "available",
       ...(tool.agentId !== undefined ? { agentId: tool.agentId } : {}),
       ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
     },
@@ -157,6 +159,7 @@ export function syncRunningSubagentTabs(
       retained: false,
       running: true,
       error: false,
+      awaitingRetry: tool.llmRecovery?.status === "available",
       ...(tool.latestMessage !== undefined ? { latestMessage: tool.latestMessage } : {}),
     });
   }
@@ -200,6 +203,7 @@ export function promoteSubagentTab(state: SubagentTabsState, link: SubagentSessi
               retained: true,
               running: link.status === "working",
               error: link.status === "error",
+              awaitingRetry: link.llmRecovery?.status === "available",
               latestMessage: link.latestMessage ?? matched.latestMessage ?? existingUuid.latestMessage,
             },
             link.step,
@@ -223,6 +227,7 @@ export function promoteSubagentTab(state: SubagentTabsState, link: SubagentSessi
               ...(link.agentId !== undefined ? { agentId: link.agentId } : {}),
               running: link.status === "working",
               error: link.status === "error",
+              awaitingRetry: link.llmRecovery?.status === "available",
               ...(link.latestMessage !== undefined ? { latestMessage: link.latestMessage } : {}),
             },
             link.step,

@@ -12,10 +12,14 @@ import {
 } from "../runtime/agent-runtime-binding";
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
-import type { LiveConfiguration } from "../runtime/live-configuration";
+import { ConfigurationUnavailableError, type LiveConfiguration } from "../runtime/live-configuration";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
 import { createProviderTimeoutExtension } from "../extensions/provider-timeout";
 import { createFileWriteRecoveryExtension } from "../extensions/file-write-recovery";
+import { createLlmRetryPolicyBinding } from "../runtime/llm-retry-policy";
+import { createLlmRetryPolicyExtension } from "../extensions/llm-retry-policy";
+import { disposeLlmRecoveryRuntime, LlmRecoveryController, LlmRetryError } from "../runtime/llm-recovery";
+import { createLlmRecoveryExtension } from "../extensions/llm-recovery";
 import {
   createCompactionPolicyBinding,
   type CompactionPolicySettingsManager,
@@ -23,7 +27,7 @@ import {
 import { resolvePiDefaultModel, type PiDefaultModelApi } from "../runtime/pi-default-model";
 import { publishPersistedUsageEntry } from "../runtime/persisted-usage-event";
 import { applySkillSnapshotBaseDirs } from "../runtime/resource-fingerprint";
-import { assertModelRequestReady } from "../runtime/model-request-error";
+import { assertModelRequestReady, ModelRequestError } from "../runtime/model-request-error";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentSessionNetworkRouter } from "../runtime/network-routing";
 import { createConfiguredModelRuntime } from "../web/auth-runtime";
@@ -36,6 +40,7 @@ import {
   withCurrentAgentCatalog,
 } from "./dispatch-authorization";
 import type { ReservedDispatch, SubagentCoordinator } from "./coordinator";
+import type { SubagentProgressEvent } from "./contracts";
 import { createSessionMaterializationBarrier, type SessionMaterializationBarrier } from "./materialization";
 import { sessionNameFor } from "./session-links";
 import { createSubagentNotificationExtension, type SubagentSupervisor, type SupervisableAgentSession } from "./supervisor";
@@ -102,7 +107,7 @@ export interface StageLaunchHandle {
   readonly sessionPath: string;
   readonly materialized: Promise<void>;
   readonly completion: Promise<StageRunResult>;
-  subscribe(listener: (event: JsonAgentSessionEvent) => void): () => void;
+  subscribe(listener: (event: SubagentProgressEvent) => void): () => void;
   abort(reason?: string): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -117,10 +122,12 @@ export interface StageAgentSession extends RuntimeSteeringSession {
   readonly model: Model<any> | undefined;
   readonly isStreaming: boolean;
   readonly isIdle: boolean;
+  readonly isCompacting: boolean;
+  readonly retryAttempt: number;
   readonly extensionRunner: {
     emit(event: { type: "session_shutdown"; reason: "quit" }): Promise<unknown>;
   };
-  readonly sessionManager: { getEntries(): readonly unknown[] };
+  readonly sessionManager: { getEntries(): readonly unknown[]; getBranch(): readonly unknown[] };
   subscribe(listener: (event: unknown) => void): () => void;
   bindExtensions(bindings: unknown): Promise<void>;
   setSessionName(name: string): void;
@@ -278,6 +285,17 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       agentId: options.reservation.agentId,
     };
     let binding: AgentRuntimeBinding | undefined;
+    const recovery = new LlmRecoveryController();
+    let retryPolicy: ReturnType<typeof createLlmRetryPolicyBinding> | undefined;
+    let releaseRecovery: (() => void) | undefined;
+    let unsubscribeRecovery: (() => void) | undefined;
+    let recoveryDisposed = false;
+    const disposeRecovery = () => {
+      if (recoveryDisposed) return;
+      disposeLlmRecoveryRuntime(recovery, retryPolicy, releaseRecovery);
+      unsubscribeRecovery?.();
+      recoveryDisposed = true;
+    };
     let abortRequested = false;
     let session: StageAgentSession | undefined;
     let supervisor: SubagentSupervisor | undefined;
@@ -299,6 +317,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
     };
 
     const retrySetupCleanup = async (): Promise<void> => {
+      recovery.cancel();
       await runCleanupSteps([
         () => {
           if (setupBarrierDisposed) return;
@@ -342,6 +361,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           }
           setupSessionDisposed = true;
         },
+        () => {
+          if (!setupSessionDisposed) return;
+          disposeRecovery();
+        },
         async () => {
           if (setupBindingDisposed || !setupSessionDisposed) return;
           if (binding) await binding.dispose();
@@ -368,6 +391,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       }
 
       const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
+      retryPolicy = createLlmRetryPolicyBinding(settingsManager as SettingsManager);
       const automaticCompaction = createCompactionPolicyBinding(
         settingsManager as CompactionPolicySettingsManager,
       );
@@ -403,6 +427,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         extensionFactories: [
           { name: "provider-timeout", factory: createProviderTimeoutExtension(settingsManager as SettingsManager, () => binding!.providerTimeoutSettings()) },
           { name: "file-write-recovery", factory: createFileWriteRecoveryExtension() },
+          { name: "llm-retry-policy", factory: createLlmRetryPolicyExtension(retryPolicy) },
           createCompactionCancellationExtension(() => abortRequested, () => session!.abortCompaction()),
           ...deps.createExtensionFactories({
             binding,
@@ -412,6 +437,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
             supervisor,
             publishTimelineEntry: (entry) => publishTimelineEntry(entry),
           }),
+          { name: "llm-recovery", factory: createLlmRecoveryExtension(recovery) },
           createSubagentNotificationExtension(supervisor),
         ],
         extensionsOverride: prioritizeCompactionCancellation,
@@ -434,6 +460,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         excludeTools: excludedLocalShellTools(process.platform),
       });
       session = created.session;
+      retryPolicy.attach(session as Parameters<typeof retryPolicy.attach>[0]);
       result.model = model ? `${model.provider}/${model.id}` : result.model;
       configureBatchedSteering(session);
       const sessionPath = session.sessionFile;
@@ -449,8 +476,8 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
 
       result.sessionId = session.sessionId;
       result.sessionPath = sessionPath;
-      const listeners = new Set<(event: JsonAgentSessionEvent) => void>();
-      const pendingOwnerEvents: JsonAgentSessionEvent[] = [];
+      const listeners = new Set<(event: SubagentProgressEvent) => void>();
+      const pendingOwnerEvents: SubagentProgressEvent[] = [];
       let ownerSubscribed = false;
       let abortReapplied = false;
       let abortReason: string | undefined;
@@ -527,6 +554,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         return tracked;
       };
       const requestAbort = (reason?: string) => {
+        recovery.cancel();
         if (!abortRequested) {
           abortRequested = true;
           abortReason = reason;
@@ -535,15 +563,15 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         }
         return attemptAbort();
       };
-      const deliver = (listener: (event: JsonAgentSessionEvent) => void, event: JsonAgentSessionEvent) => {
+      const deliver = (listener: (event: SubagentProgressEvent) => void, event: SubagentProgressEvent) => {
         try {
           listener(event);
         } catch {
           // Progress observers never control Pi persistence or stage ownership.
         }
       };
-      const publishOwnerEvent = (event: JsonAgentSessionEvent) => {
-        barrier!.observe(event);
+      const publishOwnerEvent = (event: SubagentProgressEvent) => {
+        if (event.type !== "llm_retry_state" && event.type !== "timeline_entry_appended" && event.type !== "subagent_supervisor") barrier!.observe(event);
         collectMessageEvent(result, event);
         if (!ownerSubscribed) pendingOwnerEvents.push(event);
         else for (const listener of listeners) deliver(listener, event);
@@ -566,17 +594,48 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           publishOwnerEvent(persistedEvent as JsonAgentSessionEvent);
         });
       });
+      recovery.attach(session as Parameters<typeof recovery.attach>[0], retryPolicy, async (signal) => {
+        const release = await supervisor!.acquirePromptAdmission();
+        try {
+          const authorizationSignal = options.signal ? AbortSignal.any([options.signal, signal]) : signal;
+          const generation = await authorizeOperation((currentGeneration) => currentGeneration, authorizationSignal);
+          return {
+            release,
+            validate() {
+              throwIfAuthorizationAborted(authorizationSignal);
+              if (abortRequested) throw new LlmRetryError("LLM_RETRY_UNAVAILABLE");
+              if (binding!.generation() !== generation || !options.liveConfiguration.isCurrent(generation)) {
+                throw new LlmRetryError("LLM_RETRY_BUSY");
+              }
+            },
+          };
+        } catch (error) {
+          release();
+          if (error instanceof ModelRequestError || error instanceof ConfigurationUnavailableError || error instanceof LlmRetryError) throw error;
+          throw new LlmRetryError(error instanceof AgentConfigurationChangedError ? "LLM_RETRY_BUSY" : "LLM_RETRY_UNAVAILABLE");
+        }
+      });
+      releaseRecovery = options.coordinator.registerRecovery({
+        sessionId: session.sessionId,
+        sessionPath,
+        ownerSessionId: options.reservation.ownerSessionId,
+        launchId: options.reservation.launchId,
+        recovery,
+      });
+      unsubscribeRecovery = recovery.subscribe(() => publishOwnerEvent(recovery.state()));
       supervisor.attach(session as unknown as SupervisableAgentSession, async () => {
         if (!session!.isIdle) await session!.waitForIdle();
         await binding!.ensureCurrent();
-      }, () => abortRequested);
+      }, () => abortRequested, () => recovery.holdsAutomaticWake());
       await session.bindExtensions({
         mode: "rpc",
         commandContextActions: {
           waitForIdle: () => session!.waitForIdle(),
           navigateTree: async (targetId: string, navigationOptions?: Record<string, unknown>) => {
-            const navigated = await session!.navigateTree(targetId, navigationOptions);
-            return { cancelled: navigated.cancelled };
+            try {
+              const navigated = await session!.navigateTree(targetId, navigationOptions);
+              return { cancelled: navigated.cancelled };
+            } finally { retryPolicy!.finishSummary(); }
           },
           reload: async () => {
             await session!.reload();
@@ -600,6 +659,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         },
         reload: () => session!.reload(),
         async abort() {
+          recovery.blockCurrentRun();
           // Pi signals abort synchronously, then waits for this event drain to
           // reach agent_settled; do not deadlock the active-boundary handler.
           const operation = session!.abort();
@@ -619,7 +679,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       if (options.signal?.aborted) signalListener();
       else options.signal?.addEventListener("abort", signalListener, { once: true });
 
-      const authorizePrompt = async (releaseAdmission: () => void): Promise<{ prompt: Promise<void> }> => {
+      const authorizeOperation = async <T>(start: (generation: number) => T, signal = options.signal): Promise<T> => {
         let bindingMismatchRetries = 0;
         for (;;) {
           await binding!.ensureCurrent();
@@ -639,7 +699,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
               if (!boundAgent.enabled || boundAgent.name !== authorizedTarget.name) {
                 throw new Error(SAFE_STAGE_AUTHORIZATION_ERROR);
               }
-              throwIfAuthorizationAborted(options.signal);
+              throwIfAuthorizationAborted(signal);
               if (
                 binding!.generation() !== generation
                 || options.liveConfiguration.generation !== generation
@@ -651,13 +711,13 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
               const currentModel = binding!.model();
               if (currentModel) result.model = `${currentModel.provider}/${currentModel.id}`;
               assertModelRequestReady(binding!.modelRuntime(), currentModel);
-              throwIfAuthorizationAborted(options.signal);
-              return { prompt: session!.prompt(`Task: ${options.task}`, { preflightResult: releaseAdmission }) };
+              throwIfAuthorizationAborted(signal);
+              return { value: start(generation) };
             },
-            { signal: options.signal, maxGenerationRetries: 1 },
+            { signal, maxGenerationRetries: 1 },
           );
-          if (!bindingMismatch && authorized) return authorized;
-          throwIfAuthorizationAborted(options.signal);
+          if (!bindingMismatch && authorized) return authorized.value;
+          throwIfAuthorizationAborted(signal);
           if (bindingMismatchRetries >= 1) throw new AgentConfigurationChangedError();
           bindingMismatchRetries += 1;
         }
@@ -666,7 +726,9 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       const releaseAdmission = await supervisor.acquirePromptAdmission();
       let prompt: Promise<void>;
       try {
-        ({ prompt } = await authorizePrompt(releaseAdmission));
+        ({ prompt } = await authorizeOperation(() => ({
+          prompt: session!.prompt(`Task: ${options.task}`, { preflightResult: releaseAdmission }),
+        })));
       } catch (error) {
         releaseAdmission();
         throw error;
@@ -683,8 +745,22 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
             () => {
               if (error !== undefined) throw error;
             },
-            () => supervisor!.waitForQuiescence(),
-            () => session!.waitForIdle(),
+            async () => {
+              let quiescence: Promise<void> | undefined;
+              for (;;) {
+                await recovery.waitForResolution();
+                if (!quiescence) {
+                  const waiting = supervisor!.waitForQuiescence();
+                  quiescence = waiting.finally(() => { quiescence = undefined; });
+                }
+                await recovery.untilRecovery(quiescence);
+                if (recovery.hasWork()) continue;
+                await session!.waitForIdle();
+                // A hidden completion wake can exhaust while the original run's
+                // finish is waiting; recheck both owners after every idle boundary.
+                if (!recovery.hasWork() && supervisor!.isQuiescent()) break;
+              }
+            },
           ], "Stage completion failed.");
         } catch (finishError) {
           completionFailure = finishError;
@@ -776,6 +852,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
               }
               session!.dispose();
               sessionDisposed = true;
+            },
+            () => {
+              if (!sessionDisposed) return;
+              disposeRecovery();
             },
             async () => {
               if (bindingDisposed || !sessionDisposed) return;
@@ -889,7 +969,7 @@ export async function createDefaultStageSessionLauncher(
   });
 }
 
-function collectMessageEvent(result: StageRunResult, event: JsonAgentSessionEvent): void {
+function collectMessageEvent(result: StageRunResult, event: SubagentProgressEvent): void {
   if (event.type !== "message_end") return;
   const message = event.message as AgentMessage;
   if (message.role !== "assistant" && message.role !== "user" && message.role !== "toolResult") return;

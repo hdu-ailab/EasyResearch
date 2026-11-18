@@ -6,8 +6,9 @@ import { createSubagentDispatchExtension } from "./subagent-dispatch";
 import { createWelcomeBannerExtension } from "./welcome-banner";
 import { createEventLoggerExtension } from "./event-logger";
 import { createProjectTrustExtension } from "./project-trust";
-import webSearchExtension, { createWebSearchExtension } from "./web-search";
-import webFetchExtension, { createWebFetchExtension } from "./webfetch";
+import { createWebSearchExtension } from "./web-search";
+import { createWebFetchExtension } from "./webfetch";
+import { createKeylessWebClient } from "./keyless-web/client";
 import { createWebTreeExtension } from "./web-tree";
 import { createSessionNameExtension } from "./session-name";
 import { createSessionTimelineExtension } from "./session-timeline";
@@ -63,20 +64,25 @@ export interface ResearchAssistantExtensionRuntime {
 }
 
 export function createSearchExtensions(networkRouter?: AgentSessionNetworkRouter): BundledExtension[] {
+  const keylessClient = createKeylessWebClient({
+    runRequest: (operation) => {
+      const invalid = networkRouter?.appliedSearchRoute.invalidError();
+      if (invalid) return Promise.reject(invalid);
+      return networkRouter ? networkRouter.withScope("search", operation) : operation();
+    },
+    sanitizeError: networkRouter ? (error) => networkRouter.appliedSearchRoute.sanitizeError(error) : undefined,
+  });
   return [
     {
       name: "web-search",
-      factory: networkRouter
-        ? createWebSearchExtension({ appliedSearchRoute: networkRouter.appliedSearchRoute })
-        : webSearchExtension,
+      factory: createWebSearchExtension({ keylessClient, appliedSearchRoute: networkRouter?.appliedSearchRoute }),
     },
     {
       name: "webfetch",
-      factory: networkRouter
-        ? createWebFetchExtension({
-            runRequest: (operation) => networkRouter.withScope("search", operation),
-          })
-        : webFetchExtension,
+      factory: createWebFetchExtension({
+        keylessClient,
+        ...(networkRouter ? { runRequest: <T>(operation: () => T) => networkRouter.withScope("search", operation) } : {}),
+      }),
     },
   ];
 }

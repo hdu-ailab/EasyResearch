@@ -35,6 +35,8 @@ export interface ChatComposerProps {
   chatFontSize?: number;
   disabled: boolean;
   streaming: boolean;
+  /** Owned work can be stopped while the model is paused awaiting recovery. */
+  canAbort?: boolean;
   onSend: (text: string) => void;
   /** Non-Skill slash commands execute immediately; Skills remain editable completions. */
   onCommand?: (command: SkillCommandDto, args: string) => void;
@@ -56,7 +58,7 @@ export interface ChatComposerHandle {
  * `/<name>` form unless a command collision requires Pi's `/skill:<name>` form.
  */
 export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer(
-  { cwd, chatFontSize, disabled, streaming, onSend, onCommand, onAbort, commands = [] },
+  { cwd, chatFontSize, disabled, streaming, canAbort = streaming, onSend, onCommand, onAbort, commands = [] },
   ref,
 ) {
   const { t } = useI18n();
@@ -324,7 +326,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   // Single primary button (ADR-083): while streaming, non-empty input sends a
   // steer and empty input stops the run; when idle it is always Send.
   const canSend = text.trim().length > 0;
-  const showStop = streaming && !canSend;
+  const showStop = canAbort && !canSend;
 
   return (
     <form

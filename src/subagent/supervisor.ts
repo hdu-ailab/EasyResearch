@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { AgentSessionEvent, InlineExtension, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
+import { isLlmRetryControl } from "../runtime/llm-recovery";
 import { type ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import type { SubagentJobIdentity, SubagentLaunchDetails, SubagentProgressEvent } from "./contracts";
 import type { NotificationBatchRecord } from "./job-journal";
@@ -116,10 +117,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isHiddenStatusMessage(value: unknown): boolean {
-  return isObject(value) && value.customType === AGENT_STATUS_TYPE;
+  return isObject(value) && (value.customType === AGENT_STATUS_TYPE || isLlmRetryControl(value));
 }
 
-function publicChildEvent(event: JsonAgentSessionEvent): SubagentProgressEvent | undefined {
+function publicChildEvent(event: SubagentProgressEvent): SubagentProgressEvent | undefined {
   if (event.type === "entry_appended") {
     const completion = projectSubagentCompletionEntry(event.entry);
     if (completion) return { type: "timeline_entry_appended", entry: completion };
@@ -138,7 +139,7 @@ function publicChildEvent(event: JsonAgentSessionEvent): SubagentProgressEvent |
 }
 
 function requiresLaunchAcknowledgement(event: SubagentProgressEvent): boolean {
-  return event.type === "agent_end" || event.type === "agent_settled";
+  return event.type === "agent_end" || event.type === "agent_settled" || event.type === "llm_retry_state";
 }
 
 export class SubagentSupervisor {
@@ -155,6 +156,7 @@ export class SubagentSupervisor {
   private parent?: SupervisableAgentSession;
   private ensureTriggeredTurnReady?: () => Promise<void>;
   private parentIsStopping?: () => boolean;
+  private holdAutomaticWake?: () => boolean;
   private parentSubscription?: () => void;
   private sendPromise?: Promise<void>;
   private releasePromptAdmission?: () => void;
@@ -191,17 +193,20 @@ export class SubagentSupervisor {
     session: SupervisableAgentSession,
     ensureTriggeredTurnReady?: () => Promise<void>,
     parentIsStopping?: () => boolean,
+    holdAutomaticWake?: () => boolean,
   ): void {
     if (this.disposed) throw new Error("Cannot attach a disposed subagent supervisor.");
     if (this.parent === session) {
       if (ensureTriggeredTurnReady) this.ensureTriggeredTurnReady = ensureTriggeredTurnReady;
       if (parentIsStopping) this.parentIsStopping = parentIsStopping;
+      if (holdAutomaticWake) this.holdAutomaticWake = holdAutomaticWake;
       return;
     }
     if (this.parent) throw new Error("Subagent supervisor is already attached to another AgentSession.");
     this.parent = session;
     this.ensureTriggeredTurnReady = ensureTriggeredTurnReady;
     this.parentIsStopping = parentIsStopping;
+    this.holdAutomaticWake = holdAutomaticWake;
     this.parentSubscription = session.subscribe((event) => this.observeParentEvent(event));
     if (this.hasPendingNotifications()) this.scheduleNotification();
     this.stateChanged();
@@ -424,6 +429,7 @@ export class SubagentSupervisor {
   }
 
   runtimeBecameCoherent(): void {
+    if (this.holdAutomaticWake?.()) return;
     const batchId = this.blockedTriggeredBatchId;
     if (
       !batchId
@@ -446,6 +452,7 @@ export class SubagentSupervisor {
           || this.isStopping()
           || this.disposed
           || !this.isPendingBatch(batchId)
+          || this.holdAutomaticWake?.()
         ) return;
         if (this.sendPromise) {
           const activeSend = this.sendPromise;
@@ -493,6 +500,7 @@ export class SubagentSupervisor {
     this.admittingBatch?.acknowledge();
     while (
       !this.isStopping() && !this.disposed && this.parent?.isStreaming
+      && !this.holdAutomaticWake?.()
       && (this.sendPromise || this.hasSchedulableNotificationWork())
     ) {
       await this.flushNotificationBatch(true, false);
@@ -650,6 +658,7 @@ export class SubagentSupervisor {
       this.parent = undefined;
       this.ensureTriggeredTurnReady = undefined;
       this.parentIsStopping = undefined;
+      this.holdAutomaticWake = undefined;
       this.blockedTriggeredBatchId = undefined;
       this.scheduledTriggeredRetryBatchId = undefined;
       this.automaticallyRetriedTriggeredBatchIds.clear();
@@ -688,7 +697,7 @@ export class SubagentSupervisor {
     child.subscription = handle.subscribe((event) => this.observeChildEvent(child, event));
   }
 
-  private observeChildEvent(child: OwnedChild, event: JsonAgentSessionEvent): void {
+  private observeChildEvent(child: OwnedChild, event: SubagentProgressEvent): void {
     if (event.type === "message_end") {
       const text = messageText(event.message);
       if (text !== undefined) child.latestAssistantText = text;
@@ -710,6 +719,10 @@ export class SubagentSupervisor {
       type: "subagent_supervisor",
       ...child.identity,
       status: "working",
+      ...(event.type === "llm_retry_state" ? {
+        automaticRetry: event.automaticRetry,
+        llmRecovery: event.llmRecovery,
+      } : {}),
       ...(latestMessage === undefined ? {} : { latestMessage }),
       event,
     });
@@ -971,6 +984,7 @@ export class SubagentSupervisor {
     retryTriggeredBatchId?: string,
   ): Promise<void> {
     const parent = this.requireParent();
+    if (triggerTurn && this.holdAutomaticWake?.()) return;
     const outcomes = this.collectDeliverableOutcomes();
     let createdBatchId: string | undefined;
     if (outcomes.length > 0) {
@@ -1020,7 +1034,7 @@ export class SubagentSupervisor {
         throw error;
       }
       if (this.blockedTriggeredBatchId === batch.batchId) this.blockedTriggeredBatchId = undefined;
-      if (this.isStopping() || this.disposed || !this.isPendingBatch(batch.batchId)) return;
+       if (this.isStopping() || this.disposed || this.holdAutomaticWake?.() || !this.isPendingBatch(batch.batchId)) return;
     }
 
     this.awaitingAcknowledgementBatchIds.add(batch.batchId);
@@ -1120,7 +1134,7 @@ export class SubagentSupervisor {
 
   private hasSchedulableNotificationWork(): boolean {
     const parent = this.parent;
-    if (!parent || this.disposed || this.isStopping()) return false;
+    if (!parent || this.disposed || this.isStopping() || this.holdAutomaticWake?.()) return false;
     if (this.hasDeliverableOutcomes()) return true;
     const pendingBatches = this.coordinator.journal().pendingBatches.filter(
       (batch) => batch.ownerSessionId === parent.sessionId,

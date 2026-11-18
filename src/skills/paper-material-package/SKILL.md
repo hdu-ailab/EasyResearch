@@ -19,7 +19,7 @@ downstream specialists. Keep each paper separate and factual so Writing can
 build cross-paper taxonomy and synthesis without guessing what the sources say.
 
 This Skill does not search for candidates, verify metadata by itself, download
-PDFs, or convert documents. Use `paper-search`, `arxiv`, and
+PDFs, or convert documents. Use `paper-search`, `paper-lookup`, `arxiv`, and
 `pdf-to-markdown` first. It does not write a literature review, compare papers
 across the collection, choose a taxonomy, or draft manuscript prose.
 
@@ -107,6 +107,16 @@ states exactly what would make the card complete.
   not prove that the paper supports a method or result statement.
 - Search snippets and abstracts may support candidate selection, but a card based
   only on them is `partial` and says that full-text verification is missing.
+- In existing citation/evidence/gap fields, distinguish the canonical publication
+  or repository source from its discovery/extraction provider. Preserve original
+  identifiers/URLs, primary pages actually checked, retrieval channel, available
+  full-text paths and locators, and any reported cache provenance. An optional
+  `DiscoveryProvider` label can clarify mixed-channel cards; no separate artifact
+  or runtime field is required.
+- Index created/updated filters do not verify publication dates. Record unresolved
+  date eligibility, cached-only extracts, quota/cooldown failures and coverage
+  shortfalls in the existing scope/gap fields. Empty or throttled channels do not
+  establish absence; provider extraction is not direct origin verification.
 
 ## Collection Boundary
 

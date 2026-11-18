@@ -2,9 +2,12 @@ import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-c
 import type {
   ApiUsageRecordDto,
   ApiUsageStatisticsDto,
+  AutomaticRetryDto,
   CompactionPolicyDto,
   CompactionStateDto,
   ContextUsageDto,
+  LlmRecoveryDto,
+  LlmRetryStateEventDto,
   RuntimeConfigurationAppliedEvent,
   SessionSnapshotDto,
   SubagentSessionSummaryDto,
@@ -38,6 +41,8 @@ export interface ToolView {
   agentId?: string;
   /** True after launch acknowledgement or persisted supervisor hydration. */
   supervised?: boolean;
+  /** Live authority only; historical error rows cannot supply this checkpoint. */
+  llmRecovery?: LlmRecoveryDto | null;
   /** Compact string of the call arguments, e.g. `ls -la`. */
   args?: string;
   /** Compact string of the tool output, shown in the expanded body. */
@@ -133,8 +138,9 @@ export interface SessionViewState {
   /** True while an agent run is active, independently of message streaming. */
   isStreaming: boolean;
   error: string | null;
-  /** In-progress LLM API retry (from auto_retry_start/auto_retry_end). */
+  /** In-progress retry of this view's model request or native summary. */
   retry: RetryView | null;
+  llmRecovery?: LlmRecoveryDto | null;
   /** Agent name when this session line is a `easyresearch:` subagent line. */
   subagentName?: string;
   /** Pi session display name; unset falls back to the first-message title. */
@@ -169,10 +175,15 @@ export interface SteerView {
 }
 
 export interface RetryView {
+  source?: AutomaticRetryDto["source"];
   attempt: number;
   maxAttempts: number;
   errorMessage: string;
   endsAt: number;
+}
+
+export function automaticRetryView(retry: AutomaticRetryDto | null | undefined): RetryView | null {
+  return retry ? { ...retry, endsAt: Date.now() + retry.remainingMs } : null;
 }
 
 /** ADR-022: named subagent session lines share this prefix (`subagent/tool.ts`). */
@@ -455,7 +466,8 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     messageStructureRevision: Math.max(1, hydrationRevision),
     isStreaming,
     error: null,
-    retry: null,
+    retry: automaticRetryView(snapshot.automaticRetry),
+    llmRecovery: snapshot.llmRecovery ?? null,
     subagentName,
     ...(sessionName !== undefined ? { sessionName } : {}),
     nextOrder: 0,
@@ -617,7 +629,15 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     cursorCandidate.streaming = true;
   }
   return applyInlineUsage(
-    applySubagentSummaries(state, snapshot.subagents ?? [], snapshot.session.id),
+    applySubagentSummaries(
+      hydrateSubagentSummaryOwner(
+        state,
+        (snapshot.subagents ?? []).filter((child) => child.status === "working"),
+        snapshot.session.id,
+      ),
+      snapshot.subagents ?? [],
+      snapshot.session.id,
+    ),
     snapshot.inlineUsage ?? [],
   );
 }
@@ -835,7 +855,7 @@ export function applySubagentSummaries(
   const tools = state.tools.map((tool) => {
     const links = tool.toolCallId === undefined ? undefined : byToolCall.get(tool.toolCallId);
     if (tool.name !== "subagent" || !links?.length) return tool;
-    const summary = links.at(-1);
+    const summary = links.findLast((link) => link.status === "working") ?? links.at(-1);
     if (!summary) return tool;
     changed = true;
     const terminal = summary.status !== "working";
@@ -852,6 +872,7 @@ export function applySubagentSummaries(
       agentName: summary.agent,
       sessionId: summary.childSessionId,
       sessionLinks: links,
+      llmRecovery: summary.llmRecovery ?? null,
       ...(summary.step !== undefined ? { step: summary.step } : {}),
       latestMessage: usableText(summary.latestMessage),
       latestActivity: terminal ? undefined : tool.latestActivity,
@@ -1083,6 +1104,11 @@ export function reduceSubagentSupervisorEvent(
       sessionId: event.childSessionId,
       latestMessage: latestMessage ?? tool.latestMessage,
       latestActivity,
+      llmRecovery: terminal
+        ? null
+        : event.event?.type === "llm_retry_state"
+          ? (event.event.llmRecovery as LlmRecoveryDto | null)
+          : tool.llmRecovery,
     };
   });
   return changed ? { ...state, tools } : state;
@@ -1209,7 +1235,7 @@ export function terminateSessionRun(
     ...state,
     isStreaming: false,
     error: clearError ? null : state.error,
-    retry: null,
+    retry: state.retry?.source && state.retry.source !== "agent" ? state.retry : null,
     // Root compaction belongs to its controller and may continue after agent_settled.
     compactionState: source === "child" ? "idle" : state.compactionState,
     activeMessageKey: undefined,
@@ -1223,6 +1249,8 @@ export function terminateDeletedSession(state: SessionViewState): SessionViewSta
   return {
     ...terminateSessionRun(state, true),
     compactionState: "idle",
+    retry: null,
+    llmRecovery: null,
     tools: state.tools.map((tool) => (tool.done ? tool : interruptTool(tool))),
   };
 }
@@ -1234,10 +1262,16 @@ export function terminateDeletedSession(state: SessionViewState): SessionViewSta
  */
 export function reduceSessionEvent(
   state: SessionViewState,
-  event: AgentSessionEvent | RuntimeConfigurationAppliedEvent | TimelineEntryAppendedEventDto,
+  event: AgentSessionEvent | RuntimeConfigurationAppliedEvent | TimelineEntryAppendedEventDto | LlmRetryStateEventDto,
   source: "root" | "child" = "root",
 ): SessionViewState {
   switch (event.type) {
+    case "llm_retry_state":
+      return {
+        ...state,
+        retry: automaticRetryView(event.automaticRetry),
+        llmRecovery: event.llmRecovery,
+      };
     case "compaction_start":
       return source !== "child" || state.compactionState === "running"
         ? state
@@ -1573,18 +1607,29 @@ export function reduceSessionEvent(
     }
     case "auto_retry_start": {
       const { attempt, maxAttempts, delayMs, errorMessage } = event;
+      if (
+        !Number.isSafeInteger(attempt) ||
+        attempt < 1 ||
+        !Number.isSafeInteger(maxAttempts) ||
+        maxAttempts < attempt ||
+        !Number.isFinite(delayMs) ||
+        delayMs < 0 ||
+        typeof errorMessage !== "string"
+      )
+        return state;
       return {
         ...state,
         retry: {
-          attempt: typeof attempt === "number" ? attempt : 1,
-          maxAttempts: typeof maxAttempts === "number" ? maxAttempts : 1,
-          errorMessage: typeof errorMessage === "string" ? errorMessage : "",
-          endsAt: Date.now() + (typeof delayMs === "number" ? delayMs : 0),
+          source: "agent",
+          attempt,
+          maxAttempts,
+          errorMessage,
+          endsAt: Date.now() + delayMs,
         },
       };
     }
     case "auto_retry_end":
-      return { ...state, retry: null };
+      return state.retry?.source && state.retry.source !== "agent" ? state : { ...state, retry: null };
     case "tool_execution_start": {
       const { toolCallId, toolName, args } = event as unknown as {
         toolCallId: string;

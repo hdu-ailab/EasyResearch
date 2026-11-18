@@ -100,6 +100,8 @@ export interface ActiveSessionDto {
 
 export interface SessionSnapshotDto {
   session: ActiveSessionDto;
+  automaticRetry?: AutomaticRetryDto | null;
+  llmRecovery?: LlmRecoveryDto | null;
   runtimeConfigurationGeneration: number;
   timeline: TranscriptTimelineEntryDto[];
   history?: TranscriptHistoryDto;
@@ -114,6 +116,35 @@ export interface SessionSnapshotDto {
   /** Pending steer messages not yet delivered into the agent context
    * (ADR-083); omitted or empty for historical/stopped sessions. */
   steering?: string[];
+}
+
+export interface AutomaticRetryDto {
+  source: "agent" | "compaction" | "branchSummary";
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  remainingMs: number;
+  errorMessage: string;
+}
+
+export interface LlmRecoveryDto {
+  targetSessionId: string;
+  failureId: string;
+  failedEntryId: string;
+  status: "available" | "starting";
+}
+
+export interface LlmRetryStateEventDto {
+  type: "llm_retry_state";
+  targetSessionId: string;
+  automaticRetry: AutomaticRetryDto | null;
+  llmRecovery: LlmRecoveryDto | null;
+}
+
+export interface LlmRetryAcceptedDto {
+  accepted: true;
+  targetSessionId: string;
+  failureId: string;
 }
 
 export type SubagentCompletionEntryDto = import("../subagent/notifications").SubagentCompletionEntry;
@@ -408,6 +439,8 @@ export interface SubagentSessionSummaryDto {
   agent: string;
   childSessionId: string;
   status: SubagentJobStatus;
+  automaticRetry?: AutomaticRetryDto | null;
+  llmRecovery?: LlmRecoveryDto | null;
   /** Absent only for persisted links created before ADR-087. */
   launchId?: string;
   /** Absent only when persisted legacy history has no alias. */
@@ -420,6 +453,8 @@ export interface SubagentSessionSummaryDto {
 export type SubagentSupervisorEventDto = SubagentSupervisorEvent;
 
 export interface ChildSessionSnapshotDto {
+  automaticRetry?: AutomaticRetryDto | null;
+  llmRecovery?: LlmRecoveryDto | null;
   session: {
     id: string;
     cwd: string;

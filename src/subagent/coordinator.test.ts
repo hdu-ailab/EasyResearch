@@ -9,6 +9,7 @@ import type {
 } from "./contracts";
 import { SubagentCoordinator, type AgentCatalog, type CoordinatorSessionManager } from "./coordinator";
 import { readSubagentSessionLinks } from "./session-links";
+import type { LlmRecoveryController } from "../runtime/llm-recovery";
 
 function agent(name: string): AgentConfig {
   return {
@@ -76,6 +77,41 @@ function failedMaterializedAlias(coordinator: SubagentCoordinator) {
 }
 
 describe("SubagentCoordinator", () => {
+  it("routes only exact live acknowledged recovery owners without reserving a new launch", async () => {
+    const { coordinator } = harness();
+    const recovery = (targetSessionId: string) => ({
+      state: () => ({ type: "llm_retry_state", targetSessionId, automaticRetry: null,
+        llmRecovery: { targetSessionId, failureId: "failure", failedEntryId: "entry", status: "available" } }),
+      retry: vi.fn(async (failureId: string) => ({ accepted: true, targetSessionId, failureId })),
+      cancel: vi.fn(), finishCancellation: vi.fn(),
+    });
+    const root = recovery("root");
+    const releaseRoot = coordinator.registerRecovery({ sessionId: "root", sessionPath: "/sessions/root.jsonl", recovery: root as unknown as LlmRecoveryController });
+    const reserved = coordinator.reserveDispatch({ ownerSessionId: "root", toolCallId: "dispatch", requested: "reviewer", catalog: catalogOf("reviewer") });
+    const child = recovery("child");
+    const registration = { sessionId: "child", sessionPath: "/sessions/child.jsonl", launchId: reserved.launchId,
+      ownerSessionId: "root", recovery: child as unknown as LlmRecoveryController };
+    expect(() => coordinator.registerRecovery({ ...registration, ownerSessionId: "foreign" })).toThrow(/reservation/);
+    const releaseChild = coordinator.registerRecovery(registration);
+    expect(() => coordinator.registerRecovery(registration)).toThrow(/duplicate/);
+    expect(coordinator.retryState("child")?.llmRecovery).toBeNull();
+    expect(() => coordinator.retry("child", "failure")).toThrow(expect.objectContaining({ code: "LLM_RETRY_UNAVAILABLE" }));
+    materialize(coordinator, reserved);
+    coordinator.recordLaunchAcknowledged(reserved.launchId);
+    expect(coordinator.retryState("child", "old-launch")).toBeUndefined();
+    await expect(coordinator.retry("child", "failure")).resolves.toMatchObject({ accepted: true, targetSessionId: "child" });
+    expect(child.retry).toHaveBeenCalledExactlyOnceWith("failure");
+    expect(coordinator.journal().jobs.size).toBe(1);
+    coordinator.beginCancellation();
+    expect(child.cancel).toHaveBeenCalledOnce();
+    expect(root.cancel).toHaveBeenCalledOnce();
+    expect(() => coordinator.retry("child", "failure")).toThrow(expect.objectContaining({ code: "LLM_RETRY_BUSY" }));
+    coordinator.finishCancellation();
+    releaseChild(); releaseRoot();
+    expect(() => coordinator.retry("child", "failure")).toThrow(expect.objectContaining({ code: "LLM_RETRY_UNAVAILABLE" }));
+    expect(coordinator.retryState("child")).toBeUndefined();
+  });
+
   it("reserves distinct same-role ids before either launch starts", () => {
     const { coordinator } = harness();
     const catalog = catalogOf("search");

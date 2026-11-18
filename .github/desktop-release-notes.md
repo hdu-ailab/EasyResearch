@@ -2,19 +2,29 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.20 highlights
+## 0.1.21 highlights
 
-- Fix session and workspace deletion for verified histories migrated between home
-  directories, while preserving project files and shared session histories.
-- Show clearer history-conflict errors and confirm affected workspaces before
-  stopping their running tasks.
-- Fix immutable specialist handoff publication on Windows.
+- Increase default automatic model retries to ten, with waits of 5, 10, 20, 40,
+  80, then 120 seconds capped. Existing explicit retry settings take precedence.
+- Add **Retry model request** for failed main, nested and custom Agents. Continue
+  the retained context without sending another message or replaying completed
+  tool operations; another failure starts a fresh automatic retry cycle.
+- Preserve each Agent's retry status across browser reconnects and prevent stale
+  responses or repeated clicks from starting duplicate recovery requests.
+- Add keyless Firecrawl/Tavily web search, Firecrawl paper-index search and
+  selected-page extraction, with source provenance and provider-limit handling.
 
-## 0.1.20 更新
+Manual Retry applies to the current retained Agent session; historical errors
+after the runtime has stopped do not create a new retry action.
 
-- 修复用户目录迁移后，经核验的会话与工作区历史无法删除的问题，保留项目文件及共享会话历史。
-- 改善历史冲突提示，停止任务前明确确认受影响的工作区。
-- 修复 Windows 下专家 Agent 无法发布不可变交接文件的问题。
+## 0.1.21 更新
+
+- 默认模型自动重试增加至十次，等待 5、10、20、40、80 秒，随后保持 120 秒；已有显式重试配置仍优先生效。
+- 为主 Agent、嵌套子 Agent 和自定义 Agent 增加 **重试模型请求** 按钮，从保留的上下文继续，无需发送新消息或重放已完成的工具操作；再次失败会进入新一轮自动重试。
+- 浏览器重连后恢复各 Agent 的重试状态，防止过期响应和重复点击启动多次恢复请求。
+- 增加免密钥 Firecrawl/Tavily 网页搜索、Firecrawl 论文索引搜索及指定页面提取，保留来源信息并处理服务限额。
+
+手动重试适用于当前仍保留的 Agent 会话；运行时已停止后的历史错误不会产生新的重试入口。
 
 ## Downloads
 
@@ -26,7 +36,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.20
+version=0.1.21
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -34,7 +44,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.20
+version=0.1.21
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 

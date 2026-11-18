@@ -15,12 +15,13 @@ import { join } from "node:path";
 import TurndownService from "turndown";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { createKeylessWebClient, type KeylessWebClient } from "../keyless-web/client";
+import { extractRemotePage } from "./remote";
 
 /**
- * ADR-068: the bundled webfetch tool, copied verbatim from the user's standalone
- * upstream extension `~/.pi/agent/extensions/webfetch/` (same verbatim-port
- * policy as web-search, ADR-031/038). Pinned dependencies: `htmlparser2`,
- * `turndown`.
+ * ADR-068 direct-fetch behavior originated in the standalone upstream extension.
+ * The 2026-11-17 keyless amendment adds explicit single-page extraction through
+ * the shared Search-scoped client while preserving the direct branch.
  */
 
 export const COLLAPSED_PREVIEW_LINES = 5;
@@ -181,17 +182,21 @@ export async function request(url: string, format: OutputFormat, signal: AbortSi
 export interface WebFetchToolDependencies {
   request?: typeof request;
   runRequest?: <T>(operation: () => T) => T;
+  keylessClient?: KeylessWebClient;
 }
 
 export function createWebFetchTool(dependencies: WebFetchToolDependencies = {}) {
   const performRequest = dependencies.request ?? request;
   const runRequest = dependencies.runRequest ?? (<T>(operation: () => T): T => operation());
+  const keylessClient = dependencies.keylessClient ?? createKeylessWebClient({ runRequest });
   return defineTool({
     name: "webfetch",
     label: "Web Fetch",
     description:
       "Fetch a fully formed HTTP(S) URL and return its content as markdown (default), plain text, or raw HTML. " +
       "HTML is converted when markdown/text is requested. Images are returned as image content. " +
+      "Provider defaults to direct. Explicit firecrawl/tavily sends the supplied URL to that service for Markdown/text extraction; use public pages only. " +
+      "Remote extraction is provider-reported content, not direct-origin verification; there is no automatic fallback. " +
       "Requests time out after 30 seconds by default (maximum 120), responses are limited to 5MB, and text output is truncated to 2000 lines or 50KB with the full output saved to a temporary file.",
     promptSnippet: "Fetch a URL as markdown, plain text, raw HTML, or image content",
     promptGuidelines: [
@@ -201,6 +206,9 @@ export function createWebFetchTool(dependencies: WebFetchToolDependencies = {}) 
     ],
     parameters: Type.Object({
       url: Type.String({ minLength: 1, description: "Fully formed URL beginning with http:// or https://" }),
+      provider: Type.Optional(StringEnum(["direct", "firecrawl", "tavily"] as const, {
+        description: "Fetch directly (default), or send this public URL to the chosen extraction service",
+      })),
       format: Type.Optional(
         StringEnum(["markdown", "text", "html"] as const, {
           description: "Output format; defaults to markdown",
@@ -270,7 +278,16 @@ export function createWebFetchTool(dependencies: WebFetchToolDependencies = {}) 
       }
 
       const format = params.format ?? "markdown";
+      const provider = params.provider ?? "direct";
+      if (!["direct", "firecrawl", "tavily"].includes(provider)) throw new Error("Unsupported webfetch provider");
+      if (provider !== "direct" && format !== "markdown" && format !== "text") {
+        throw new Error("Remote extraction supports only markdown or text");
+      }
+      if (provider !== "direct" && (parsed.username || parsed.password)) {
+        throw new Error("Remote extraction requires a public URL without embedded credentials");
+      }
       const timeoutSeconds = Math.min(params.timeout ?? DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS);
+      const deadlineAt = performance.now() + timeoutSeconds * 1000;
       const timeoutController = new AbortController();
       const timer = setTimeout(
         () => timeoutController.abort(abortError(`Request timed out after ${timeoutSeconds} seconds`)),
@@ -286,6 +303,28 @@ export function createWebFetchTool(dependencies: WebFetchToolDependencies = {}) 
       });
 
       try {
+        if (provider !== "direct") {
+          const remote = await extractRemotePage({
+            client: keylessClient,
+            provider,
+            url: params.url,
+            format: format as "markdown" | "text",
+            signal: combinedSignal,
+            timeoutMs: timeoutSeconds * 1000,
+            maxBytes: MAX_RESPONSE_SIZE,
+            deadlineAt,
+          });
+          const provenance = JSON.stringify(remote.details).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+          const result = await truncateOutput(
+            `Provider-extracted content; not direct-origin verified.\nProvenance: ${provenance}\n\n${remote.content}`,
+          );
+          combinedSignal.throwIfAborted();
+          if (performance.now() >= deadlineAt) throw abortError(`Request timed out after ${timeoutSeconds} seconds`);
+          return {
+            content: [{ type: "text" as const, text: result.text }],
+            details: { ...remote.details, fullOutputPath: result.fullOutputPath },
+          };
+        }
         const response = await runRequest(() => performRequest(parsed.href, format, combinedSignal));
         if (!response.ok) {
           await response.body?.cancel();

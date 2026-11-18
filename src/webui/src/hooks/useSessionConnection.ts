@@ -21,6 +21,7 @@ import {
 import {
   parseApiUsageChangedEvent,
   parseCompactionStateChangedEvent,
+  parseLlmRetryState,
   parseRuntimeConfigurationAppliedEvent,
   parseSessionActivityChangedEvent,
   parseSessionDeletedEvent,
@@ -262,6 +263,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         if (connectionToken.receivedStreamData) return;
         rootStreamingRef.current = snapshot.session.isStreaming;
         setStatus(snapshot.session.status);
+        onEventRef.current?.({ ...snapshot, type: "snapshot" });
         setView(fromSnapshot(snapshot, viewRef.current.hydrationRevision + 1));
       })
       .catch((error: unknown) => {
@@ -316,6 +318,19 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         setNotice((current) => (current === tRef.current("work.connectionLost") ? null : current));
         if (eventFrame.enqueue(event)) return;
         eventFrame.flush();
+        if (eventType(event) === "llm_retry_state") {
+          try {
+            const retry = parseLlmRetryState(event);
+            if (retry.targetSessionId !== sessionId) {
+              connectionToken.receivedStreamData = hadReceivedStreamData;
+              return;
+            }
+            setView((current) => reduceSessionEvent(current, retry));
+          } catch {
+            connectionToken.receivedStreamData = hadReceivedStreamData;
+          }
+          return;
+        }
         if (eventType(event) === "session_activity_changed") {
           try {
             const activity = parseSessionActivityChangedEvent(event);
@@ -339,10 +354,15 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
           } catch {
             return;
           }
-          if (supervisorEvent.ownerSessionId === sessionId) {
-            setView((current) => reduceSubagentSupervisorEvent(current, supervisorEvent));
+          for (;;) {
+            const currentEvent = supervisorEvent;
+            if (currentEvent.ownerSessionId === sessionId) {
+              setView((current) => reduceSubagentSupervisorEvent(current, currentEvent));
+            }
+            onSupervisorEventRef.current?.(currentEvent);
+            if (eventType(currentEvent.event) !== "subagent_supervisor") break;
+            supervisorEvent = currentEvent.event as unknown as SubagentSupervisorEventDto;
           }
-          onSupervisorEventRef.current?.(supervisorEvent);
           return;
         }
         if (eventType(event) === "timeline_entry_appended") {
@@ -447,6 +467,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         if (type === "session_deactivated") {
           setFileWatchLeaseId(null);
           clearRootRun();
+          setView((current) => ({ ...current, retry: null, llmRecovery: null }));
           setStatus("stopped");
           return;
         }

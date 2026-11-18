@@ -25,6 +25,7 @@ import type {
   FileEntryDto,
   FileRenameResultDto,
   FileUploadResultDto,
+  LlmRetryAcceptedDto,
   NetworkProxySettingsDto,
   NetworkProxySettingsPatchDto,
   NetworkProxyTestRequestDto,
@@ -73,6 +74,7 @@ import {
   parseFileContent,
   parseFileRenameResult,
   parseFileUploadResult,
+  parseLlmRetryAccepted,
   parseModels,
   parseNetworkProxySettings,
   parseNetworkProxyTestResult,
@@ -476,6 +478,38 @@ export function getChildSnapshot(parentId: string, childId: string): Promise<Chi
 
 export function sendPrompt(id: string, message: string): Promise<void> {
   return requestVoid(routes.messages(id), json("POST", { message }));
+}
+
+/** Admission only. A failed or cancelled view request never reopens/resends a prompt. */
+export async function retryModelRequest(
+  rootId: string,
+  request: { targetSessionId: string; failureId: string },
+  signal?: AbortSignal,
+): Promise<LlmRetryAcceptedDto> {
+  const { targetSessionId, failureId } = request;
+  const accepted = await requestJson(
+    routes.retry(rootId),
+    (value) => {
+      const accepted = parseLlmRetryAccepted(value);
+      if (accepted.targetSessionId !== targetSessionId || accepted.failureId !== failureId) {
+        throw new Error("Invalid API response: mismatched retry acceptance");
+      }
+      return accepted;
+    },
+    { ...json("POST", { targetSessionId, failureId }), signal },
+  );
+  if (!accepted) throw new ApiError(502, { error: "Invalid API response" });
+  return accepted;
+}
+
+export function llmRetryConflict(
+  error: unknown,
+): "LLM_RETRY_STALE" | "LLM_RETRY_UNAVAILABLE" | "LLM_RETRY_BUSY" | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const details = error.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const code = (details as { code?: unknown }).code;
+  return code === "LLM_RETRY_STALE" || code === "LLM_RETRY_UNAVAILABLE" || code === "LLM_RETRY_BUSY" ? code : null;
 }
 
 export function getSessionCommands(id: string): Promise<SkillCommandDto[]> {

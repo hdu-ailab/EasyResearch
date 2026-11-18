@@ -35,6 +35,7 @@ export type SmokeProxyRecordKind =
   | "fake-target"
   | "forward"
   | "connect-forward"
+  | "connect-fake-target"
   | "connect-blocked";
 
 export interface SmokeProxyRecord {
@@ -218,8 +219,17 @@ export async function startRecordingHttpProxy(options: {
       return;
     }
 
-    record("connect-forward", "CONNECT", target.host, target.port);
-    const upstream = connectTcp({ host: target.host, port: target.port });
+    // Tunnel unchanged TLS bytes to an explicitly mapped HTTPS fixture. The
+    // caller still verifies the original public hostname against its test CA.
+    const fixture = fakeTargets.get(target.host);
+    if (fixture && fixture.protocol !== "https:") {
+      client.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+    record(fixture ? "connect-fake-target" : "connect-forward", "CONNECT", target.host, target.port);
+    const upstream = connectTcp(fixture
+      ? { host: normalizeSmokeHost(fixture.hostname), port: urlPort(fixture) }
+      : { host: target.host, port: target.port });
     sockets.add(upstream);
     upstream.once("close", () => sockets.delete(upstream));
     upstream.once("connect", () => {
@@ -234,6 +244,7 @@ export async function startRecordingHttpProxy(options: {
       }
     });
     client.once("error", () => upstream.destroy());
+    client.once("close", () => upstream.destroy());
   });
 
   const port = await listenOnLoopback(server);

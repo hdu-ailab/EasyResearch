@@ -56,6 +56,7 @@ import {
   type LiveConfiguration,
 } from "../runtime/live-configuration";
 import { ModelRequestError } from "../runtime/model-request-error";
+import { isLlmRetryControl, LlmRetryError } from "../runtime/llm-recovery";
 import { ProviderDeletionError, type ProviderDeletionService } from "./provider-deletion";
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../cli/server-process";
 import {
@@ -438,7 +439,14 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (req.method === "GET" && childSnapshotMatch) {
         const parent = decodeURIComponent(childSnapshotMatch[1]!);
         const child = decodeURIComponent(childSnapshotMatch[2]!);
-        return jsonResponse(windowTranscript(`${parent}/${child}`, await services.subagentSessions.snapshot(parent, child)));
+        const snapshot = await services.subagentSessions.snapshot(parent, child);
+        const retry = services.registry.retryState(parent, child);
+        return jsonResponse(windowTranscript(`${parent}/${child}`, {
+          ...snapshot,
+          subagents: services.registry.retrySummaries(parent, snapshot.subagents),
+          automaticRetry: retry.automaticRetry,
+          llmRecovery: retry.llmRecovery,
+        }));
       }
 
       const historyMatch = path.match(/^\/api\/sessions\/([^/]+)(?:\/subagents\/([^/]+))?\/history(?:\/([^/]+))?$/);
@@ -463,7 +471,9 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           services.subagentSessions.summaries(sessionId),
           services.subagentSessions.statistics(sessionId),
         ]);
-        return jsonResponse(windowTranscript(sessionId, { ...snapshot, subagents, apiUsage }));
+        return jsonResponse(windowTranscript(sessionId, {
+          ...snapshot, subagents: services.registry.retrySummaries(sessionId, subagents), apiUsage,
+        }));
       }
 
       const eventsMatch = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
@@ -498,6 +508,19 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         if (services.workspaces) requireWorkspaceDirectory(services.directories, await services.registry.getCwd(messagesMatch[1]!));
         await services.registry.prompt(messagesMatch[1]!, body.message);
         return jsonResponse({ ok: true });
+      }
+
+      const retryMatch = path.match(/^\/api\/sessions\/([^/]+)\/retry$/);
+      if (req.method === "POST" && retryMatch) {
+        const body = await jsonBody<unknown>(req);
+        if (!isObject(body) || Object.keys(body).length !== 2
+          || typeof body.targetSessionId !== "string" || !body.targetSessionId.trim()
+          || typeof body.failureId !== "string" || !body.failureId.trim()) {
+          return errorResponse(400, "targetSessionId and failureId are required; no other fields are accepted.");
+        }
+        const root = retryMatch[1]!;
+        if (services.workspaces) requireWorkspaceDirectory(services.directories, await services.registry.getCwd(root));
+        return jsonResponse(await services.registry.retry(root, body.targetSessionId, body.failureId), 202);
       }
 
       const commandsMatch = path.match(/^\/api\/sessions\/([^/]+)\/commands$/);
@@ -764,6 +787,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (error instanceof ModelRequestError) {
         return errorResponse(409, error.message, { code: error.code });
       }
+      if (error instanceof LlmRetryError) return errorResponse(409, error.message, { code: error.code });
       if (error instanceof ProviderDeletionError) {
         return errorResponse(error.status, error.message);
       }
@@ -970,8 +994,14 @@ function sessionEvents(services: RouteServices, id: string): Response {
       ]).then(
         ([snapshot, subagents, apiUsage]) => {
           if (cancelled || deleted) return;
-          send(controller, { type: "snapshot", ...windowTranscript(id, { ...snapshot, subagents, apiUsage }), fileWatchLeaseId });
-          for (const event of preBarrierSupplements) send(controller, event);
+          send(controller, { type: "snapshot", ...windowTranscript(id, {
+            ...snapshot, subagents: registry.retrySummaries(id, subagents), apiUsage,
+          }), fileWatchLeaseId });
+          // Retry replacements have an authoritative snapshot. A pre-barrier
+          // available/cleared frame must not roll it back after hydration.
+          for (const event of preBarrierSupplements) {
+            if (!isLlmRetryStateEnvelope(event)) send(controller, event);
+          }
           for (const event of postBarrierEvents) send(controller, event);
           preBarrierSupplements.length = 0;
           postBarrierEvents.length = 0;
@@ -1151,10 +1181,16 @@ function isPreBarrierSupplement(event: unknown): boolean {
     value.type === "runtime_configuration_applied" ||
     value.type === "error" ||
     value.type === "timeline_entry_appended"
+    || value.type === "llm_retry_state"
   ) {
     return true;
   }
   return isSubagentSupervisorEvent(event);
+}
+
+function isLlmRetryStateEnvelope(value: unknown): boolean {
+  return isObject(value) && (value.type === "llm_retry_state"
+    || (value.type === "subagent_supervisor" && isObject(value.event) && value.event.type === "llm_retry_state"));
 }
 
 function publicSessionEvent(event: unknown): unknown | undefined {
@@ -1167,7 +1203,7 @@ function publicSessionEvent(event: unknown): unknown | undefined {
         ...(isObject(event.apiUsageRecord) ? { apiUsageRecord: event.apiUsageRecord } : {}),
       };
     }
-    if (isObject(event.entry) && event.entry.customType === AGENT_STATUS_TYPE) return undefined;
+    if (isObject(event.entry) && (event.entry.customType === AGENT_STATUS_TYPE || isLlmRetryControl(event.entry))) return undefined;
   }
   if (!event || typeof event !== "object" || (event as { type?: unknown }).type !== "subagent_supervisor") {
     return event;
@@ -1185,6 +1221,8 @@ function publicSessionEvent(event: unknown): unknown | undefined {
     childSessionId: value.childSessionId,
     status: value.status,
     ...(typeof value.latestMessage === "string" ? { latestMessage: value.latestMessage } : {}),
+    ...(value.automaticRetry === undefined ? {} : { automaticRetry: value.automaticRetry }),
+    ...(value.llmRecovery === undefined ? {} : { llmRecovery: value.llmRecovery }),
     ...(nestedEvent === undefined ? {} : { event: nestedEvent }),
   };
 }

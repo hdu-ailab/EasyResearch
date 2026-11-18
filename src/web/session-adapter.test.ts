@@ -52,6 +52,7 @@ class FakeAgentSession implements InProcessAgentSession {
   isStreaming = false;
   isIdle = true;
   isCompacting = false;
+  retryAttempt = 0;
   thinkingLevel: InProcessAgentSession["thinkingLevel"] = "medium";
   model = model;
   messages: AgentMessage[] = [];
@@ -1960,6 +1961,9 @@ function fakeSettingsManager<T extends object>(base: T): T & {
 } {
   let compaction = { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 };
   return Object.assign(base, {
+    getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 2000 }),
+    getGlobalSettings: () => ({}),
+    getProjectSettings: () => ({}),
     getCompactionSettings: () => ({ ...compaction }),
     applyOverrides: (overrides: { compaction: typeof compaction }) => {
       compaction = { ...overrides.compaction };
@@ -2085,6 +2089,7 @@ function runtimeOwnerDeps() {
   const listeners = new Set<(event: unknown) => void>();
   return {
     createCoordinator: () => ({
+      registerRecovery: () => () => {},
       bindResearchAssistantState: () => {},
       beginCancellation: () => {},
       finishCancellation: () => {},
@@ -2162,6 +2167,7 @@ describe("createPiAgentSessionCreator", () => {
     const coordinators: Array<{
       manager: unknown;
       bindResearchAssistantState: ReturnType<typeof vi.fn>;
+      registerRecovery: () => () => void;
       live?: { model(): string | undefined; thinking(): string | undefined };
     }> = [];
     const supervisors: Array<{
@@ -2222,6 +2228,7 @@ describe("createPiAgentSessionCreator", () => {
       createCoordinator: (sessionManager: unknown) => {
         const coordinator: (typeof coordinators)[number] = {
           manager: sessionManager,
+          registerRecovery: () => () => {},
           bindResearchAssistantState: vi.fn((live: { model(): string | undefined; thinking(): string | undefined }) => {
             coordinator.live = live;
             calls.push({ name: "bind-live", value: live });

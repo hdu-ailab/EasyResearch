@@ -17,6 +17,10 @@ import {
 } from "../runtime/agent-runtime-binding";
 import { createProviderTimeoutExtension } from "../extensions/provider-timeout";
 import { createFileWriteRecoveryExtension } from "../extensions/file-write-recovery";
+import { createLlmRetryPolicyBinding } from "../runtime/llm-retry-policy";
+import { createLlmRetryPolicyExtension } from "../extensions/llm-retry-policy";
+import { disposeLlmRecoveryRuntime, isLlmRetryControl, LlmRecoveryController, LlmRetryError } from "../runtime/llm-recovery";
+import { createLlmRecoveryExtension } from "../extensions/llm-recovery";
 import {
   createCompactionPolicyBinding,
   DEFAULT_GLOBAL_COMPACTION_POLICY,
@@ -41,6 +45,8 @@ import type {
   CompactionPolicyDto,
   ContextUsageDto,
   TranscriptTimelineEntryDto,
+  LlmRetryAcceptedDto,
+  LlmRetryStateEventDto,
 } from "./contracts";
 import { projectSessionUsage } from "./api-usage";
 import { projectSessionTimeline } from "./session-timeline";
@@ -119,6 +125,7 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
   readonly isStreaming: boolean;
   readonly isIdle: boolean;
   readonly isCompacting: boolean;
+  readonly retryAttempt: number;
   readonly thinkingLevel: ThinkingLevel;
   readonly model: Model<any> | undefined;
   readonly messages: AgentMessage[];
@@ -202,6 +209,9 @@ export interface ManagedAgentSession {
   binding: AgentRuntimeBinding;
   compaction: ManualCompactionController;
   stats: SessionStatsNotifier;
+  recovery?: LlmRecoveryController;
+  retryPolicy?: ReturnType<typeof createLlmRetryPolicyBinding>;
+  disposeRecovery?: () => void;
 }
 
 export type AgentSessionCreator = (
@@ -219,6 +229,7 @@ function createRuntimeSetupCleanup(
   activityUnsubscribe?: () => void,
   compactionUnsubscribe?: () => void,
   sessionUnsubscribe?: () => void,
+  disposeRecovery?: () => void,
 ): () => Promise<void> {
   let compactionDisposed = compaction === undefined;
   let supervisorDisposed = supervisor === undefined;
@@ -229,6 +240,7 @@ function createRuntimeSetupCleanup(
   let sessionDisposed = session === undefined;
   let sessionShutdownComplete = session === undefined;
   let bindingDisposed = false;
+  let recoveryDisposed = disposeRecovery === undefined;
   return async () => {
     await runCleanupSteps([
       async () => {
@@ -271,6 +283,13 @@ function createRuntimeSetupCleanup(
         session!.dispose();
         sessionDisposed = true;
       },
+      () => {
+        if (!sessionDisposed) return;
+        if (!recoveryDisposed) {
+          disposeRecovery!();
+          recoveryDisposed = true;
+        }
+      },
       async () => {
         if (!sessionDisposed || bindingDisposed) return;
         await binding.dispose();
@@ -297,7 +316,7 @@ function combineSetupErrors(originalError: unknown, cleanupError: unknown): Aggr
   );
 }
 
-function createBindingSession(session: BindableAgentSession): AgentRuntimeBindingSession {
+function createBindingSession(session: BindableAgentSession, recovery?: LlmRecoveryController): AgentRuntimeBindingSession {
   return {
     get isIdle() {
       return session.isIdle;
@@ -313,6 +332,7 @@ function createBindingSession(session: BindableAgentSession): AgentRuntimeBindin
       configureBatchedSteering(session);
     },
     async abort() {
+      recovery?.blockCurrentRun();
       // Pi signals abort synchronously, but its promise waits for agent_settled,
       // which cannot occur until the current turn_end handler returns.
       const operation = session.abort();
@@ -400,6 +420,13 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       onRuntimeCoherent: () => supervisor?.runtimeBecameCoherent(),
       onApplied,
     });
+    const retryPolicy = createLlmRetryPolicyBinding(settingsManager as SettingsManager);
+    const recovery = new LlmRecoveryController();
+    let releaseRecovery: (() => void) | undefined;
+    const disposeRecovery = () => {
+      disposeLlmRecoveryRuntime(recovery, retryPolicy, releaseRecovery);
+      releaseRecovery = undefined;
+    };
     let supervisor: SubagentSupervisor | undefined;
     let session: BindableAgentSession | undefined;
     try {
@@ -424,7 +451,9 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
           createCompactionCancellationExtension(() => compaction.isCancelling(), () => session!.abortCompaction()),
           { name: "provider-timeout", factory: createProviderTimeoutExtension(settingsManager as SettingsManager, () => binding.providerTimeoutSettings()) },
           { name: "file-write-recovery", factory: createFileWriteRecoveryExtension() },
+          { name: "llm-retry-policy", factory: createLlmRetryPolicyExtension(retryPolicy) },
           ...extensionFactories,
+          { name: "llm-recovery", factory: createLlmRecoveryExtension(recovery) },
           createSubagentNotificationExtension(supervisor),
         ],
         extensionsOverride: prioritizeCompactionCancellation,
@@ -447,6 +476,24 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         excludeTools: excludedLocalShellTools(process.platform),
       };
       ({ session } = await deps.createAgentSession(createOptions));
+      retryPolicy.attach(session as Parameters<typeof retryPolicy.attach>[0]);
+      recovery.attach(session, retryPolicy, async (signal) => {
+        const release = await supervisor!.acquirePromptAdmission();
+        try {
+          await binding.ensureCurrent();
+          if (signal.aborted) throw new LlmRetryError("LLM_RETRY_UNAVAILABLE");
+          assertModelRequestReady(session!.modelRuntime, session!.model);
+          return { release };
+        } catch (error) {
+          release();
+          throw error;
+        }
+      }, () => compaction.hasWork());
+      releaseRecovery = coordinator.registerRecovery({
+        sessionId: session.sessionId,
+        sessionPath: session.sessionFile!,
+        recovery,
+      });
       compaction.attach(session);
       configureBatchedSteering(session);
       coordinator.bindResearchAssistantState({
@@ -456,14 +503,16 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       supervisor.attach(session as unknown as SupervisableAgentSession, async () => {
         if (!session!.isIdle) await session!.waitForIdle();
         await binding.ensureCurrent();
-      }, () => compaction.isCancelling());
+      }, () => compaction.isCancelling(), () => recovery.holdsAutomaticWake());
       await session.bindExtensions({
         mode: "rpc",
         commandContextActions: {
           waitForIdle: () => session!.waitForIdle(),
           navigateTree: async (targetId: string, navigationOptions?: Record<string, unknown>) => {
-            const result = await session!.navigateTree(targetId, navigationOptions);
-            return { cancelled: result.cancelled };
+            try {
+              const result = await session!.navigateTree(targetId, navigationOptions);
+              return { cancelled: result.cancelled };
+            } finally { retryPolicy.finishSummary(); }
           },
           reload: async () => {
             await session!.reload();
@@ -475,10 +524,12 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
           },
         },
       });
-      await binding.attach(createBindingSession(session));
-      return { session, coordinator, supervisor, binding, compaction, stats };
+      await binding.attach(createBindingSession(session, recovery));
+      return { session, coordinator, supervisor, binding, compaction, stats, recovery, retryPolicy, disposeRecovery };
     } catch (error) {
-      const retryCleanup = createRuntimeSetupCleanup(session, compaction, supervisor, binding);
+      recovery.cancel();
+      const retryCleanup = createRuntimeSetupCleanup(session, compaction, supervisor, binding,
+        undefined, undefined, undefined, undefined, disposeRecovery);
       try {
         await retryCleanup();
       } catch (cleanupError) {
@@ -498,6 +549,8 @@ export interface SessionAdapter {
   stop(): Promise<void>;
   prompt(message: string, options?: SteerPromptOptions): Promise<void>;
   abort(): Promise<void>;
+  retry?(targetSessionId: string, failureId: string): Promise<LlmRetryAcceptedDto>;
+  getRetryState?(targetSessionId: string, launchId?: string): LlmRetryStateEventDto | undefined;
   setModel(provider: string, modelId: string): Promise<void>;
   setThinkingLevel(level: string): Promise<void>;
   getState(): Promise<SessionState>;
@@ -663,6 +716,7 @@ class DirectSessionAdapter implements SessionAdapter {
   private sessionDisposeComplete = false;
   private sessionShutdownComplete = false;
   private bindingDisposeComplete = false;
+  private recoveryDisposeComplete = false;
   private readonly promptOperations = new Set<Promise<void>>();
   private treeNavigationOperation: Promise<unknown> | undefined;
   private readonly stopAbortOperations = new Set<Promise<void>>();
@@ -757,11 +811,16 @@ class DirectSessionAdapter implements SessionAdapter {
           };
           this.publishEvent(event);
         });
+        const unsubscribeRecovery = created.recovery?.subscribe(() => {
+          this.publishEvent(created.recovery!.state());
+          this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
+        });
         compactionUnsubscribe = () => {
           try {
             unsubscribeCompactionState();
           } finally {
             unsubscribeStats();
+            unsubscribeRecovery?.();
           }
         };
       } catch (error) {
@@ -774,6 +833,7 @@ class DirectSessionAdapter implements SessionAdapter {
           activityUnsubscribe,
           compactionUnsubscribe,
           sessionUnsubscribe,
+          created.disposeRecovery,
         );
         this.managed = undefined;
         this.session = undefined;
@@ -799,6 +859,7 @@ class DirectSessionAdapter implements SessionAdapter {
     if (this.stopped) return;
     if (this.stopPromise) return this.stopPromise;
     this.stopRequested = true;
+    this.managed?.recovery?.cancel();
     const session = this.session;
     const supervisor = this.managed?.supervisor;
     const compaction = this.managed?.compaction;
@@ -868,6 +929,13 @@ class DirectSessionAdapter implements SessionAdapter {
         }
         session.dispose();
         this.sessionDisposeComplete = true;
+      },
+      async () => {
+        if (session && !this.sessionDisposeComplete) return;
+        if (!this.recoveryDisposeComplete) {
+          this.managed?.disposeRecovery?.();
+          this.recoveryDisposeComplete = true;
+        }
       },
       async () => {
         if (this.bindingDisposeComplete) return;
@@ -995,6 +1063,7 @@ class DirectSessionAdapter implements SessionAdapter {
     if (this.runCancellationPromise) return this.runCancellationPromise;
 
     this.runCancellationPending = true;
+    managed.recovery?.cancel();
     let tracked!: Promise<void>;
     tracked = runCleanupSteps([
       () => managed.coordinator.beginCancellation(),
@@ -1006,6 +1075,7 @@ class DirectSessionAdapter implements SessionAdapter {
       .then(() => {
         managed.coordinator.finishCancellation();
         managed.compaction.finishCancellation();
+        managed.recovery?.finishCancellation();
       })
       .finally(() => {
         if (this.runCancellationPromise === tracked) this.runCancellationPromise = undefined;
@@ -1021,6 +1091,17 @@ class DirectSessionAdapter implements SessionAdapter {
     const model = session.modelRuntime.getModel(provider, modelId);
     if (!model) throw new Error(`Unknown model: ${provider}/${modelId}`);
     await session.setModel(model);
+  }
+
+  retry(targetSessionId: string, failureId: string): Promise<LlmRetryAcceptedDto> {
+    if (!this.session || !this.managed || this.stopRequested) throw new LlmRetryError("LLM_RETRY_UNAVAILABLE");
+    if (this.runCancellationPending || this.treeNavigationOperation) throw new LlmRetryError("LLM_RETRY_BUSY");
+    if (targetSessionId === this.session.sessionId && this.promptOperations.size) throw new LlmRetryError("LLM_RETRY_BUSY");
+    return this.managed!.coordinator.retry(targetSessionId, failureId);
+  }
+
+  getRetryState(targetSessionId: string, launchId?: string): LlmRetryStateEventDto | undefined {
+    return this.managed?.coordinator.retryState?.(targetSessionId, launchId);
   }
 
   async setThinkingLevel(level: string): Promise<void> {
@@ -1170,6 +1251,7 @@ class DirectSessionAdapter implements SessionAdapter {
       };
     } finally {
       this.treeNavigationOperation = undefined;
+      this.managed?.retryPolicy?.finishSummary();
       this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
     }
   }
@@ -1193,6 +1275,7 @@ class DirectSessionAdapter implements SessionAdapter {
       || this.treeCleanupPending
       || this.stopPending
       || this.managed?.compaction.hasWork()
+      || this.managed?.recovery?.hasWork()
     ) return true;
     return this.isSupervisorActive();
   }
@@ -1298,6 +1381,7 @@ class DirectSessionAdapter implements SessionAdapter {
       await Promise.allSettled([...this.stopAbortOperations]);
     }
     this.throwIfStopAbortFailed();
+    await this.managed?.recovery?.settleOperations();
     await this.treeNavigationOperation?.catch(() => {});
     this.stopAbortErrors.splice(0);
   }
@@ -1362,14 +1446,14 @@ function isHiddenStatusMessage(value: unknown): boolean {
     && "role" in value
     && value.role === "custom"
     && "customType" in value
-    && value.customType === AGENT_STATUS_TYPE;
+    && (value.customType === AGENT_STATUS_TYPE || isLlmRetryControl(value));
 }
 
 function isHiddenStatusEntry(value: unknown): boolean {
   return value !== null
     && typeof value === "object"
     && "customType" in value
-    && value.customType === AGENT_STATUS_TYPE;
+    && (value.customType === AGENT_STATUS_TYPE || isLlmRetryControl(value));
 }
 
 function isHiddenStatusContent(value: string): boolean {

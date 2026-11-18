@@ -21,7 +21,7 @@ exact-cwd artifacts, platform-native shell policy, and credential isolation.
 Use this Skill for a precise, reproducible lookup after the requested paper,
 identifier, author, citation question, or narrow query is known. It complements:
 
-- `paper-search` for broad arXiv/OpenReview candidate discovery;
+- `paper-search` for broad candidate discovery across authorized channels;
 - `arxiv` for known arXiv metadata/BibTeX/Semantic Scholar checks;
 - `pdf-to-markdown` and `paper-material-package` for Search-owned acquisition,
   conversion, and per-paper evidence cards.
@@ -81,6 +81,30 @@ specialist handoff for the caller.
 Read only the relevant file under `references/` before making a call. Its
 failure-shape notes are part of the procedure: several APIs return malformed,
 empty, or error payloads with HTTP 200.
+
+### Complementary Keyless Lookup
+
+For a narrow metadata gap, `web-search` with `provider: "firecrawl-research"`
+can return indexed paper metadata/abstracts and arXiv, PMID, PMCID, or DOI
+identifiers. Pass `query` and bounded `num` (default 10, maximum 25), without
+`engines` or `site`. Optional `from`/`to` ISO dates refer to upstream
+created/updated filtering, not publication dates. Resolve returned identifiers
+to canonical public pages and cross-check identity/date against the relevant
+primary source above. Never guess missing identifiers or citation fields.
+
+For a selected public page, `webfetch` defaults to `provider: "direct"`;
+explicit `"firecrawl"` or `"tavily"` supports one supplied URL with `markdown`
+or `text` extraction. Preserve requested/reported source URLs, provider and any
+cache provenance. An indexed abstract or cached extraction is not a direct
+origin check, full-text verification, or proof of claim support. Keep discovery
+provider separate from the underlying publication/repository source.
+
+Use these mounted tools within the dispatch's source/date limits. Respect
+visible Retry-After cooldowns and quotas; empty or HTTP-429 responses leave a
+gap, not proof of absence. Use an authorized complementary source rather than
+changing transport/proxy to retry a capped provider. These mounted keyless tools
+need no account or provider installation. Review retains its
+precise-verification-only boundary.
 
 ## Procedure
 

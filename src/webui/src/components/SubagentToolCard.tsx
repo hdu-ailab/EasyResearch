@@ -71,6 +71,7 @@ export function SubagentToolCard({
   const reducedMotion = usePrefersReducedMotion();
   const { mounted, phase } = useExpandable(isOpen);
   const running = tool.running && !tool.done;
+  const awaitingRetry = running && tool.llmRecovery?.status === "available";
   const activity = running ? tool.latestActivity : undefined;
   const isToolActivity = activity?.kind === "tool";
   const thinking = activity?.kind === "thinking" ? activity : undefined;
@@ -85,13 +86,15 @@ export function SubagentToolCard({
   const agentName = agentDisplayName(t, tool.agentName ?? "subagent");
   const agentId = tool.agentId;
   const emptyMessage = running ? t("transcript.waitingForProgress") : t("transcript.noSavedProgress");
-  const state = tool.error
-    ? t("transcript.subagentFailed")
-    : tool.done
-      ? t("transcript.subagentCompleted")
-      : running
-        ? t("transcript.running")
-        : t("transcript.subagentProgress");
+  const state = awaitingRetry
+    ? t("work.awaitingRetry")
+    : tool.error
+      ? t("transcript.subagentFailed")
+      : tool.done
+        ? t("transcript.subagentCompleted")
+        : running
+          ? t("transcript.running")
+          : t("transcript.subagentProgress");
   const step = tool.step !== undefined ? `${t("transcript.subagentStep")} ${tool.step}` : undefined;
   const mappedLinks =
     tool.sessionLinks ??
@@ -107,7 +110,7 @@ export function SubagentToolCard({
       : []);
   const canViewDetails = !concealContent && onViewDetails !== undefined && (running || mappedLinks.length > 0);
   const stateClass = running
-    ? reducedMotion
+    ? reducedMotion || awaitingRetry
       ? "border border-v2-blue-200"
       : "v2-subagent-card-running p-px"
     : tool.error
@@ -139,7 +142,7 @@ export function SubagentToolCard({
               <span className="sr-only">{isOpen ? t("transcript.hideDetails") : t("transcript.showDetails")}</span>
             ) : null}
             {compact ? <GitFork size={15} aria-hidden /> : null}
-            {running ? <span className="v2-spinner shrink-0" aria-hidden /> : null}
+            {running && !awaitingRetry ? <span className="v2-spinner shrink-0" aria-hidden /> : null}
             {tool.done && !tool.error ? (
               <Check className="shrink-0 text-v2-status-success" size={14} aria-hidden />
             ) : null}

@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
-import { useLayoutEffect, useRef } from "react";
+import { useId, useLayoutEffect, useRef } from "react";
 import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
 import { canFocusElement } from "../hooks/useModalLayer";
 import { agentDisplayName } from "../i18n/agents";
@@ -41,6 +41,7 @@ export function AgentTabBar({
   trailing,
 }: AgentTabBarProps) {
   const { t } = useI18n();
+  const statusId = useId();
   const activity = useViewActivityRef();
   const researchAssistantFocused = activeKey === RESEARCH_ASSISTANT_AGENT;
   const tabButtons = useRef(new Map<string, HTMLButtonElement>());
@@ -97,6 +98,7 @@ export function AgentTabBar({
               ? `${t("work.stopAndCloseAgent")}: ${label}`
               : stopLabel
             : closeLabel;
+          const waitingId = `${statusId}-${encodeURIComponent(tab.key)}`;
           const invocation = JSON.stringify([tab.ownerSessionId, tab.toolCallId, tab.step]);
           return (
             <div
@@ -111,6 +113,7 @@ export function AgentTabBar({
                 }}
                 aria-pressed={focused}
                 aria-label={`${t("work.agentChip")} ${label}`}
+                aria-describedby={tab.awaitingRetry ? waitingId : undefined}
                 onClick={() => {
                   if (activity.current.interactive) onSelect(tab.key);
                 }}
@@ -124,6 +127,11 @@ export function AgentTabBar({
                   aria-hidden
                 />
                 <span className="truncate">{label}</span>
+                {tab.awaitingRetry ? (
+                  <span id={waitingId} className="text-v2-status-warning">
+                    {t("work.awaitingRetry")}
+                  </span>
+                ) : null}
                 {tab.error ? <span className="text-v2-status-warning">{t("work.error")}</span> : null}
               </button>
               {tab.running || tab.retained ? (

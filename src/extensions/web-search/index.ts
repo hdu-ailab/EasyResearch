@@ -14,6 +14,8 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { createLogger } from "../../runtime/logger";
 import type { AppliedSearchRoute } from "../../runtime/network-routing";
+import { createKeylessWebClient, KeylessWebError, type KeylessWebClient, type KeylessWebProvider } from "../keyless-web/client";
+import { formatKeylessResults, searchKeyless, validateSearchToolInput, WEB_SEARCH_PROVIDERS, type KeylessSearchDetails } from "./keyless";
 import { createAbortError, createWebSearchAdapter, type WebSearchAdapter } from "./adapter";
 import {
   WEB_SEARCH_ENGINES,
@@ -102,6 +104,8 @@ function detailsFor(
 
 export interface WebSearchToolOptions {
   sanitizeError?: (error: unknown) => string;
+  keylessClient?: KeylessWebClient;
+  invalidError?: () => Error | undefined;
 }
 
 function rawErrorMessage(error: unknown): string {
@@ -142,12 +146,13 @@ export function createWebSearchTool(
   adapter: WebSearchAdapter,
   options: WebSearchToolOptions = {},
 ) {
+  const keylessClient = options.keylessClient ?? createKeylessWebClient({ sanitizeError: options.sanitizeError });
   return defineTool({
     name: "web-search",
     label: "Web Search",
     description:
-      "Search current Web sources with explicit engines. Start with DuckDuckGo first; use Bing, Brave, or Startpage next, and Baidu or Sogou only as fallback channels. Channel reliability is not factual verification.",
-    promptSnippet: "Search the Web with explicit multi-engine selection and verify selected pages with webfetch",
+      "Search current Web sources or a paper index. Select provider firecrawl, tavily, or firecrawl-research for keyless HTTP search; omit provider or select engines for explicit multi-engine search. For engines, start with DuckDuckGo first; use Bing, Brave, or Startpage next, and Baidu or Sogou only as fallback channels. Channel reliability is not factual verification.",
+    promptSnippet: "Search Web sources or paper records with an explicit provider; verify selected sources with webfetch",
     promptGuidelines: [
       "Start with DuckDuckGo first for general Web research.",
       "Use Bing, Brave, or Startpage as high-reliability international fallback channels.",
@@ -156,27 +161,41 @@ export function createWebSearchTool(
       "An empty search response is inconclusive and may indicate throttling.",
       "Treat snippets as leads and inspect selected source URLs with webfetch before presenting claims as verified.",
       "Google is not a web-search engine; use the separately mounted Playwright Google workflow only as an external final fallback.",
+      "Select one provider per call. engines is required only for provider=engines (the default), and must be omitted for other providers.",
+      "Use firecrawl-research for paper metadata and abstracts; from/to filter index created/updated dates, not verified publication dates. site applies only to Web search.",
+      "Keyless providers need no account or API key but have quotas. Respect Retry-After; never evade provider limits by changing transport or proxy routes.",
     ],
     parameters: Type.Object({
       query: Type.String({ minLength: 1, description: "Search query, including quoted phrases when needed" }),
-      engines: Type.Array(StringEnum(WEB_SEARCH_ENGINES), {
+      provider: Type.Optional(StringEnum(WEB_SEARCH_PROVIDERS, { description: "Search provider; defaults to engines" })),
+      engines: Type.Optional(Type.Array(StringEnum(WEB_SEARCH_ENGINES), {
         minItems: 1,
         maxItems: WEB_SEARCH_ENGINES.length,
         uniqueItems: true,
-        description: "Explicit search engines to query",
-      }),
+        description: "Required for provider=engines; unavailable for other providers",
+      })),
       num: Type.Optional(Type.Integer({
         minimum: 1,
         maximum: 25,
-        description: "Total results across engines; defaults to 10 and must cover every selected engine",
+        description: "Total results; defaults to 10, Tavily maximum 20; must cover every selected legacy engine",
       })),
       site: Type.Optional(Type.String({
         minLength: 1,
         description: "Optional domain restriction, for example github.com",
       })),
+      from: Type.Optional(Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Paper index only: inclusive created/updated lower date bound" })),
+      to: Type.Optional(Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Paper index only: inclusive created/updated upper date bound" })),
+    }, {
+      additionalProperties: false,
+      anyOf: [
+        { properties: { provider: { const: "engines" } }, required: ["engines"], not: { anyOf: [{ required: ["from"] }, { required: ["to"] }] } },
+        { properties: { provider: { const: "firecrawl" } }, required: ["provider"], not: { anyOf: [{ required: ["engines"] }, { required: ["from"] }, { required: ["to"] }] } },
+        { properties: { provider: { const: "tavily" }, num: { maximum: 20 } }, required: ["provider"], not: { anyOf: [{ required: ["engines"] }, { required: ["from"] }, { required: ["to"] }] } },
+        { properties: { provider: { const: "firecrawl-research" } }, required: ["provider"], not: { anyOf: [{ required: ["engines"] }, { required: ["site"] }] } },
+      ],
     }),
     renderCall(args, theme) {
-      const engines = args.engines.join(", ");
+      const engines = args.provider && args.provider !== "engines" ? args.provider : (args.engines ?? []).join(", ");
       return new Text(
         theme.fg("toolTitle", theme.bold("Web Search "))
         + theme.fg("accent", `"${compactLine(args.query)}"`)
@@ -186,7 +205,7 @@ export function createWebSearchTool(
       );
     },
     renderResult(result, { expanded, isPartial }, theme) {
-      const details = result.details as WebSearchDetails | undefined;
+      const details = result.details as WebSearchDetails | KeylessSearchDetails | undefined;
       const output = textContent(result);
       if (isPartial) return new Text(theme.fg("warning", "Searching selected engines..."), 0, 0);
       if (details?.error) return new Text(theme.fg("error", output), 0, 0);
@@ -197,20 +216,38 @@ export function createWebSearchTool(
         lines.push(theme.fg("toolOutput", `${index + 1}. ${compactLine(item.title)}`));
         lines.push(theme.fg("dim", `   ${compactLine(item.url)}`));
       });
-      if (details.partialFailures.length > 0) {
+      if ("partialFailures" in details && details.partialFailures.length > 0) {
         lines.push(theme.fg("warning", `${details.partialFailures.length} engine failure(s)`));
       }
       return new Text(lines.join("\n"), 0, 0);
     },
     async execute(_toolCallId, params, signal, onUpdate) {
       try {
+        validateSearchToolInput(params);
+        if (params.provider && params.provider !== "engines") {
+          const provider = params.provider;
+          const invalid = options.invalidError?.();
+          if (invalid) throw invalid;
+          onUpdate?.({
+            content: [{ type: "text", text: `Searching ${provider}...` }],
+            details: { provider, channel: provider === "firecrawl-research" ? "paper-index" : "web", results: [], count: 0, limit: params.num ?? 10, rejectedResults: 0, warnings: [] },
+          });
+          const details = await searchKeyless(keylessClient, { ...params, provider }, signal);
+          if (signal?.aborted) throw createAbortError();
+          const output = await truncateOutput(formatKeylessResults(details));
+          return {
+            content: [{ type: "text", text: output.text }],
+            details: { ...details, ...(output.fullOutputPath ? { fullOutputPath: output.fullOutputPath } : {}) },
+          };
+        }
+        const engines = params.engines!;
         onUpdate?.({
-          content: [{ type: "text", text: `Searching ${params.engines.join(", ")}...` }],
-          details: { engines: params.engines, results: [], count: 0, partialFailures: [] },
+          content: [{ type: "text", text: `Searching ${engines.join(", ")}...` }],
+          details: { engines, results: [], count: 0, partialFailures: [] },
         });
         const execution = await adapter.search({
           query: params.query,
-          engines: [...params.engines],
+          engines: [...engines],
           num: params.num,
           site: params.site,
         }, signal);
@@ -264,13 +301,24 @@ export function createWebSearchTool(
         if (error instanceof Error && error.name === "AbortError") throw error;
         if (signal?.aborted) throw createAbortError();
         const message = safeSearchErrorMessage(error, options.sanitizeError);
+        if (params.provider && params.provider !== "engines") {
+          const provider = params.provider as KeylessWebProvider;
+          const details: KeylessSearchDetails = {
+            provider, channel: provider === "firecrawl-research" ? "paper-index" : "web",
+            results: [], count: 0, limit: params.num ?? 10, rejectedResults: 0, warnings: [], error: message,
+            ...(error instanceof KeylessWebError ? {
+              code: error.code, status: error.status, retryAfterSeconds: error.retryAfterSeconds,
+            } : {}),
+          };
+          return { content: [{ type: "text", text: `Search failed: ${message}` }], details };
+        }
         logger.error("search failed", { query: params.query, engines: params.engines, error: message });
         return {
           content: [{
             type: "text",
             text: `Search failed: ${message}\nSelected engines may be temporarily unavailable; try another explicit engine selection.`,
           }],
-          details: detailsFor([...params.engines], [], [], { error: message }),
+          details: detailsFor([...(params.engines ?? [])], [], [], { error: message }),
         };
       }
     },
@@ -280,6 +328,7 @@ export function createWebSearchTool(
 export interface WebSearchExtensionDependencies {
   initializeRuntime?: () => Promise<InitializedOpenWebSearchRuntime>;
   appliedSearchRoute?: AppliedSearchRoute;
+  keylessClient?: KeylessWebClient;
 }
 
 export function createWebSearchExtension(
@@ -287,9 +336,10 @@ export function createWebSearchExtension(
 ): ExtensionFactory {
   return async (pi) => {
     const route = dependencies.appliedSearchRoute;
-    const toolOptions: WebSearchToolOptions = route
-      ? { sanitizeError: (error) => route.sanitizeError(error) }
-      : {};
+    const toolOptions: WebSearchToolOptions = {
+      keylessClient: dependencies.keylessClient,
+      ...(route ? { sanitizeError: (error: unknown) => route.sanitizeError(error), invalidError: () => route.invalidError() } : {}),
+    };
     const invalid = route?.invalidError();
     if (invalid) {
       pi.registerTool(createWebSearchTool({

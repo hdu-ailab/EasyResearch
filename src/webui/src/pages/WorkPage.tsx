@@ -24,6 +24,7 @@ import { ChatComposer, type ChatComposerHandle } from "../components/ChatCompose
 import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTranscript";
 import { ContextCapacity } from "../components/ContextCapacity";
 import { FileBrowser, type FileBrowserHandle } from "../components/FileBrowser";
+import { LlmRecoveryBanner } from "../components/LlmRecoveryBanner";
 import { resolveTranscriptFilePath } from "../components/markdown/file-references";
 import { TranscriptFileContext } from "../components/markdown/TranscriptFileLink";
 import { RenameSessionDialog } from "../components/RenameSessionDialog";
@@ -35,15 +36,18 @@ import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { FILE_PATH_DRAG_TYPE, readFilePathDrop } from "../file-path-drag";
 import { EMPTY_FILE_EVENTS, parseFileWatcherEvent, type QueuedFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
+import { canFocusElement } from "../hooks/useModalLayer";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
 import { useTranscriptHistory } from "../hooks/useTranscriptHistory";
 import { useWorkBreakpoint } from "../hooks/useWorkBreakpoint";
+import { agentDisplayName } from "../i18n/agents";
 import { useI18n } from "../i18n/useI18n";
 import { buildMessageTreeMeta, versionTarget } from "../message-tree";
 import { usePreferences } from "../preferences/PreferencesProvider";
 import { shieldResizeIframes, suppressResizeSelection } from "../resize-iframe-shield";
 import {
+  automaticRetryView,
   fromSnapshot,
   hydrateSubagentSummaryOwner,
   reduceSessionEvent,
@@ -115,6 +119,7 @@ function subagentSummary(
     childSessionId,
     agent: tool.agentName ?? link?.agent ?? "subagent",
     status,
+    llmRecovery: tool.llmRecovery ?? null,
     ...((tool.launchId ?? link?.launchId) !== undefined ? { launchId: tool.launchId ?? link?.launchId } : {}),
     ...((tool.agentId ?? link?.agentId) !== undefined ? { agentId: tool.agentId ?? link?.agentId } : {}),
     ...((tool.latestMessage ?? link?.latestMessage) !== undefined
@@ -204,6 +209,7 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState, pref
     isStreaming: (preferLive ? live : snapshot).isStreaming || activeMessageKey !== undefined,
     error: (preferLive ? live : snapshot).error,
     retry: (preferLive ? live : snapshot).retry,
+    llmRecovery: (preferLive ? live : snapshot).llmRecovery,
     // Child history has no live compaction field; only native events/settlement own it.
     compactionState: live.compactionState,
     nextOrder: ordered.length,
@@ -293,6 +299,7 @@ function SessionWorkPage({
   const childRequests = useRef(new Map<string, Promise<void>>());
   const childRefreshPending = useRef(new Set<string>());
   const childRevisions = useRef(new Map<string, number>());
+  const childRetryRevisions = useRef(new Map<string, number>());
   const childWorking = useRef(new Map<string, boolean>());
   const pendingSupervisorEvents = useRef(new Map<string, SubagentSupervisorEventDto>());
   const parentOwner = useRef({ id, generation: 1, deleted: false });
@@ -358,6 +365,7 @@ function SessionWorkPage({
         return true;
       }
       if (event && typeof event === "object" && (event as { type?: unknown }).type === "snapshot") {
+        const childRetryStates = new Map<string, SubagentSessionSummaryDto>();
         try {
           const snapshot = parseSessionSnapshot(event);
           setFileEvents({ sessionId: snapshot.session.id, pending: EMPTY_FILE_EVENTS });
@@ -371,6 +379,9 @@ function SessionWorkPage({
               child.childSessionId,
               child.status === "working" || childWorking.current.get(child.childSessionId) === true,
             );
+            if (child.status === "working" || !childRetryStates.has(child.childSessionId)) {
+              childRetryStates.set(child.childSessionId, child);
+            }
           }
         } catch {
           return false;
@@ -380,9 +391,16 @@ function SessionWorkPage({
         pendingSupervisorEvents.current = new Map(
           [...pendingSupervisorEvents.current].filter(([, pending]) => pending.status !== "working"),
         );
+        for (const childId of new Set([...childRetryRevisions.current.keys(), ...childRetryStates.keys()])) {
+          childRetryRevisions.current.set(childId, (childRetryRevisions.current.get(childId) ?? 0) + 1);
+        }
+        const retryViews = new Map(
+          [...childRetryStates].map(([id, summary]) => [id, automaticRetryView(summary.automaticRetry)]),
+        );
         setChildViews((current) => {
           const next = { ...current };
-          for (const [childId, view] of Object.entries(current)) {
+          for (const childId of new Set([...Object.keys(current), ...childRetryStates.keys()])) {
+            const view = current[childId] ?? { ...emptyView };
             const messages = view.messages.filter(
               (message) =>
                 message.role !== "assistant" ||
@@ -403,6 +421,8 @@ function SessionWorkPage({
               // Reconnect loses native operation continuity. Child history has no
               // live compaction field: discard old activity until a fresh start.
               compactionState: "idle",
+              retry: retryViews.get(childId) ?? null,
+              llmRecovery: childRetryStates.get(childId)?.llmRecovery ?? null,
               messageStructureRevision:
                 view.messageStructureRevision + (messages.length === view.messages.length ? 0 : 1),
             };
@@ -415,6 +435,25 @@ function SessionWorkPage({
           if (tab.sessionId) void loadChildRef.current(tab.sessionId, true);
         }
         return false;
+      }
+      if (event && typeof event === "object" && (event as { type?: unknown }).type === "session_deactivated") {
+        // History reads may finish, but their pre-deactivation recovery metadata
+        // cannot restore eligibility or backoff after the live owner is gone.
+        for (const [childId, revision] of childRetryRevisions.current) {
+          childRetryRevisions.current.set(childId, revision + 1);
+        }
+        setChildViews((current) =>
+          Object.fromEntries(
+            Object.entries(current).map(([id, view]) => [
+              id,
+              {
+                ...terminateSessionRun(view, false, "child"),
+                retry: null,
+                llmRecovery: null,
+              },
+            ]),
+          ),
+        );
       }
       return false;
     },
@@ -438,6 +477,14 @@ function SessionWorkPage({
     }
     childWorking.current.set(childSessionId, event.status === "working");
     childRevisions.current.set(childSessionId, (childRevisions.current.get(childSessionId) ?? 0) + 1);
+    if (
+      event.event?.type === "llm_retry_state" ||
+      event.event?.type === "auto_retry_start" ||
+      event.event?.type === "auto_retry_end" ||
+      event.status !== "working"
+    ) {
+      childRetryRevisions.current.set(childSessionId, (childRetryRevisions.current.get(childSessionId) ?? 0) + 1);
+    }
 
     setChildViews((current) => {
       // A deferred pre-snapshot update cannot refill the replacement progress queue.
@@ -487,7 +534,14 @@ function SessionWorkPage({
         };
       }
       if (event.status !== "working" && next[childSessionId]) {
-        next = { ...next, [childSessionId]: terminateSessionRun(next[childSessionId], false, "child") };
+        next = {
+          ...next,
+          [childSessionId]: {
+            ...terminateSessionRun(next[childSessionId], false, "child"),
+            retry: null,
+            llmRecovery: null,
+          },
+        };
       }
       return next;
     });
@@ -572,6 +626,7 @@ function SessionWorkPage({
     childRequests.current.clear();
     childRefreshPending.current.clear();
     childRevisions.current.clear();
+    childRetryRevisions.current.clear();
     childWorking.current.clear();
     pendingSupervisorEvents.current.clear();
   }, [sessionId]);
@@ -813,6 +868,21 @@ function SessionWorkPage({
         : undefined));
   const activeView = activeChildId ? childViews[activeChildId] : undefined;
   const transcriptView = activeTab === RESEARCH_ASSISTANT_AGENT ? sessionView : activeView;
+  const selectedAgent = tabsState.tabs.find((tab) => tab.key === activeTab);
+  const retryAgentLabel =
+    activeTab === RESEARCH_ASSISTANT_AGENT
+      ? agentDisplayName(t, sessionView.subagentName ?? RESEARCH_ASSISTANT_AGENT)
+      : (selectedAgent?.agentId ?? agentDisplayName(t, selectedAgent?.agent ?? activeView?.subagentName ?? "subagent"));
+  const refreshRetryTarget = useCallback(() => {
+    if (activeChildId) void loadChildRef.current(activeChildId, true);
+    else connection.refresh();
+  }, [activeChildId, connection.refresh]);
+  const returnRetryFocus = useCallback(() => {
+    if (!activity.current.interactive) return;
+    const selected =
+      rowRef.current?.querySelector<HTMLButtonElement>('.er-agent-tab-group button[aria-pressed="true"]') ?? null;
+    if (canFocusElement(selected)) selected.focus({ preventScroll: true });
+  }, [activity]);
   const history = useTranscriptHistory({
     sessionId,
     childId: activeChildId,
@@ -912,6 +982,9 @@ function SessionWorkPage({
 
       const owner = parentOwner.current;
       const startRevision = childRevisions.current.get(childId) ?? 0;
+      const startRetryRevision = childRetryRevisions.current.get(childId) ?? 0;
+      // Include first reads with no live summary in lifecycle invalidation.
+      childRetryRevisions.current.set(childId, startRetryRevision);
       const ownsRequest = () => parentOwner.current === owner && owner.id === sessionId;
       setChildErrors((current) => (current[childId] ? { ...current, [childId]: false } : current));
       const request = getChildSnapshot(sessionId, childId)
@@ -931,6 +1004,8 @@ function SessionWorkPage({
             subagents: snapshot.subagents,
             inlineUsage: snapshot.inlineUsage,
             history: snapshot.history,
+            automaticRetry: snapshot.automaticRetry,
+            llmRecovery: snapshot.llmRecovery,
           });
           for (const [key, event] of pendingSupervisorEvents.current) {
             if (event.ownerSessionId !== childId) continue;
@@ -958,7 +1033,20 @@ function SessionWorkPage({
                   !refresh || (childRevisions.current.get(childId) ?? 0) > startRevision,
                 )
               : seeded;
-            if (childWorking.current.get(childId) === false) merged = terminateSessionRun(merged, false, "child");
+            // A transcript delta need not carry retry state. Only a newer retry
+            // replacement, reconnect or deactivation outranks this snapshot's metadata.
+            const retryOwner =
+              (childRetryRevisions.current.get(childId) ?? 0) > startRetryRevision
+                ? (current[childId] ?? emptyView)
+                : seeded;
+            merged = {
+              ...merged,
+              retry: retryOwner.retry,
+              llmRecovery: retryOwner.llmRecovery,
+            };
+            if (childWorking.current.get(childId) === false) {
+              merged = { ...terminateSessionRun(merged, false, "child"), retry: null, llmRecovery: null };
+            }
             return {
               ...current,
               [childId]: { ...merged, hydrationRevision: seeded.hydrationRevision },
@@ -1449,7 +1537,6 @@ function SessionWorkPage({
           {statusText}
         </p>
       )}
-      {sessionView.retry ? <RetryBanner retry={sessionView.retry} /> : null}
       <WorkMobileTabs active={mobileView} onChange={setMobileView} idPrefix={paneId} filesTabRef={filesTabRef} />
       <div
         ref={rowRef}
@@ -1525,6 +1612,18 @@ function SessionWorkPage({
                 }
               />
             </div>
+            {transcriptView?.retry ? <RetryBanner retry={transcriptView.retry} agentLabel={retryAgentLabel} /> : null}
+            <LlmRecoveryBanner
+              rootId={sessionId}
+              targetSessionId={activeChildId ?? sessionId}
+              parentHydrationRevision={hydrationRevision}
+              hydrationRevision={transcriptView?.hydrationRevision ?? 0}
+              recovery={transcriptView?.llmRecovery}
+              agentLabel={retryAgentLabel}
+              enabled={!connection.deleted && (status === "ready" || status === "running") && Boolean(transcriptView)}
+              refresh={refreshRetryTarget}
+              returnFocus={returnRetryFocus}
+            />
             {activeChildId && childErrors[activeChildId] ? (
               <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
             ) : null}
@@ -1579,6 +1678,10 @@ function SessionWorkPage({
                 cwd={cwd}
                 disabled={composerDisabled}
                 streaming={activeTab === RESEARCH_ASSISTANT_AGENT && sessionView.isStreaming}
+                canAbort={
+                  activeTab === RESEARCH_ASSISTANT_AGENT &&
+                  (sessionView.isStreaming || Boolean(sessionView.llmRecovery) || Boolean(sessionView.retry))
+                }
                 onSend={send}
                 onCommand={executeCommand}
                 onAbort={abort}

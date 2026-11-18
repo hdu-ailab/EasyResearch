@@ -10,6 +10,11 @@ import type {
   SessionActivityChangedEventDto,
   SessionDeletedEventDto,
   TranscriptTimelineEntryDto,
+  AutomaticRetryDto,
+  LlmRecoveryDto,
+  LlmRetryAcceptedDto,
+  LlmRetryStateEventDto,
+  SubagentSessionSummaryDto,
 } from "./contracts";
 import type {
   SessionAdapter,
@@ -26,6 +31,7 @@ import type { Logger } from "../runtime/logger";
 import { createNoopFileWatcherFactory, type FileWatcher, type FileWatcherFactory } from "./file-watcher";
 import type { ManualCompactionAcceptedState } from "./manual-compaction";
 import type { SessionHistoryTarget } from "./session-deletion";
+import { LlmRetryError } from "../runtime/llm-recovery";
 
 const logger = createLogger("web-registry");
 
@@ -241,6 +247,8 @@ export class ActiveSessionRegistry {
     contextUsage?: ContextUsageDto;
     compactionPolicy: CompactionPolicyDto;
     compactionState: CompactionStateDto;
+    automaticRetry: AutomaticRetryDto | null;
+    llmRecovery: LlmRecoveryDto | null;
   }> {
     return this.withRecord(id, async (record) => {
       await this.refreshFromClient(record);
@@ -253,6 +261,7 @@ export class ActiveSessionRegistry {
         : { timeline: [], inlineUsage: [] };
       const contextUsage = live ? record.client.getContextUsage() : undefined;
       const runtimeConfigurationGeneration = record.client.getRuntimeConfigurationGeneration();
+      const retry = this.retryState(id, id);
       onMessagesAcquired?.();
       return {
         session: { ...record.dto },
@@ -260,6 +269,8 @@ export class ActiveSessionRegistry {
         inlineUsage: transcript.inlineUsage,
         steering: live ? [...record.client.getSteeringMessages()] : [],
         runtimeConfigurationGeneration,
+        automaticRetry: retry.automaticRetry,
+        llmRecovery: retry.llmRecovery,
         ...(contextUsage !== undefined ? { contextUsage } : {}),
         compactionPolicy: record.client.getCompactionPolicy(),
         compactionState: live ? record.client.getCompactionState() : "idle",
@@ -293,6 +304,29 @@ export class ActiveSessionRegistry {
     return this.withMutation(id, async (record) => {
       await record.client.abort();
       await this.refreshFromClient(record);
+    });
+  }
+
+  retry(id: string, targetSessionId: string, failureId: string): Promise<LlmRetryAcceptedDto> {
+    return this.withMutation(id, async (record) => {
+      if (!record.client.retry) throw new LlmRetryError("LLM_RETRY_UNAVAILABLE");
+      this.clearIdleTimer(record);
+      try { return await record.client.retry(targetSessionId, failureId); }
+      finally { this.reconcileIdleLease(record); }
+    });
+  }
+
+  /** Observational overlay: historical child reads never acquire a runtime. */
+  retryState(id: string, targetSessionId: string, launchId?: string): LlmRetryStateEventDto {
+    const record = this.records.get(id);
+    const current = record && !record.closing ? record.client.getRetryState?.(targetSessionId, launchId) : undefined;
+    return current ?? { type: "llm_retry_state", targetSessionId, automaticRetry: null, llmRecovery: null };
+  }
+
+  retrySummaries(id: string, summaries: SubagentSessionSummaryDto[]): SubagentSessionSummaryDto[] {
+    return summaries.map((summary) => {
+      const state = this.retryState(id, summary.childSessionId, summary.launchId);
+      return { ...summary, automaticRetry: state.automaticRetry, llmRecovery: state.llmRecovery };
     });
   }
 

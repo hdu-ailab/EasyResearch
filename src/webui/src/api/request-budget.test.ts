@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { RequestBudget } from "./request-budget";
 
-it("retains slots through complete operations and reserves Stop admission", async () => {
+it.each(["abort", "retry"])("retains slots through complete operations and reserves %s admission", async (action) => {
   const queue = new RequestBudget();
   const started: string[] = [];
   const releases: (() => void)[] = [];
@@ -20,9 +20,9 @@ it("retains slots through complete operations and reserves Stop admission", asyn
   await Promise.resolve();
   await Promise.resolve();
   expect(started).toEqual(["/api/entries?path=a", "/api/file?path=b", "/api/models"]);
-  const stop = work("/api/sessions/s/abort");
+  const stop = work(`/api/sessions/s/${action}`);
   await Promise.resolve();
-  expect(started.at(-1)).toBe("/api/sessions/s/abort");
+  expect(started.at(-1)).toBe(`/api/sessions/s/${action}`);
   for (let i = 0; i < 10; i++) {
     releases.splice(0).forEach((r) => {
       r();

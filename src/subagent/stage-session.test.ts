@@ -13,6 +13,8 @@ import type {
 } from "../runtime/network-routing";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
 import type { AgentConfig } from "./agents";
+import type { SubagentProgressEvent } from "./contracts";
+import { SUBAGENT_JOB_ENTRY } from "./job-journal";
 import {
   SubagentCoordinator,
   type CoordinatorSessionManager,
@@ -201,6 +203,8 @@ class FakeStageSession implements StageAgentSession {
   model = { provider: "openai", id: "gpt-test" } as Model<any>;
   isStreaming = false;
   isIdle = true;
+  isCompacting = false;
+  retryAttempt = 0;
   readonly promptCalls: string[] = [];
   readonly activeTools: string[][] = [];
   readonly names: string[] = [];
@@ -209,7 +213,7 @@ class FakeStageSession implements StageAgentSession {
   readonly thinkingCalls: ThinkingLevel[] = [];
   readonly listeners = new Set<(event: unknown) => void>();
   readonly entries: unknown[] = [];
-  readonly sessionManager = { getEntries: () => this.entries };
+  readonly sessionManager = { getEntries: () => this.entries, getBranch: () => this.entries };
   abortCalls = 0;
   abortCompactionCalls = 0;
   abortBranchSummaryCalls = 0;
@@ -314,6 +318,7 @@ class FakeStageSession implements StageAgentSession {
 }
 
 class FakeDirectChildSupervisor {
+  isQuiescent(): boolean { return true; }
   async acquirePromptAdmission(): Promise<() => void> { return () => {}; }
   async drainNotifications(): Promise<void> {}
   readonly attached: StageAgentSession[] = [];
@@ -380,6 +385,7 @@ function fakeSettingsManager<T extends object>(base: T): T & {
   let compaction = { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 };
   let provider: { timeoutMs?: number } = {};
   return Object.assign(base, {
+    getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 2000 }),
     getProviderRetrySettings: () => ({ ...provider }),
     getProjectSettings: () => ({}),
     getCompactionSettings: () => ({ ...compaction }),
@@ -472,6 +478,13 @@ function stageOptions(
   liveConfiguration: FakeLiveConfiguration = liveFor(),
   reservation: ReservedDispatch = freshReservation(),
 ): StageLaunchOptions {
+  if (!coordinator.journal().jobs.has(reservation.launchId)) {
+    coordinator.getRootSessionManager().appendCustomEntry(SUBAGENT_JOB_ENTRY, {
+      kind: "reserved",
+      ...reservation,
+      createdAt: "2026-11-18T00:00:00.000Z",
+    });
+  }
   return {
     reservation,
     agent: stageAgent,
@@ -706,15 +719,12 @@ describe("createStageSessionLauncher", () => {
 
     const outerHandle = await launcher(stageOptions(coordinator, live));
     expect(nestedLauncher).toBe(launcher);
-    const nestedHandle = await nestedLauncher!({
-      ...stageOptions(coordinator, live),
-      reservation: {
+    const nestedHandle = await nestedLauncher!(stageOptions(coordinator, live, {
         ...freshReservation(),
         launchId: "launch-2",
         toolCallId: "tool-2",
         agentId: "search_1",
-      },
-    });
+    }));
     outerSession.emitAssistantEndAndPersist();
     nestedSession.emitAssistantEndAndPersist();
     await Promise.all([outerHandle.materialized, nestedHandle.materialized]);
@@ -828,7 +838,7 @@ describe("createStageSessionLauncher", () => {
     const session = new FakeStageSession("child-1", join(root, "child-1.jsonl"), prompt.promise);
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
-    const events: JsonAgentSessionEvent[] = [];
+    const events: SubagentProgressEvent[] = [];
     const completeAssistant = assistant("all tokens");
     handle.subscribe((event) => events.push(event));
 
@@ -860,7 +870,7 @@ describe("createStageSessionLauncher", () => {
     const session = new FakeStageSession("child-usage", join(root, "child-usage.jsonl"), prompt.promise);
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
-    const events: JsonAgentSessionEvent[] = [];
+    const events: SubagentProgressEvent[] = [];
     handle.subscribe((event) => events.push(event));
     const message = assistant("tracked child usage");
     const entry = {
@@ -899,7 +909,7 @@ describe("createStageSessionLauncher", () => {
     };
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(harness.dependencies)(stageOptions(coordinator));
-    const events: JsonAgentSessionEvent[] = [];
+    const events: SubagentProgressEvent[] = [];
     handle.subscribe((event) => events.push(event));
     const entry = {
       type: "compaction",
@@ -941,8 +951,8 @@ describe("createStageSessionLauncher", () => {
     };
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(dependencyHarness(session).dependencies)(stageOptions(coordinator));
-    const first: JsonAgentSessionEvent[] = [];
-    const second: JsonAgentSessionEvent[] = [];
+    const first: SubagentProgressEvent[] = [];
+    const second: SubagentProgressEvent[] = [];
 
     handle.subscribe((event) => first.push(event));
     handle.subscribe((event) => second.push(event));
@@ -1116,7 +1126,7 @@ describe("createStageSessionLauncher", () => {
       .rejects.toThrow("extension setup failed");
     expect(order).toEqual(["session", "binding"]);
     expect(harness.supervisors[0]?.disposeCalls).toBe(1);
-    expect(session.unsubscribeCalls).toBe(1);
+    expect(session.listeners.size).toBe(0);
     expect(live.projectReleaseCalls).toBe(1);
   });
 
@@ -1384,13 +1394,13 @@ describe("createStageSessionLauncher", () => {
     };
     session.bindExtensions = async (bindings) => {
       session.bindingCalls.push(bindings);
-      await resourceHost!.emit("session_start", { reason: "startup" }, { cwd: "/project" });
+      await resourceHost!.emit("session_start", { reason: "startup" }, { cwd: "/project", isIdle: () => session.isIdle });
       await resourceHost!.discover("startup");
     };
     session.reload = async () => {
       session.reloadCalls += 1;
       await resourceHost!.reload();
-      await resourceHost!.emit("session_start", { reason: "reload" }, { cwd: "/project" });
+      await resourceHost!.emit("session_start", { reason: "reload" }, { cwd: "/project", isIdle: () => session.isIdle });
       await resourceHost!.discover("reload");
     };
     session.promptStart = () => {
@@ -1412,7 +1422,7 @@ describe("createStageSessionLauncher", () => {
     };
     const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
     const handle = await createStageSessionLauncher(dependencies)(stageOptions(coordinator, live));
-    const stageEvents: JsonAgentSessionEvent[] = [];
+    const stageEvents: SubagentProgressEvent[] = [];
     handle.subscribe((event) => stageEvents.push(event));
 
     await handle.materialized;
