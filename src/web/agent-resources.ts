@@ -14,6 +14,7 @@ import type { ConfigFileService } from "./config-files";
 import { ConfigServiceError } from "./config-files";
 import { starterAgentMarkdown } from "./agent-markdown";
 import { isThinkingLevel } from "../thinking-levels";
+import { skillMarketplaceIdentity } from "./skill-marketplace-install";
 
 /**
  * Resolve the writable user-layer Agent file. Bundled content is written
@@ -205,6 +206,7 @@ function publicSkillResource(skill: DiscoveredSkillResource): SkillResourceDto {
     source: skill.source,
     path: skill.path,
     skillPath: skill.skillPath,
+    marketplaceId: skillMarketplaceIdentity(skill),
   };
 }
 

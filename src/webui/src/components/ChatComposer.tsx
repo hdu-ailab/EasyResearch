@@ -31,6 +31,7 @@ import { useDraftInput } from "./composer/useDraftInput";
 import { ActionGlyph } from "./studio/ActionGlyph";
 
 export interface ChatComposerProps {
+  onDiscoverSkills?: () => void;
   cwd?: string;
   /** The Work owner's font preference invalidates fallback sizing after CSS application. */
   chatFontSize?: number;
@@ -58,7 +59,18 @@ export interface ChatComposerHandle {
  * A leading `/` executes commands; `@` supplies files and Skill context.
  */
 export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer(
-  { cwd, chatFontSize, disabled, streaming, canAbort = streaming, onSend, onCommand, onAbort, commands = [] },
+  {
+    cwd,
+    chatFontSize,
+    disabled,
+    streaming,
+    canAbort = streaming,
+    onSend,
+    onCommand,
+    onAbort,
+    commands = [],
+    onDiscoverSkills,
+  },
   ref,
 ) {
   const { t } = useI18n();
@@ -227,6 +239,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     onSend(args ? `${invocation} ${args}` : invocation);
   };
 
+  const showMarketplace = !!onDiscoverSkills && file?.skillQuery !== undefined;
   const suggestions: ComposerSuggestion[] = file
     ? [
         ...skills.map((skill) => ({
@@ -235,6 +248,9 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           label: `@skill:${skill.name}`,
           description: skill.description,
         })),
+        ...(showMarketplace
+          ? [{ id: "marketplace", kind: "marketplace" as const, label: t("skillMarket.discover") }]
+          : []),
         ...files.entries.map((entry) => ({ id: entry.path, kind: entry.kind, label: entry.name })),
       ]
     : filtered.map((command) => ({
@@ -247,6 +263,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const popover = file ? "context" : slash ? "slash" : undefined;
   const selectSuggestion = (index: number) => {
     if (!activity.current.interactive) return;
+    if (suggestions[index]?.kind === "marketplace") {
+      setDismissed(true);
+      onDiscoverSkills?.();
+      return;
+    }
     if (!file) {
       const command = filtered[index];
       if (command) executeCommand(command, slash?.args ?? "");
@@ -275,7 +296,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       setDismissed(true);
       return;
     }
-    const entry = files.entries[index - skills.length];
+    const entry = files.entries[index - skills.length - (showMarketplace ? 1 : 0)];
     if (!entry) return;
     const directory = entry.kind === "directory";
     const literal = referenceLiteral(entry.path, !text.slice(0, file.start).trim());

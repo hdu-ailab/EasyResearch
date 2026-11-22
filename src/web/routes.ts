@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { ContextManagementError, parseContextEditRequest } from "./context-management";
+import type { SkillMarketplace } from "./skill-marketplace";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { bundledFilePath } from "../runtime/bundled-assets";
@@ -126,6 +127,7 @@ export interface RouteServices {
   logger: Logger;
   daemonControl?: DaemonControl;
   runtimeRestart?: Pick<RuntimeRestartCoordinator, "request">;
+  skillMarketplace?: SkillMarketplace;
   desktopAccess?: DesktopAccessControl;
 }
 
@@ -283,6 +285,15 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse(await createGlobalAgent(services.config, body.name));
       }
 
+      if (req.method === "GET" && path === "/api/skill-marketplace" && services.skillMarketplace) {
+        return jsonResponse(await services.skillMarketplace.catalog(url.searchParams.get("q") ?? "", url.searchParams.get("view") ?? "all-time", req.signal));
+      }
+      if (req.method === "GET" && path === "/api/skill-marketplace/detail" && services.skillMarketplace) {
+        return jsonResponse(await services.skillMarketplace.detail(requireQuery(url, "id"), req.signal));
+      }
+      if (req.method === "POST" && path === "/api/skill-marketplace/install" && services.skillMarketplace) {
+        return jsonResponse(await services.skillMarketplace.install(await jsonBody<unknown>(req), req.signal));
+      }
       if (req.method === "GET" && path === "/api/skill-resources") {
         return jsonResponse(await listGlobalSkills(services.config, {
           skillPolicy: services.configuration.skillPolicy,
@@ -857,7 +868,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
     && htmlPreviews.isValidResourceRequest(request);
   handler.close = async () => {
     htmlPreviews.close();
-    const results = await Promise.allSettled([files.close(), channels.close()]);
+    const results = await Promise.allSettled([files.close(), channels.close(), services.skillMarketplace?.close()]);
     const errors = results.filter((result): result is PromiseRejectedResult => result.status === "rejected").map((result) => result.reason);
     if (errors.length) throw new AggregateError(errors, "Route cleanup failed");
   };

@@ -997,6 +997,7 @@ export function parseSkillResource(value: unknown) {
     source: requiredString(source, "source") as "bundled" | "global" | "project" | "home",
     path: requiredString(source, "path"),
     skillPath: requiredString(source, "skillPath"),
+    ...(typeof source.marketplaceId === "string" ? { marketplaceId: source.marketplaceId } : {}),
     ...(typeof source.content === "string" ? { content: source.content } : {}),
   };
 }

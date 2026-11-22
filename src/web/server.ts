@@ -38,6 +38,7 @@ import { createProviderDeletionService } from "./provider-deletion";
 import type { NetworkPolicy } from "../runtime/network-policy";
 import type { InstalledNetworkRouter } from "../runtime/network-routing";
 import { NetworkProxySettingsService } from "./network-proxy-settings";
+import { SkillMarketplace } from "./skill-marketplace";
 import { createNetworkProxyProbe, type NetworkProxyProbe } from "./network-proxy-probe";
 import { RuntimeRestartCoordinator } from "./runtime-restart";
 import { localInterfaceIpAddresses, rejectDisallowedWebRequest } from "./request-admission";
@@ -413,6 +414,17 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       },
       listModels,
       checkForUpdate: () => checkNpmUpdate(packageVersion),
+      skillMarketplace: new SkillMarketplace({
+        config,
+        skillOptions: () => ({ skillPolicy: live.skillPolicy }),
+        fetch: (url, init) => networkRouter.withScope("search", () => networkRouter.fetch(url, init)),
+        notify: async () => {
+          const outcome = await live.notify({ skillsChanged: true });
+          if (outcome.status === "rejected" || outcome.status === "closed") {
+            throw new ConfigServiceError(409, "Skill installed, but configuration could not be accepted. Refresh Settings after repairing configuration.", "CONFIG_REJECTED");
+          }
+        },
+      }),
       patchAgent: createAgentPatchService(config, listModels, { repairUnknownModels: true }),
       getCompactionSettings: () => compactionSettings.get(),
       getProviderTimeoutSettings: () => providerTimeoutSettings.get(),

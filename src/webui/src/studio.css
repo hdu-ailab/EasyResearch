@@ -707,8 +707,8 @@
 
 @media (width >= 820px) {
   :root .er-settings-dialog {
-    max-width: 1040px;
-    max-height: min(730px, calc(100dvh - 48px));
+    max-width: var(--er-settings-width, 1040px);
+    max-height: min(var(--er-settings-height, 730px), calc(100dvh - 48px));
     border-radius: 13px;
   }
 }

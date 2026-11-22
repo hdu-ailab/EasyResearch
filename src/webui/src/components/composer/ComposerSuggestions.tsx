@@ -4,7 +4,7 @@ import { useI18n } from "../../i18n/useI18n";
 
 export interface ComposerSuggestion {
   id: string;
-  kind: "command" | "skill" | "file" | "directory";
+  kind: "command" | "skill" | "file" | "directory" | "marketplace";
   label: string;
   description?: string;
 }
@@ -51,7 +51,7 @@ export function ComposerSuggestions({
             group === "files"
               ? item.kind === "file" || item.kind === "directory"
               : group === "skills"
-                ? item.kind === "skill"
+                ? item.kind === "skill" || item.kind === "marketplace"
                 : item.kind === "command",
           );
         if (!options.length) return null;
@@ -73,7 +73,7 @@ export function ComposerSuggestions({
             ) : null}
             {options.map(({ item, index }) => {
               const Icon =
-                item.kind === "skill"
+                item.kind === "skill" || item.kind === "marketplace"
                   ? Sparkles
                   : item.kind === "command"
                     ? Terminal

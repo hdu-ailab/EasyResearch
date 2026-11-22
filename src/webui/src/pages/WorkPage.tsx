@@ -73,7 +73,7 @@ export interface WorkPageProps {
   id: string;
   cwd: string;
   onBack: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (marketplace?: boolean) => void;
   settingsButtonRef?: Ref<HTMLButtonElement>;
   configurationGeneration?: number;
   configurationError?: string | null;
@@ -1576,7 +1576,7 @@ function SessionWorkPage({
                 buttonRef={settingsButtonRef}
                 label={t("home.settings")}
                 title={t("home.settingsTitle")}
-                onClick={onOpenSettings}
+                onClick={() => onOpenSettings()}
               >
                 <Settings size={15} />
               </WorkTopbarIconButton>
@@ -1733,6 +1733,7 @@ function SessionWorkPage({
                 <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
               ) : null}
               <ChatComposer
+                onDiscoverSkills={() => onOpenSettings(true)}
                 ref={composerRef}
                 chatFontSize={preferences.chatFontSize}
                 cwd={cwd}

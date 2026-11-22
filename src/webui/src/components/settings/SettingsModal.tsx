@@ -51,6 +51,7 @@ import {
 } from "./SettingsPanels";
 
 export interface SettingsModalProps {
+  initialMarketplace?: boolean;
   configurationGeneration: number;
   configurationError: string | null;
   onClose(): void;
@@ -61,6 +62,7 @@ export interface SettingsModalProps {
 }
 
 interface SettingsLayerFrameProps {
+  resources: boolean;
   dialogRef: RefObject<HTMLElement | null>;
   layer: ModalLayerResult;
   onBackdrop(event: MouseEvent<HTMLDivElement>): void;
@@ -68,7 +70,14 @@ interface SettingsLayerFrameProps {
   nestedLayers: ReactNode;
 }
 
-function SettingsLayerFrame({ dialogRef, layer, onBackdrop, children, nestedLayers }: SettingsLayerFrameProps) {
+function SettingsLayerFrame({
+  resources,
+  dialogRef,
+  layer,
+  onBackdrop,
+  children,
+  nestedLayers,
+}: SettingsLayerFrameProps) {
   return (
     <>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: only a direct desktop scrim press dismisses this dialog. */}
@@ -83,6 +92,7 @@ function SettingsLayerFrame({ dialogRef, layer, onBackdrop, children, nestedLaye
           role="dialog"
           {...layer.dialogProps}
           aria-labelledby="settings-dialog-title"
+          data-resources={resources}
           className="er-settings-dialog flex h-full w-full flex-col bg-v2-background-bg-base min-[820px]:max-h-[min(720px,calc(100vh-32px))] min-[820px]:max-w-[1080px] min-[820px]:rounded-[10px] min-[820px]:shadow-[var(--v2-elevation-floating)]"
         >
           {children}
@@ -130,6 +140,7 @@ function messageFrom(cause: unknown): string {
 type SettingsExitAction = "close" | "config";
 
 export function SettingsModal({
+  initialMarketplace = false,
   configurationGeneration,
   configurationError,
   onClose,
@@ -147,9 +158,9 @@ export function SettingsModal({
   const focusMobileIndex = useRef(false);
   const focusDesktopTab = useRef(false);
   const initialFocusSet = useRef(false);
-  const [active, setActive] = useState<SettingsCategory>("general");
+  const [active, setActive] = useState<SettingsCategory>(initialMarketplace ? "resources" : "general");
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 820);
-  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(initialMarketplace);
   const [agents, setAgents] = useState<AgentDto[]>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [categoryErrors, setCategoryErrors] = useState<Partial<Record<SettingsCategory, string>>>({});
@@ -581,6 +592,9 @@ export function SettingsModal({
     ),
     resources: (
       <ResourceSettingsPanel
+        active={active === "resources" && (!isMobile || mobileDetailOpen)}
+        initialMarketplace={initialMarketplace}
+        onInstalled={() => void refreshResources()}
         tools={toolInventory}
         skills={skills}
         projects={projects}
@@ -609,9 +623,12 @@ export function SettingsModal({
         role={isMobile ? undefined : "tabpanel"}
         aria-labelledby={isMobile ? undefined : `settings-tab-${category}`}
         hidden={!visible}
+        data-resources={category === "resources"}
         className="er-settings-panel min-h-0 flex-1 overflow-y-auto bg-v2-background-bg-base p-4"
       >
-        <div className="mx-auto flex w-full max-w-[820px] flex-col gap-3">
+        <div
+          className={`mx-auto flex w-full flex-col gap-3 ${category === "resources" ? "max-w-none" : "max-w-[820px]"}`}
+        >
           {category === active && configurationError && (
             <div
               className="break-words rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error"
@@ -779,7 +796,13 @@ export function SettingsModal({
   };
 
   return (
-    <SettingsLayerFrame dialogRef={dialogRef} layer={layer} onBackdrop={onBackdrop} nestedLayers={nestedLayers}>
+    <SettingsLayerFrame
+      resources={active === "resources"}
+      dialogRef={dialogRef}
+      layer={layer}
+      onBackdrop={onBackdrop}
+      nestedLayers={nestedLayers}
+    >
       <header className="flex h-[50px] shrink-0 items-center gap-2 border-b border-v2-grey-200 px-3">
         {isMobile && mobileDetailOpen && (
           <button

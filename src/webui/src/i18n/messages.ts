@@ -1,6 +1,8 @@
 import type { Language } from "../preferences";
+import { skillMarketEn, skillMarketZh } from "./skill-marketplace-messages";
 
 export const en = {
+  ...skillMarketEn,
   "context.title": "Context manager",
   "context.compactAll": "Compress whole session",
   "context.compactError": "Could not request session compression. Try again.",
@@ -724,6 +726,7 @@ export const en = {
 export type MessageKey = keyof typeof en;
 
 export const zhCN: Record<MessageKey, string> = {
+  ...skillMarketZh,
   "context.title": "上下文管理",
   "context.compactAll": "压缩整个会话",
   "context.compactError": "无法请求会话压缩，请重试。",

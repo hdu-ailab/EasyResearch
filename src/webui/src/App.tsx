@@ -115,7 +115,7 @@ function RetainedWork({
   actionsTarget: HTMLElement | null;
   configuration: ReturnType<typeof useConfigurationEvents>;
   onBack(): void;
-  onOpenSettings(): void;
+  onOpenSettings(marketplace?: boolean): void;
   onMissing(session: WorkSession, generation: number): void;
 }) {
   const { metadata, close, resolve } = shell;
@@ -184,6 +184,10 @@ export function App({
   const [actionsTarget, setActionsTarget] = useState<HTMLDivElement | null>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const settingsOpen = isSettingsHostRoute(route);
+  const [settingsMarketplace, setSettingsMarketplace] = useState(false);
+  useEffect(() => {
+    if (!settingsOpen) setSettingsMarketplace(false);
+  }, [settingsOpen]);
   const configOpen = route.page === "config";
   const hostRoute = configOpen ? route.returnTo : route;
   const previousSettingsOpen = useRef(settingsOpen);
@@ -559,7 +563,10 @@ export function App({
                     actionsTarget={actionsTarget}
                     configuration={configuration}
                     onBack={goHome}
-                    onOpenSettings={() => openSettings({ page: "work", session: view.session })}
+                    onOpenSettings={(marketplace = false) => {
+                      setSettingsMarketplace(marketplace);
+                      openSettings({ page: "work", session: view.session });
+                    }}
                     onMissing={showMissingWorkspace}
                   />
                 ) : (
@@ -605,6 +612,7 @@ export function App({
       )}
       {settingsOpen && settingsMounted.current && (
         <SettingsModal
+          initialMarketplace={settingsMarketplace}
           configurationGeneration={configuration.revision}
           configurationError={configuration.error}
           onClose={() => closeSettings(route)}

@@ -584,6 +584,7 @@ export interface SkillResourceDto {
   path: string;
   skillPath: string;
   content?: string;
+  marketplaceId?: string;
 }
 
 export type ConfigScope = "global" | "project";

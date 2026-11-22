@@ -46,6 +46,18 @@ async function renderComposer(props: Partial<React.ComponentProps<typeof ChatCom
 }
 
 describe("ChatComposer slash popover", () => {
+  it("opens the skill marketplace from context suggestions without sending or changing the draft", async () => {
+    const onDiscoverSkills = vi.fn();
+    const onSend = vi.fn();
+    await renderComposer({ onDiscoverSkills, onSend });
+    const input = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(input, { target: { value: "Research @" } });
+    fireEvent.click(screen.getByRole("option", { name: "Discover more skills" }));
+    expect(onDiscoverSkills).toHaveBeenCalledOnce();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input).toHaveValue("Research @");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
   it("aborts and dismisses inactive file suggestions without reopening them on activation", async () => {
     const pending = Promise.withResolvers<FileEntryDto[]>();
     vi.mocked(api.listEntries).mockReturnValue(pending.promise);
