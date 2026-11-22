@@ -1,7 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { directoryTrigger, editDraft, fileQuery, replaceDraftRange, slashQuery } from "./draft";
+import { directoryTrigger, editDraft, fileQuery, promptWithContext, replaceDraftRange, slashQuery } from "./draft";
 
 describe("composer draft ranges and paths", () => {
+  it("distinguishes explicit Skill context from quoted file names and directory queries", () => {
+    expect(fileQuery("@skill:ar", 9, "/p")).toMatchObject({ skillQuery: "ar", directory: undefined });
+    expect(fileQuery('@"skill:ar', 10, "/p")).toMatchObject({ skillQuery: undefined, directory: "/p" });
+    expect(fileQuery("@refs/ar", 8, "/p")).toMatchObject({ skillQuery: undefined, directory: "/p/refs" });
+    expect(fileQuery("@ar", 3)).toMatchObject({ skillQuery: "ar", directory: undefined });
+  });
+
+  it("promotes only annotated Skill context and preserves all other prompt bytes", () => {
+    const text = "Compare @skill:arxiv with /p/file.md\nretain   spacing";
+    const start = text.indexOf("@skill:");
+    const path = "@skill:arxiv";
+    const draft = { text, references: [{ id: 1, kind: "skill" as const, path, start, end: start + path.length }] };
+    expect(promptWithContext(draft)).toBe("@skill:arxiv Compare  with /p/file.md\nretain   spacing");
+    expect(promptWithContext({ text, references: [] })).toBe(text);
+    const edited = replaceDraftRange(draft, start, start + path.length, "ordinary text");
+    expect(promptWithContext(edited)).toBe("Compare ordinary text with /p/file.md\nretain   spacing");
+  });
+
   it.each([
     { cwd: "/p", text: "Read @results/ta", directory: "/p/results", query: "ta" },
     {

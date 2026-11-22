@@ -52,6 +52,7 @@ import type {
   SessionSnapshotDto,
   SessionStatsChangedEventDto,
   SessionSummaryDto,
+  SessionTitleSettingsDto,
   SessionTreeDto,
   SkillCommandDto,
   StatusDto,
@@ -283,6 +284,10 @@ export function parseApiUsageSettings(value: unknown): ApiUsageSettingsDto {
   return { showApiUsageDetails: requiredBoolean(source, "showApiUsageDetails") };
 }
 
+export function parseSessionTitleSettings(value: unknown): SessionTitleSettingsDto {
+  return { autoSessionTitle: requiredBoolean(record(value, "session title settings"), "autoSessionTitle") };
+}
+
 export function parseProviderTimeoutSettings(value: unknown): ProviderTimeoutSettingsDto {
   const source = record(value, "provider timeout settings");
   const timeoutMs = requiredNumber(source, "timeoutMs");
@@ -467,7 +472,8 @@ export function parseApiUsageRecord(value: unknown): ApiUsageRecordDto {
     recordSource !== "assistant" &&
     recordSource !== "tool" &&
     recordSource !== "compaction" &&
-    recordSource !== "branch-summary"
+    recordSource !== "branch-summary" &&
+    recordSource !== "title"
   )
     throw new Error("Invalid API response: API usage source is invalid");
   const rawAnchor = record(source.anchor, "API usage anchor");

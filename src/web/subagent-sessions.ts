@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { isSystemTranscriptMessage } from "../runtime/json-session-event";
 import { readAgentAliases } from "../subagent/agent-alias";
 import { readSubagentJournal } from "../subagent/job-journal";
 import { AGENT_STATUS_TYPE } from "../subagent/notifications";
@@ -498,9 +499,9 @@ function branchMessagesFromEntries(entries: Array<{ type: string; id?: string; m
 }
 
 function isHiddenStatusMessage(message: unknown): boolean {
-  return isObject(message)
+  return isSystemTranscriptMessage(message) || (isObject(message)
     && message.role === "custom"
-    && message.customType === AGENT_STATUS_TYPE;
+    && message.customType === AGENT_STATUS_TYPE);
 }
 
 function isAgentMessage(message: unknown): message is AgentMessage {

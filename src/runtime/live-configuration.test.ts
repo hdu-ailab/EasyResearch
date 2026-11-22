@@ -1518,6 +1518,21 @@ describe("partially invalid live settings recovery", () => {
     }
   }
 
+  it("retains the last valid title setting across malformed external values and accepts recovery", async () => {
+    const state = await startSettings({ easyresearch: { web: { autoSessionTitle: false } } });
+    try {
+      expect(state.live.sessionTitleSettings).toEqual({ autoSessionTitle: false });
+      writeFileSync(state.settingsPath, JSON.stringify({ easyresearch: { web: { autoSessionTitle: "invalid" } } }));
+      await state.live.synchronize();
+      expect(state.live.sessionTitleSettings).toEqual({ autoSessionTitle: false });
+      expect(state.live.error).not.toBeNull();
+      writeFileSync(state.settingsPath, JSON.stringify({ easyresearch: { web: { autoSessionTitle: true } } }));
+      await state.live.synchronize();
+      expect(state.live.sessionTitleSettings).toEqual({ autoSessionTitle: true });
+      expect(state.live.error).toBeNull();
+    } finally { await state.live.close(); }
+  });
+
   it.each([
     { name: "percentage", initial: { easyresearch: { compaction: { triggerPercent: 90 } } } },
     { name: "native enabled", initial: { compaction: { enabled: false } } },
@@ -1548,6 +1563,7 @@ describe("partially invalid live settings recovery", () => {
       expect(stage.binding.generation()).toBe(invalidGeneration);
       expect(stage.settings.getCompactionSettings()).toEqual(native);
       await root.binding.ensureCurrent();
+      stage.session.isIdle = true;
       await stage.binding.ensureCurrent({ activeBoundary: true });
 
       for (const runtime of [root, stage]) {

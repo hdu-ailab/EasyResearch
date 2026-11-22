@@ -17,7 +17,7 @@ import {
 } from "./auth-runtime";
 import { ConfigFileService } from "./config-files";
 import { createLiveConfiguration, type ConfigurationWatchImplementation } from "../runtime/live-configuration";
-import { BUNDLED_MODEL_ADDITIONS } from "../runtime/bundled-model-additions";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
 const anthropicProvider = {
   id: "anthropic",
@@ -710,7 +710,7 @@ describe.each(["daemon", "session"] as const)("%s bundled overlay host boundary"
   let agentDir: string;
   let modelsPath: string;
   let dispose: (() => Promise<void>) | undefined;
-  const addition = BUNDLED_MODEL_ADDITIONS.find((entry) => entry.provider === "deepseek")!;
+  const addition = { provider: "deepseek", model: builtinProviders().find((provider) => provider.id === "deepseek")!.getModels().find((model) => model.id === "deepseek-flash")! };
   const radius = { oauth: "radius", baseUrl: "https://radius.invalid/v1" };
 
   beforeEach(() => {

@@ -16,6 +16,8 @@ vi.mock("../../api", async (importOriginal) => {
     getCompactionSettings: vi.fn(),
     patchCompactionSettings: vi.fn(),
     getApiUsageSettings: vi.fn(),
+    getSessionTitleSettings: vi.fn(),
+    patchSessionTitleSettings: vi.fn(),
     getProviderTimeoutSettings: vi.fn(),
     patchProviderTimeoutSettings: vi.fn(),
     patchApiUsageSettings: vi.fn(),
@@ -54,6 +56,10 @@ beforeEach(() => {
       globalEnabled: true,
     }));
   vi.mocked(api.getApiUsageSettings).mockReset().mockResolvedValue({ showApiUsageDetails: false });
+  vi.mocked(api.getSessionTitleSettings).mockReset().mockResolvedValue({ autoSessionTitle: true });
+  vi.mocked(api.patchSessionTitleSettings)
+    .mockReset()
+    .mockImplementation(async (value) => value);
   vi.mocked(api.getProviderTimeoutSettings).mockReset().mockResolvedValue({ timeoutMs: 3_600_000, source: "default" });
   vi.mocked(api.patchApiUsageSettings)
     .mockReset()

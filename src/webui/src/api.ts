@@ -39,6 +39,7 @@ import type {
   SessionDeletionRequestDto,
   SessionHistoryConflictDto,
   SessionSnapshotDto,
+  SessionTitleSettingsDto,
   SessionTreeDto,
   SkillCommandDto,
   StatusDto,
@@ -82,6 +83,7 @@ import {
   parseProviderTimeoutSettings,
   parseRuntimeRestartAccepted,
   parseSessionSnapshot,
+  parseSessionTitleSettings,
   parseSessionTree,
   parseSkillCommands,
   parseSkillResource,
@@ -113,6 +115,7 @@ export type {
   ProjectWatchReplacement,
   ProjectWatchReplacementResult,
 } from "../../web/configuration-project-watches";
+export { applyContextEdits, getContextItemText, getSessionContext, previewContextEdits } from "./api/context";
 export {
   createHtmlPreview,
   HTML_SOURCE_MAX_BYTES,
@@ -252,6 +255,14 @@ export function getApiUsageSettings(): Promise<ApiUsageSettingsDto> {
     method: "GET",
     cache: "no-store",
   });
+}
+
+export function getSessionTitleSettings(): Promise<SessionTitleSettingsDto> {
+  return requestJson(routes.sessionTitleSettings(), parseSessionTitleSettings, { method: "GET", cache: "no-store" });
+}
+
+export function patchSessionTitleSettings(patch: SessionTitleSettingsDto): Promise<SessionTitleSettingsDto> {
+  return requestJson(routes.sessionTitleSettings(), parseSessionTitleSettings, json("PATCH", patch));
 }
 
 export function patchApiUsageSettings(patch: ApiUsageSettingsPatchDto): Promise<ApiUsageSettingsDto> {

@@ -233,6 +233,27 @@ describe("SubagentSessionService", () => {
     await expect(service(async () => []).summaries("new-parent-uuid")).resolves.toEqual([]);
   });
 
+  it("projects mapped child history without native system declarations and preserves disk bytes and usage", async () => {
+    const parent = createSession();
+    const child = createSession();
+    appendParentMessage(parent);
+    child.appendMessage({ role: "system", content: "PRIVATE_SYSTEM_PROMPT", sections: { handoff: "PRIVATE_SYSTEM_HANDOFF" }, timestamp: 1 });
+    const userId = child.appendMessage(user("find papers"));
+    child.appendMessage({ role: "system", content: "PRIVATE_SYSTEM_UPDATE", toolsRemoved: [{ name: "read" }], timestamp: 2 });
+    const answerId = child.appendMessage(assistantUsage(10, 2, 0.5, "public child reply"));
+    link(parent, child);
+    const path = child.getSessionFile()!;
+    const before = readFileSync(path);
+    const sessions = service();
+    const snapshot = await sessions.snapshot(parent.getSessionId(), child.getSessionId());
+    expect(snapshot.timeline.map((entry) => entry.entryId)).toEqual([userId, answerId]);
+    expect(snapshot.inlineUsage).toEqual(projectSessionUsage(child.getSessionId(), child.getEntries(), child.getBranch()).inlineUsage);
+    expect((await sessions.summaries(parent.getSessionId()))[0]?.latestMessage).toBe("public child reply");
+    expect(JSON.stringify(snapshot)).not.toContain("PRIVATE_SYSTEM_");
+    expect(readFileSync(path)).toEqual(before);
+    expect(before.toString()).toContain("PRIVATE_SYSTEM_PROMPT");
+  });
+
   it("attaches the agent id from coordinator alias entries to summaries (ADR-084)", async () => {
     const parent = createSession();
     const child = createSession();

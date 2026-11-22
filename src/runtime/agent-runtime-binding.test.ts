@@ -604,6 +604,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     attached.session.failNextModel = new Error("model rejected");
     state.live.publish([definition("v2")]);
 
+    attached.session.isIdle = true;
     await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow();
     expect(attached.session.model).toBe(smallModel);
 
@@ -698,6 +699,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(commits).toEqual([]);
     expect(attached.session.reloadCalls).toBe(0);
 
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
 
     expect(commits).toEqual([{ generation: 2, prompt: "Prompt v2", reloads: 1 }]);
@@ -802,6 +804,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(attached.session.reloadCalls).toBe(0);
     expect(state.binding.skillPaths()).toEqual(["/agent/skills/shared"]);
 
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
 
     expect(attached.session.reloadCalls).toBe(1);
@@ -825,6 +828,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(state.binding.skillPaths()).toEqual(["/agent/skills/shared"]);
     expect(attached.session.reloadCalls).toBe(0);
 
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
 
     expect(state.binding.generation()).toBe(3);
@@ -899,7 +903,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(attached.observed().skills).toEqual(["/agent/skills/shared"]);
   });
 
-  it("does not mutate an active response or tool batch until the awaited turn-end boundary", async () => {
+  it("does not mutate any active turn even when a caller requests a checked boundary", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
     attached.session.isIdle = false;
@@ -913,6 +917,10 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(attached.session.reloadCalls).toBe(0);
 
     await state.binding.ensureCurrent({ activeBoundary: true });
+    expect(attached.session.reloadCalls).toBe(0);
+    expect(state.binding.current().systemPrompt).toBe("Prompt v1");
+    attached.session.isIdle = true;
+    await state.binding.ensureCurrent();
 
     expect(state.binding.current().systemPrompt).toBe("Prompt v2");
     expect(attached.observed().tools).toEqual(["tool-v2"]);
@@ -942,6 +950,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(state.binding.current().systemPrompt).toBe("Prompt v1");
 
     state.models.refreshGate = undefined;
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
     expect(attached.session.reloadCalls).toBe(1);
     expect(state.binding.current().systemPrompt).toBe("Prompt v2");
@@ -963,6 +972,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     };
     const refreshBaseline = state.models.refreshCalls.length;
 
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
 
     expect(state.binding.current().systemPrompt).toBe("Prompt v3");
@@ -985,6 +995,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
         if (boundarySynchronizations === 2) state.live.authoritative = false;
       };
 
+      attached.session.isIdle = true;
       const failure = await state.binding.ensureCurrent({ activeBoundary: true }).catch((error) => error);
 
       expect(failure).toBeInstanceOf(Error);
@@ -1013,6 +1024,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
         queueMicrotask(() => invalidate(state.live));
       };
 
+      attached.session.isIdle = true;
       const failure = await state.binding.ensureCurrent({ activeBoundary: true }).catch((error) => error);
 
       expect(failure).toBeInstanceOf(Error);
@@ -1071,6 +1083,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     };
     state.models.disposeError = new Error("SECRET stale candidate at /private/models.json");
 
+    attached.session.isIdle = true;
     const failure = await state.binding.ensureCurrent({ activeBoundary: true }).catch((error) => error);
     const candidate = state.models.runtimes.at(-1)!;
 
@@ -1113,7 +1126,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(state.binding.current().systemPrompt).toBe("Prompt v2");
   });
 
-  it("escalates a joined active boundary after the idle candidate is discarded", async () => {
+  it("defers joined busy demand after an idle candidate is discarded until settlement", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
     attached.session.isIdle = false;
@@ -1133,6 +1146,10 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     releaseRefresh();
     await Promise.all([idleApply, activeApply]);
 
+    expect(attached.session.reloadCalls).toBe(0);
+    expect(state.binding.current().systemPrompt).toBe("Prompt v1");
+    attached.session.isIdle = true;
+    await state.binding.ensureCurrent();
     expect(state.models.refreshCalls).toHaveLength(refreshBaseline + 2);
     expect(attached.session.reloadCalls).toBe(1);
     expect(attached.observed()).toMatchObject({
@@ -1142,7 +1159,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(attached.session.model?.name).toBe("metadata-v2");
   });
 
-  it("owns active demand queued between worker exit and apply-promise clearing", async () => {
+  it("applies settled demand queued between worker exit and apply-promise clearing", async () => {
     const state = createHarness();
     const attached = await attachHarness(state);
     attached.session.isIdle = false;
@@ -1165,6 +1182,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
       idleReads += 1;
       if (idleReads === 2) {
         queueMicrotask(() => {
+          attached.session.isIdle = true;
           activeApply = state.binding.ensureCurrent({ activeBoundary: true });
         });
       }
@@ -1188,6 +1206,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     state.live.publish([definition("v2")]);
     attached.session.failNextReload = new Error("SECRET /private/reload-path");
 
+    attached.session.isIdle = true;
     const failure = await state.binding.ensureCurrent({ activeBoundary: true }).catch((error) => error);
 
     expect(failure).toBeInstanceOf(Error);
@@ -1226,6 +1245,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
       }
       state.live.publish([definition("v2")]);
 
+      attached.session.isIdle = true;
       await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/runtime configuration/i);
 
       expect(state.onApplied).not.toHaveBeenCalled();
@@ -1266,6 +1286,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
         }
       }
 
+      attached.session.isIdle = true;
       await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/runtime configuration/i);
 
       const blockedAccessors = [
@@ -1305,6 +1326,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
       effectiveSkillPaths: ["/agent/skills/shared"],
     })]);
 
+    attached.session.isIdle = true;
     await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/runtime configuration/i);
 
     expect(state.binding.generation()).toBe(1);
@@ -1326,6 +1348,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     attached.session.failNextReload = new Error("apply failed");
     state.models.disposeError = new Error("SECRET rollback failure at /private/models.json");
 
+    attached.session.isIdle = true;
     const failure = await state.binding.ensureCurrent({ activeBoundary: true }).catch((error) => error);
     const candidate = state.models.runtimes.at(-1)!;
 
@@ -1353,6 +1376,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     };
     state.live.publish([definition("v2")]);
 
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
     expect(state.binding.current().systemPrompt).toBe("Prompt v2");
     expect(attached.session.model?.name).toBe("metadata-v2");
@@ -1373,6 +1397,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     attached.session.abortImpl = () => abortGate;
     let settled = false;
 
+    attached.session.isIdle = true;
     const applying = state.binding.ensureCurrent({ activeBoundary: true }).finally(() => {
       settled = true;
     });
@@ -1398,9 +1423,11 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     );
     state.live.publish([definition("v2")]);
 
+    attached.session.isIdle = true;
     await expect(state.binding.ensureCurrent({ activeBoundary: true })).rejects.toThrow(/runtime configuration/i);
     expect(state.onRuntimeCoherent).not.toHaveBeenCalled();
 
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
 
     expect(state.onRuntimeCoherent).toHaveBeenCalledOnce();
@@ -1417,6 +1444,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     };
     state.live.publish([definition("v2")]);
 
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
 
     expect(state.binding.modelRuntime().getModel("test-provider", "same-model")?.name).toBe("invalid-metadata");
@@ -1431,6 +1459,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     state.models.semanticError = "SECRET invalid provider at /private/models.json";
     state.live.publish([definition("v2")]);
 
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
 
     expect(state.binding.current().systemPrompt).toBe("Prompt v2");
@@ -1446,6 +1475,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     state.models.setNext(model("metadata-v2"));
     state.live.publish([definition("v2", { model: undefined })]);
 
+    attached.session.isIdle = true;
     await state.binding.ensureCurrent({ activeBoundary: true });
 
     expect(state.resolveAutomaticModel).toHaveBeenCalledTimes(1);
@@ -1513,9 +1543,9 @@ describe("AgentRuntimeBinding safe boundaries", () => {
 });
 
 describe("AgentRuntimeBinding real Pi next-turn integration", () => {
-  it("applies one new generation before Pi prepares the tool-result follow-up request", async () => {
+  it("retains the active generation through tool follow-ups and applies the next generation before a new run", async () => {
     const pi = await importPi();
-    const { InMemoryCredentialStore, fauxAssistantMessage, fauxProvider, fauxToolCall } = await import(
+    const { InMemoryCredentialStore, fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentSystemPrompt, getCurrentTools } = await import(
       "@earendil-works/pi-ai"
     );
     const { Type } = await import("typebox");
@@ -1568,14 +1598,19 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
       });
       firstProvider.setResponses([
         fauxAssistantMessage(fauxToolCall("tool-v1", {}), { stopReason: "toolUse" }),
+        (context) => {
+          expect(getCurrentSystemPrompt(context.messages)).toContain("Prompt v1");
+          expect(getCurrentTools(context.messages).map((tool) => tool.name)).toEqual(["tool-v1"]);
+          return fauxAssistantMessage("generation-v1 complete");
+        },
       ]);
       secondProvider.setResponses([
         (context, options, _state, requestModel) => {
           secondRequests.push({
             model: requestModel,
-            systemPrompt: context.systemPrompt,
-            tools: context.tools?.map((tool) => tool.name) ?? [],
-            descriptions: context.tools?.map((tool) => tool.description) ?? [],
+            systemPrompt: getCurrentSystemPrompt(context.messages),
+            tools: getCurrentTools(context.messages).map((tool) => tool.name),
+            descriptions: getCurrentTools(context.messages).map((tool) => tool.description),
             thinking: options?.reasoning,
           });
           return fauxAssistantMessage("generation-v2 complete");
@@ -1673,6 +1708,10 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
 
       await session.prompt("run the configured tool");
 
+      expect(secondRequests).toHaveLength(0);
+      expect(session.getLastAssistantText()).toBe("generation-v1 complete");
+      await session.prompt("use the newly applied configuration");
+
       expect(secondRequests).toHaveLength(1);
       expect(secondRequests[0]).toMatchObject({
         model: { provider: "test-provider", id: "same-model", name: "metadata-v2" },
@@ -1721,7 +1760,7 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
     }
   });
 
-  it("stops before a follow-up provider request when turn-end configuration application fails", async () => {
+  it("finishes the current run and rejects next-run preflight when pending configuration is invalid", async () => {
     const pi = await importPi();
     const { InMemoryCredentialStore, fauxAssistantMessage, fauxProvider, fauxToolCall } = await import(
       "@earendil-works/pi-ai"
@@ -1830,14 +1869,17 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
 
       await session.prompt("publish an invalid generation");
 
-      expect(providerRequests).toBe(1);
+      expect(providerRequests).toBe(2);
+      expect(session.isIdle).toBe(true);
+      await expect(binding.ensureCurrent()).rejects.toThrow(/runtime configuration/i);
+      expect(providerRequests).toBe(2);
     } finally {
       await binding.dispose();
       session?.dispose();
     }
   });
 
-  it("directly aborts a stale-runner follow-up when candidate and restoration reload both fail", async () => {
+  it("retains a poisoned idle binding after failed reload and restoration without interrupting the completed run", async () => {
     const pi = await importPi();
     const { InMemoryCredentialStore, fauxAssistantMessage, fauxProvider, fauxToolCall } = await import(
       "@earendil-works/pi-ai"
@@ -1952,8 +1994,10 @@ describe("AgentRuntimeBinding real Pi next-turn integration", () => {
 
       await session.prompt("publish a valid generation and fail reload");
 
-      expect(providerRequests).toBe(1);
-      expect(abort).toHaveBeenCalledOnce();
+      expect(providerRequests).toBe(2);
+      expect(abort).not.toHaveBeenCalled();
+      expect(session.isIdle).toBe(true);
+      expect(() => binding.current()).toThrow(/runtime configuration/i);
     } finally {
       await binding.dispose();
       session?.dispose();

@@ -46,6 +46,9 @@ export function createSessionMaterializationBarrier(options: {
       if (state !== "pending") return;
       try {
         await assertReadable(options.sessionPath);
+        if (!options.continuation && !assistantObserved) {
+          throw promptError ?? new Error("Session ended before its first assistant message.");
+        }
       } catch (error) {
         if (options.continuation || final) reject(promptError ?? error);
         return;

@@ -32,6 +32,8 @@ import { createNoopFileWatcherFactory, type FileWatcher, type FileWatcherFactory
 import type { ManualCompactionAcceptedState } from "./manual-compaction";
 import type { SessionHistoryTarget } from "./session-deletion";
 import { LlmRetryError } from "../runtime/llm-recovery";
+import { ContextManagementError } from "./context-management";
+import type { ContextEditRequestDto, ContextItemTextDto, ContextPreviewDto, ContextSnapshotDto } from "./context-contracts";
 
 const logger = createLogger("web-registry");
 
@@ -425,6 +427,34 @@ export class ActiveSessionRegistry {
 
   async compact(id: string, customInstructions?: string): Promise<{ state: ManualCompactionAcceptedState }> {
     return this.withMutation(id, (record) => record.client.compact(customInstructions));
+  }
+
+  getContext(id: string): Promise<ContextSnapshotDto> {
+    return this.withMutation(id, (record) => {
+      if (!record.client.getContext) throw new ContextManagementError("CONTEXT_UNAVAILABLE");
+      return record.client.getContext();
+    });
+  }
+
+  getContextItem(id: string, revision: string, itemId: string, view: "original" | "current", offset: number): Promise<ContextItemTextDto> {
+    return this.withMutation(id, (record) => {
+      if (!record.client.getContextItem) throw new ContextManagementError("CONTEXT_UNAVAILABLE");
+      return record.client.getContextItem(revision, itemId, view, offset);
+    });
+  }
+
+  previewContext(id: string, request: ContextEditRequestDto): Promise<ContextPreviewDto> {
+    return this.withMutation(id, (record) => {
+      if (!record.client.previewContext) throw new ContextManagementError("CONTEXT_UNAVAILABLE");
+      return record.client.previewContext(request);
+    });
+  }
+
+  applyContext(id: string, request: ContextEditRequestDto): Promise<ContextSnapshotDto> {
+    return this.withMutation(id, (record) => {
+      if (!record.client.applyContext) throw new ContextManagementError("CONTEXT_UNAVAILABLE");
+      return record.client.applyContext(request);
+    });
   }
 
   async stop(id: string): Promise<void> {

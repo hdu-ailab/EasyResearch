@@ -18,12 +18,14 @@ import {
 import { isDotAgentsSkillEnabled } from "../subagent/skill-resolution";
 import type {
   ApiUsageSettingsDto,
+  SessionTitleSettingsDto,
   ProviderTimeoutSettingsDto,
   ConfigurationErrorEvent,
   ConfigurationEvent,
   ConfigurationUpdatedEvent,
 } from "../web/contracts";
 import { parseGlobalApiUsageSettings } from "./api-usage-settings";
+import { parseGlobalSessionTitleSettings } from "./session-title";
 import {
   type AgentDefaultRepairResult,
   type DanglingAgentModelRepair,
@@ -69,6 +71,7 @@ export interface ConfigurationFingerprint {
   compactionPolicy: GlobalCompactionPolicy;
   apiUsage: string;
   apiUsageSettings: ApiUsageSettingsDto;
+  sessionTitleSettings?: SessionTitleSettingsDto;
   providerTimeoutSettings?: ProviderTimeoutSettingsDto;
   globalSkills: string;
   homeSkills: string | null;
@@ -79,6 +82,7 @@ export interface ConfigurationFingerprint {
     agentDefaults?: true;
     compaction?: true;
     apiUsage?: true;
+    sessionTitle?: true;
     skillPolicy?: true;
     providerTimeout?: true;
   };
@@ -156,6 +160,7 @@ export interface LiveConfiguration {
   readonly error: string | null;
   readonly compactionPolicy: GlobalCompactionPolicy;
   readonly apiUsageSettings: ApiUsageSettingsDto;
+  readonly sessionTitleSettings: SessionTitleSettingsDto;
   readonly providerTimeoutSettings: ProviderTimeoutSettingsDto;
   readonly skillPolicy: SkillResolutionPolicy;
   start(): Promise<void>;
@@ -237,6 +242,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
   let currentFingerprint: ConfigurationFingerprint | undefined;
   let currentCompactionPolicy = parseGlobalCompactionPolicy({});
   let currentApiUsageSettings = parseGlobalApiUsageSettings({});
+  let currentSessionTitleSettings = parseGlobalSessionTitleSettings({});
   let watcherManager: ConfigurationWatcherManager;
   let watcherManagerAdmissionStarted = false;
   let watcherManagerStarted = false;
@@ -479,6 +485,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         const nextProviderTimeoutSettings = candidate.invalidSettingsLayers?.providerTimeout
           ? currentProviderTimeoutSettings
           : candidate.providerTimeoutSettings ?? parseProviderTimeoutSettings({});
+        const nextSessionTitleSettings = candidate.invalidSettingsLayers?.sessionTitle
+          ? currentSessionTitleSettings
+          : candidate.sessionTitleSettings ?? parseGlobalSessionTitleSettings({});
         const agentsChanged =
           change.agentsChanged ||
           failedAgentsChanged ||
@@ -533,6 +542,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         currentFingerprint = candidate;
         currentCompactionPolicy = nextCompactionPolicy;
         currentApiUsageSettings = nextApiUsageSettings;
+        currentSessionTitleSettings = nextSessionTitleSettings;
         currentProviderTimeoutSettings = nextProviderTimeoutSettings;
         if (currentAvailabilityEpoch === 0) currentAvailabilityEpoch = 1;
         else if (availabilityChanged) currentAvailabilityEpoch += 1;
@@ -710,6 +720,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     get apiUsageSettings() {
       return { ...currentApiUsageSettings };
     },
+    get sessionTitleSettings() {
+      return { ...currentSessionTitleSettings };
+    },
     get providerTimeoutSettings() {
       return { ...currentProviderTimeoutSettings };
     },
@@ -880,6 +893,7 @@ export async function fingerprintConfiguration(
       invalidSettingsLayers.agentDefaults = true;
       invalidSettingsLayers.compaction = true;
       invalidSettingsLayers.apiUsage = true;
+      invalidSettingsLayers.sessionTitle = true;
       invalidSettingsLayers.skillPolicy = true;
       invalidSettingsLayers.providerTimeout = true;
     }
@@ -887,6 +901,7 @@ export async function fingerprintConfiguration(
   let enableDotAgentsSkill = false;
   let compactionPolicy = parseGlobalCompactionPolicy({});
   let apiUsageSettings = parseGlobalApiUsageSettings({});
+  let sessionTitleSettings = parseGlobalSessionTitleSettings({});
   let providerTimeoutSettings = parseProviderTimeoutSettings({});
   try {
     providerTimeoutSettings = parseProviderTimeoutSettings(settings);
@@ -920,6 +935,12 @@ export async function fingerprintConfiguration(
   } catch {
     diagnostic ??= settingsDiagnostic;
     invalidSettingsLayers.apiUsage = true;
+  }
+  try {
+    sessionTitleSettings = parseGlobalSessionTitleSettings(settings);
+  } catch {
+    diagnostic ??= settingsDiagnostic;
+    invalidSettingsLayers.sessionTitle = true;
   }
 
   const agentsDir = join(agentDir, "agents");
@@ -992,6 +1013,7 @@ export async function fingerprintConfiguration(
     .update(agentDefaults)
     .update(compaction)
     .update(apiUsage)
+    .update(JSON.stringify(sessionTitleSettings))
     .update(JSON.stringify(providerTimeoutSettings))
     .update(globalSkills)
     .update(homeSkills ?? "disabled")
@@ -1008,6 +1030,7 @@ export async function fingerprintConfiguration(
     compactionPolicy,
     apiUsage,
     apiUsageSettings,
+    sessionTitleSettings,
     providerTimeoutSettings,
     globalSkills,
     homeSkills,
@@ -1042,6 +1065,7 @@ function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFin
     left.agentDefaults === right.agentDefaults &&
     left.compaction === right.compaction &&
     left.apiUsage === right.apiUsage &&
+    isDeepStrictEqual(left.sessionTitleSettings, right.sessionTitleSettings) &&
     isDeepStrictEqual(left.providerTimeoutSettings, right.providerTimeoutSettings) &&
     left.globalSkills === right.globalSkills &&
     left.homeSkills === right.homeSkills &&
@@ -1049,6 +1073,7 @@ function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFin
     left.invalidSettingsLayers?.agentDefaults === right.invalidSettingsLayers?.agentDefaults &&
     left.invalidSettingsLayers?.compaction === right.invalidSettingsLayers?.compaction &&
     left.invalidSettingsLayers?.apiUsage === right.invalidSettingsLayers?.apiUsage &&
+    left.invalidSettingsLayers?.sessionTitle === right.invalidSettingsLayers?.sessionTitle &&
     left.invalidSettingsLayers?.skillPolicy === right.invalidSettingsLayers?.skillPolicy &&
     left.invalidSettingsLayers?.providerTimeout === right.invalidSettingsLayers?.providerTimeout;
 }

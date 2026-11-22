@@ -1,16 +1,13 @@
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { Agent, FinishTurn } from "@earendil-works/pi-agent-core";
 
 export type ManualCompactionState = "idle" | "queued" | "running";
 export type ManualCompactionAcceptedState = Exclude<ManualCompactionState, "idle">;
 
-type StopAfterTurn = (...args: unknown[]) => boolean | Promise<boolean>;
-
 export interface ManualCompactionSession {
   readonly isStreaming: boolean;
   readonly isCompacting: boolean;
-  agent: {
-    shouldStopAfterTurn?: StopAfterTurn;
-  };
+  agent: Pick<Agent, "finishTurn">;
   compact(customInstructions?: string): Promise<unknown>;
   abort(): Promise<void>;
   abortCompaction(): void;
@@ -29,8 +26,8 @@ export class ManualCompactionController {
   private nativeCompactionCompletion: Promise<void> | undefined;
   private resolveNativeCompaction: (() => void) | undefined;
   private currentState: ManualCompactionState = "idle";
-  private previousStopAfterTurn: StopAfterTurn | undefined;
-  private installedStopAfterTurn: StopAfterTurn | undefined;
+  private previousFinishTurn: FinishTurn | undefined;
+  private installedFinishTurn: FinishTurn | undefined;
   private disposed = false;
   private cancellationRequested = false;
   private readonly listeners = new Set<(state: ManualCompactionState) => void>();
@@ -39,12 +36,16 @@ export class ManualCompactionController {
     if (this.disposed) throw new Error("Manual compaction controller has been disposed");
     if (this.session) throw new Error("Manual compaction controller is already attached");
     this.session = session;
-    this.previousStopAfterTurn = session.agent.shouldStopAfterTurn;
-    this.installedStopAfterTurn = async (...args) => {
-      if (this.pending) return true;
-      return await this.previousStopAfterTurn?.apply(session.agent, args) ?? false;
+    this.previousFinishTurn = session.agent.finishTurn;
+    this.installedFinishTurn = async (turn, signal) => {
+      // Pi's installed hook owns persistence-aware extension turn boundaries.
+      const decision = await this.previousFinishTurn?.call(session.agent, turn, signal);
+      if (this.pending && turn.message.stopReason !== "error" && turn.message.stopReason !== "aborted") {
+        return { action: "end" };
+      }
+      return decision ?? undefined;
     };
-    session.agent.shouldStopAfterTurn = this.installedStopAfterTurn;
+    session.agent.finishTurn = this.installedFinishTurn;
   }
 
   request(customInstructions?: string): { state: ManualCompactionAcceptedState } {
@@ -126,8 +127,8 @@ export class ManualCompactionController {
     if (this.disposed) return;
     await this.cancel();
     const session = this.session;
-    if (session && session.agent.shouldStopAfterTurn === this.installedStopAfterTurn) {
-      session.agent.shouldStopAfterTurn = this.previousStopAfterTurn;
+    if (session && session.agent.finishTurn === this.installedFinishTurn) {
+      session.agent.finishTurn = this.previousFinishTurn;
     }
     this.listeners.clear();
     this.session = undefined;

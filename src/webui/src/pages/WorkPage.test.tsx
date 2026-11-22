@@ -7,6 +7,7 @@ import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
+import { contextSnapshot } from "../testing/context";
 import { completionEntry } from "../testing/subagentCompletion";
 import { fireTranscriptGrowth, hydrateTranscript, metricStub, observerFor } from "../testing/transcriptTest";
 import { TIMELINE_CATEGORIES } from "../timeline-detail";
@@ -73,6 +74,7 @@ vi.mock("../api", async (importOriginal) => {
     getProviderTimeoutSettings: vi.fn(),
     patchProviderTimeoutSettings: vi.fn(),
     getApiUsageStatistics: vi.fn(),
+    getSessionContext: vi.fn(),
     renameSession: vi.fn(),
     replaceFileWatchDirectories: vi.fn().mockResolvedValue(undefined),
   };
@@ -299,6 +301,7 @@ describe("WorkPage", () => {
     vi.mocked(api.listModels).mockReset();
     vi.mocked(api.patchAgent).mockReset();
     vi.mocked(api.getSessionCommands).mockReset();
+    vi.mocked(api.getSessionContext).mockReset().mockResolvedValue(contextSnapshot());
     vi.mocked(api.getSessionCommands).mockResolvedValue([
       { name: "name", description: "Rename the current session", source: "extension" },
       { name: "history", description: "Browse the current session tree", source: "extension" },
@@ -1445,6 +1448,55 @@ describe("WorkPage", () => {
     expect(api.sendPrompt).not.toHaveBeenCalled();
   });
 
+  it("opens /context and /settings locally even without backend command discovery", async () => {
+    vi.mocked(api.getSessionCommands).mockResolvedValue([]);
+    const user = userEvent.setup();
+    const onOpenSettings = vi.fn();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={onOpenSettings} />);
+    await screen.findByText("starting research");
+    const input = screen.getByRole("textbox", { name: /message/i });
+    await user.type(input, "/context{Enter}");
+    expect(await screen.findByRole("dialog", { name: "Context manager" })).toBeVisible();
+    expect(api.getSessionContext).toHaveBeenCalledWith("s1", expect.any(AbortSignal));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    await user.click(input);
+    await user.type(input, "/settings{Enter}");
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+    expect(api.compactSession).not.toHaveBeenCalled();
+  });
+
+  it("opens root context from the top-right action while inspecting a child, and uses native compression", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+      subagents: [subagentSummary("context-child", "child-context")],
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "context-child", name: "subagent", arguments: '{"agent":"search"}' }],
+        },
+      ],
+    } as never);
+    vi.mocked(api.getChildSnapshot).mockResolvedValue(
+      normalizeTimelineSnapshot({
+        session: { id: "child-context", cwd: "/p", sessionName: "easyresearch:search" },
+        messages: [{ role: "assistant", content: [{ type: "text", text: "Child context remains read-only" }] }],
+        subagents: [],
+      } as never),
+    );
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "View details" }));
+    await screen.findByText("Child context remains read-only");
+    await user.click(screen.getByRole("button", { name: "Context manager" }));
+    const modal = await screen.findByRole("dialog", { name: "Context manager" });
+    expect(api.getSessionContext).toHaveBeenCalledWith("s1", expect.any(AbortSignal));
+    await user.click(within(modal).getByRole("button", { name: "Compress whole session" }));
+    expect(api.compactSession).toHaveBeenCalledWith("s1");
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+    expect(api.abortSession).not.toHaveBeenCalled();
+  });
+
   it("applies the daemon-owned API usage visibility setting to the Work transcript", async () => {
     vi.mocked(api.getApiUsageSettings).mockResolvedValue({ showApiUsageDetails: true });
     const usage = {
@@ -1628,7 +1680,7 @@ describe("WorkPage", () => {
     await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledOnce());
 
     const input = screen.getByRole("textbox", { name: /message/i });
-    await user.type(input, "/");
+    await user.type(input, "@");
     expect(await screen.findByRole("option", { name: /newer-skill/ })).toBeVisible();
 
     emitInAct({ type: "runtime_configuration_applied", generation: 5 });
@@ -1673,7 +1725,7 @@ describe("WorkPage", () => {
     await waitFor(() => expect(api.getSessionCommands).toHaveBeenCalledTimes(2));
 
     const input = screen.getByRole("textbox", { name: /message/i });
-    await user.type(input, "/");
+    await user.type(input, "@");
     expect(await screen.findByRole("option", { name: /fresh-skill/ })).toBeVisible();
 
     await act(async () => {
@@ -6097,7 +6149,7 @@ describe("WorkPage", () => {
       } as never);
     });
 
-    it("opens the skill popover and sends the inserted friendly command", async () => {
+    it("attaches Skill context and sends it through the normal prompt API", async () => {
       const user = userEvent.setup();
       vi.mocked(api.getSessionCommands).mockResolvedValue([
         { name: "arxiv", description: "arXiv metadata", source: "skill" },
@@ -6107,11 +6159,11 @@ describe("WorkPage", () => {
 
       const input = screen.getByRole("textbox", { name: /message/i });
       await user.click(input);
-      await user.keyboard("/ar");
-      await user.click(await screen.findByRole("option", { name: /\/arxiv/ }));
-      expect((input as HTMLTextAreaElement).value).toBe("/arxiv ");
+      await user.keyboard("@ar");
+      await user.click(await screen.findByRole("option", { name: /@skill:arxiv/ }));
+      expect((input as HTMLTextAreaElement).value).toBe("@skill:arxiv ");
       await user.click(screen.getByRole("button", { name: /send/i }));
-      await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledWith("s1", "/arxiv"));
+      await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledWith("s1", "@skill:arxiv"));
     });
 
     it("loads session tree metadata and offers the version switcher", async () => {

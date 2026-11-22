@@ -149,7 +149,7 @@ describe("slow-provider and failed-write recovery through Pi", () => {
     try {
       writeFileSync(join(f.cwd, "section-01.md"), "confirmed first section\n");
       let observed = "";
-      const args = failure === "invalid" ? { path: "section-02.md" } :
+      const args: import("@earendil-works/pi-ai").JsonObject = failure === "invalid" ? { path: "section-02.md" } :
         { path: failure === "filesystem" ? "section-01.md/child.md" : "section-02.md", content: "incomplete" };
       f.provider.setResponses([
         f.fauxAssistantMessage([

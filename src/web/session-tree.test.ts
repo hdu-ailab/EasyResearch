@@ -75,7 +75,7 @@ describe("flattenMessageTree", () => {
     ]);
   });
 
-  it("maps non-bubble message roles (toolResult/system) to other", () => {
+  it("retains system ancestry without instruction text alongside ordinary tool output", () => {
     const tree = [
       node(messageEntry("m1", null, "user", "a")),
       node(messageEntry("tr1", "m1", "toolResult", "tool output")),
@@ -86,8 +86,9 @@ describe("flattenMessageTree", () => {
       { id: "m1", parentId: null, role: "user", kind: "user", text: "a" },
       { id: "tr1", parentId: "m1", role: "other", kind: "tool", text: "tool output" },
       { id: "m2", parentId: "tr1", role: "assistant", kind: "assistant", text: "b" },
-      { id: "sys1", parentId: "m2", role: "other", kind: "message", text: "system note" },
+      { id: "sys1", parentId: "m2", role: "other", kind: "message", text: "" },
     ]);
+    expect(tree[3]!.entry).toMatchObject({ message: { content: "system note" } });
   });
 
   it("carries compaction summaries with firstKeptEntryId and branch summaries as other", () => {

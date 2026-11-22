@@ -465,6 +465,7 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
       type: "agent_end",
       messages: [
         assistant("short result"),
+        { role: "system", content: "private system instructions", sections: { private: "private declaration" }, timestamp: 1 },
         {
           role: "custom",
           customType: AGENT_STATUS_TYPE,
@@ -491,6 +492,8 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     parent.acknowledgeLaunch("tool-0");
     await supervisor.waitForQuiescence();
     expect(events.some((event) => event.event?.type === "agent_end")).toBe(true);
+    expect(events.find((event) => event.event?.type === "agent_end")?.event).toMatchObject({ messages: [assistant("short result")] });
+    expect(JSON.stringify(events)).not.toContain("private system instructions");
     expect(JSON.stringify(events)).not.toContain(AGENT_STATUS_TYPE);
     expect(JSON.stringify(events)).not.toContain(nestedPath);
     expect(events.at(-1)).toMatchObject({ agentId: "search_0", status: "complete" });
@@ -510,6 +513,12 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     stage.materialization.resolve();
     await launching;
     const content = `<agent_status>\nError subagent:{"name":"search_1","session_path":"${leakedPath}"}\n</agent_status>`;
+
+    const system = { role: "system", content: "PRIVATE_SYSTEM_CONTENT", sections: { handoff: "PRIVATE_SYSTEM_SECTION" }, timestamp: 1 };
+    for (const type of ["message_start", "message_end", "turn_end"]) {
+      stage.emit({ type, message: system, toolResults: [] } as JsonAgentSessionEvent);
+    }
+    stage.emit({ type: "entry_appended", entry: { type: "message", id: "system", parentId: null, timestamp: "2026-11-22T00:00:00Z", message: system } } as JsonAgentSessionEvent);
 
     stage.emit({
       type: "message_end",
@@ -531,6 +540,7 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
 
     expect(JSON.stringify(events)).not.toContain(AGENT_STATUS_TYPE);
     expect(JSON.stringify(events)).not.toContain(leakedPath);
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_SYSTEM_");
     parent.acknowledgeLaunch("tool-0");
     stage.completion.resolve(result());
     await supervisor.waitForQuiescence();

@@ -5,6 +5,7 @@ import type {
   ApiUsageStatisticsDto,
   ApiUsageTotalsDto,
 } from "./contracts";
+import { AUTO_TITLE_RESULT } from "../runtime/session-title";
 
 interface SessionUsageProjection {
   direct: ApiUsageTotalsDto;
@@ -102,6 +103,13 @@ export function addApiUsageTotals(target: ApiUsageTotalsDto, usage: ApiUsageDto 
 
 function usageRecord(sessionId: string, entry: unknown, afterEntryId?: string): ApiUsageRecordDto | undefined {
   if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.timestamp !== "string") return undefined;
+  if (entry.type === "custom" && entry.customType === AUTO_TITLE_RESULT && isRecord(entry.data)) {
+    const usage = readUsage(entry.data.usage);
+    if (!usage || typeof entry.data.provider !== "string" || typeof entry.data.model !== "string") return undefined;
+    return { id: entry.id, sessionId, source: "title", timestamp: entry.timestamp,
+      anchor: { kind: "standalone", ...(afterEntryId === undefined ? {} : { afterEntryId }) },
+      provider: entry.data.provider, model: entry.data.model, usage };
+  }
   if (entry.type === "message" && isRecord(entry.message)) {
     const usage = readUsage(entry.message.usage);
     if (!usage) return undefined;
@@ -176,7 +184,7 @@ export function projectSessionUsage(
   const byModel = new Map<string, ApiUsageModelSummaryDto>();
   for (const record of recordsFromEntries(sessionId, entries)) {
     addApiUsageTotals(direct, record.usage);
-    const key = record.source === "assistant" && record.provider && record.model
+    const key = (record.source === "assistant" || record.source === "title") && record.provider && record.model
       ? `${record.provider}/${record.model}`
       : "internal";
     let summary = byModel.get(key);
@@ -220,7 +228,7 @@ export function applyApiUsageRecord(
   const target = byId.get(record.sessionId);
   if (!target) return undefined;
   addApiUsageTotals(target.direct, record.usage);
-  const modelKey = record.source === "assistant" && record.provider && record.model
+  const modelKey = (record.source === "assistant" || record.source === "title") && record.provider && record.model
     ? `${record.provider}/${record.model}`
     : "internal";
   let model = target.models.find((candidate) => candidate.key === modelKey);

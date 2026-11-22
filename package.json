@@ -1,6 +1,6 @@
 {
   "name": "easyresearch",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "description": "Local AI research workspace for literature, experiments, figures, and papers",
   "type": "module",
   "private": true,
@@ -49,10 +49,10 @@
     "dev:web": "vite --config src/webui/vite.config.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.85.1",
-    "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-coding-agent": "0.85.1",
-    "@earendil-works/pi-tui": "0.85.1",
+    "@earendil-works/pi-agent-core": "1.6.0",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@earendil-works/pi-coding-agent": "1.6.0",
+    "@earendil-works/pi-tui": "1.6.0",
     "@tanstack/react-virtual": "3.14.9",
     "axios": "1.19.0",
     "cheerio": "1.1.2",

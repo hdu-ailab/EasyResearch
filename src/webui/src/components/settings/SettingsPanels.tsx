@@ -9,6 +9,7 @@ import { ApiUsageDetailsSetting } from "../ApiUsageDetailsSetting";
 import { CompactionThresholdSetting } from "../CompactionThresholdSetting";
 import { ProviderIcon } from "../ProviderIcon";
 import { ProviderTimeoutSetting } from "../ProviderTimeoutSetting";
+import { SessionTitleSetting } from "../SessionTitleSetting";
 import { ActionGlyph } from "../studio/ActionGlyph";
 import { StudioThemePicker } from "../studio/StudioThemePicker";
 import { TimelineDetailSettings } from "./TimelineDetailSettings";
@@ -189,6 +190,7 @@ export function ConversationSettingsPanel({ configurationGeneration }: Conversat
           <CompactionThresholdSetting configurationGeneration={configurationGeneration} />
           <ProviderTimeoutSetting configurationGeneration={configurationGeneration} />
           <ApiUsageDetailsSetting configurationGeneration={configurationGeneration} />
+          <SessionTitleSetting configurationGeneration={configurationGeneration} />
         </div>
       </section>
       <div className={`${sectionClass} p-4`}>

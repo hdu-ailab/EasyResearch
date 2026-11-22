@@ -1,4 +1,4 @@
-import { Bot, FileSearch, Settings } from "lucide-react";
+import { Bot, FileSearch, Layers3, Settings } from "lucide-react";
 import { type Ref, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type {
@@ -23,6 +23,7 @@ import { ApiUsageStatisticsDialog } from "../components/ApiUsageStatisticsDialog
 import { ChatComposer, type ChatComposerHandle } from "../components/ChatComposer";
 import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTranscript";
 import { ContextCapacity } from "../components/ContextCapacity";
+import { ContextManagerDialog } from "../components/ContextManagerDialog";
 import { FileBrowser, type FileBrowserHandle } from "../components/FileBrowser";
 import { LlmRecoveryBanner } from "../components/LlmRecoveryBanner";
 import { resolveTranscriptFilePath } from "../components/markdown/file-references";
@@ -279,6 +280,8 @@ function SessionWorkPage({
   const [renameInitialName, setRenameInitialName] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [statisticsOpen, setStatisticsOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextSignal, setContextSignal] = useState(0);
   const [entryDetail, setEntryDetail] = useState<{
     sessionId: string;
     childId?: string;
@@ -339,6 +342,21 @@ function SessionWorkPage({
 
   const handleWorkEvent = useCallback(
     (event: unknown) => {
+      if (
+        event &&
+        typeof event === "object" &&
+        "type" in event &&
+        [
+          "snapshot",
+          "session_stats_changed",
+          "runtime_configuration_applied",
+          "compaction_state_changed",
+          "message_end",
+          "timeline_entry_appended",
+        ].includes(String(event.type))
+      ) {
+        setContextSignal((sequence) => sequence + 1);
+      }
       if (event && typeof event === "object" && (event as { type?: unknown }).type === "session_deleted") {
         parentOwner.current = { ...parentOwner.current, deleted: true };
         commandRequest.current += 1;
@@ -353,6 +371,7 @@ function SessionWorkPage({
         setRenameInitialName(null);
         setHistoryOpen(false);
         setStatisticsOpen(false);
+        setContextOpen(false);
         setCommandError(null);
         deletedCallback.current?.(parentOwner.current.id);
         return true;
@@ -1360,11 +1379,21 @@ function SessionWorkPage({
     async (text: string) => {
       if (parentOwner.current.deleted || !activity.current.interactive) return;
       setCommandError(null);
+      // UI actions stay local even before command discovery or after a catalog failure.
+      const action = /^\/(context|settings)(?:\s|$)/.exec(text.trim())?.[1];
+      if (action === "context") {
+        setContextOpen(true);
+        return;
+      }
+      if (action === "settings") {
+        onOpenSettings();
+        return;
+      }
       transcriptRef.current?.scrollToLatest();
       await connection.send(text);
       void refreshTree();
     },
-    [connection.send, refreshTree, activity],
+    [connection.send, refreshTree, activity, onOpenSettings],
   );
   const abort = () => {
     if (activity.current.interactive) return connection.abort();
@@ -1374,6 +1403,14 @@ function SessionWorkPage({
     (command: SkillCommandDto, args: string) => {
       if (parentOwner.current.deleted || !activity.current.interactive) return;
       setCommandError(null);
+      if (command.name === "context") {
+        setContextOpen(true);
+        return;
+      }
+      if (command.name === "settings") {
+        onOpenSettings();
+        return;
+      }
       if (command.name === "name") {
         setRenameInitialName(args || sessionView.sessionName || "");
         return;
@@ -1398,7 +1435,18 @@ function SessionWorkPage({
       }
       void send(args ? `/${command.name} ${args}` : `/${command.name}`);
     },
-    [refreshTree, send, sessionId, sessionView.sessionName, activity],
+    [refreshTree, send, sessionId, sessionView.sessionName, activity, onOpenSettings],
+  );
+
+  const composerCommands = useMemo<SkillCommandDto[]>(
+    () => [
+      ...commands.filter(
+        (command) => command.source === "skill" || (command.name !== "context" && command.name !== "settings"),
+      ),
+      { name: "context", source: "extension", description: t("context.title") },
+      { name: "settings", source: "extension", description: t("settings.title") },
+    ],
+    [commands, t],
   );
 
   const messageStructure = structuredMessages.current.messages;
@@ -1461,6 +1509,18 @@ function SessionWorkPage({
         <span className={`size-1.5 rounded-full ${statusColor}`} aria-hidden />
         {!isMobile && statusLabel}
       </span>
+      {!connection.deleted && !sessionView.subagentName ? (
+        <WorkTopbarIconButton
+          active={contextOpen}
+          label={t("context.title")}
+          title={t("context.title")}
+          onClick={() => {
+            if (activity.current.interactive) setContextOpen(true);
+          }}
+        >
+          <Layers3 size={15} aria-hidden />
+        </WorkTopbarIconButton>
+      ) : null}
       {!isMobile && (
         <>
           <span className="mx-1 h-4 w-px bg-v2-grey-200" aria-hidden />
@@ -1685,7 +1745,7 @@ function SessionWorkPage({
                 onSend={send}
                 onCommand={executeCommand}
                 onAbort={abort}
-                commands={activeTab === RESEARCH_ASSISTANT_AGENT ? commands : []}
+                commands={activeTab === RESEARCH_ASSISTANT_AGENT ? composerCommands : []}
               />
             </footer>
           </section>
@@ -1791,6 +1851,23 @@ function SessionWorkPage({
           sessionId={sessionId}
           liveStatistics={sessionView.apiUsage}
           onClose={() => setStatisticsOpen(false)}
+        />
+      ) : null}
+      {contextOpen && !connection.deleted && !sessionView.subagentName ? (
+        <ContextManagerDialog
+          sessionId={sessionId}
+          compacting={sessionView.compactionState !== "idle"}
+          onCompact={() => compactSession(sessionId)}
+          refreshSignal={`${contextSignal}:${configurationGeneration}:${sessionView.runtimeConfigurationGeneration}:${status}:${sessionView.compactionState}`}
+          busy={
+            status === "running" ||
+            status === "starting" ||
+            sessionView.isStreaming ||
+            sessionView.compactionState !== "idle" ||
+            Boolean(sessionView.llmRecovery) ||
+            Boolean(sessionView.retry)
+          }
+          onClose={() => setContextOpen(false)}
         />
       ) : null}
       {entryDetail &&

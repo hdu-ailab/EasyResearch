@@ -6,7 +6,6 @@ import {
   truncateHead,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -167,8 +166,8 @@ export function createWebSearchTool(
     ],
     parameters: Type.Object({
       query: Type.String({ minLength: 1, description: "Search query, including quoted phrases when needed" }),
-      provider: Type.Optional(StringEnum(WEB_SEARCH_PROVIDERS, { description: "Search provider; defaults to engines" })),
-      engines: Type.Optional(Type.Array(StringEnum(WEB_SEARCH_ENGINES), {
+      provider: Type.Optional(Type.Enum(WEB_SEARCH_PROVIDERS, { description: "Search provider; defaults to engines" })),
+      engines: Type.Optional(Type.Array(Type.Enum(WEB_SEARCH_ENGINES), {
         minItems: 1,
         maxItems: WEB_SEARCH_ENGINES.length,
         uniqueItems: true,

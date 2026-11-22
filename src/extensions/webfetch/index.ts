@@ -7,7 +7,6 @@ import {
   keyHint,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Parser } from "htmlparser2";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -206,11 +205,11 @@ export function createWebFetchTool(dependencies: WebFetchToolDependencies = {}) 
     ],
     parameters: Type.Object({
       url: Type.String({ minLength: 1, description: "Fully formed URL beginning with http:// or https://" }),
-      provider: Type.Optional(StringEnum(["direct", "firecrawl", "tavily"] as const, {
+      provider: Type.Optional(Type.Enum(["direct", "firecrawl", "tavily"] as const, {
         description: "Fetch directly (default), or send this public URL to the chosen extraction service",
       })),
       format: Type.Optional(
-        StringEnum(["markdown", "text", "html"] as const, {
+        Type.Enum(["markdown", "text", "html"] as const, {
           description: "Output format; defaults to markdown",
         }),
       ),

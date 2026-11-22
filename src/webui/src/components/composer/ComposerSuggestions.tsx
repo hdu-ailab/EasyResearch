@@ -15,14 +15,16 @@ export function ComposerSuggestions({
   items,
   activeIndex,
   status,
+  replacesSkill = false,
   onActive,
   onSelect,
 }: {
   id: string;
-  surface: "slash" | "files";
+  surface: "slash" | "context";
   items: ComposerSuggestion[];
   activeIndex: number;
   status?: "loading" | "ready" | "error";
+  replacesSkill?: boolean;
   onActive: (index: number) => void;
   onSelect: (index: number) => void;
 }) {
@@ -32,13 +34,13 @@ export function ComposerSuggestions({
   useEffect(() => {
     if (activeId) list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest" });
   }, [activeId]);
-  const groups = surface === "files" ? (["files"] as const) : (["commands", "skills"] as const);
+  const groups = surface === "context" ? (["skills", "files"] as const) : (["commands"] as const);
   return (
     <div
       ref={list}
       id={id}
       role="listbox"
-      aria-label={surface === "files" ? t("composer.files") : t("composer.slashHint")}
+      aria-label={surface === "context" ? t("composer.context") : t("composer.slashHint")}
       aria-busy={status === "loading"}
       className="absolute inset-x-0 bottom-full z-20 mb-2 max-h-64 overflow-y-auto overscroll-contain rounded-xl border border-v2-grey-200 bg-v2-background-bg-base p-1.5 shadow-lg"
     >
@@ -46,15 +48,29 @@ export function ComposerSuggestions({
         const options = items
           .map((item, index) => ({ item, index }))
           .filter(({ item }) =>
-            group === "files" ? true : group === "skills" ? item.kind === "skill" : item.kind === "command",
+            group === "files"
+              ? item.kind === "file" || item.kind === "directory"
+              : group === "skills"
+                ? item.kind === "skill"
+                : item.kind === "command",
           );
         if (!options.length) return null;
         const label = t(
           group === "files" ? "composer.files" : group === "skills" ? "composer.skills" : "composer.commands",
         );
         return (
-          <fieldset key={group} className="min-w-0" aria-label={label}>
+          <fieldset
+            key={group}
+            className="min-w-0"
+            aria-label={label}
+            aria-describedby={group === "skills" && replacesSkill ? `${id}-replace-skill` : undefined}
+          >
             <legend className="px-2 py-1 text-[11px] font-medium text-v2-text-text-faint">{label}</legend>
+            {group === "skills" && replacesSkill ? (
+              <p id={`${id}-replace-skill`} className="px-2 pb-1 text-[12px] text-v2-text-text-muted">
+                {t("composer.replaceSkill")}
+              </p>
+            ) : null}
             {options.map(({ item, index }) => {
               const Icon =
                 item.kind === "skill"
@@ -76,7 +92,7 @@ export function ComposerSuggestions({
                   onPointerDown={(event) => event.preventDefault()}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => onSelect(index)}
-                  onMouseEnter={() => onActive(index)}
+                  onPointerMove={() => onActive(index)}
                 >
                   <Icon size={15} className="shrink-0" aria-hidden />
                   <span className="min-w-0 truncate font-medium">{item.label}</span>
@@ -94,7 +110,7 @@ export function ComposerSuggestions({
           </fieldset>
         );
       })}
-      {!items.length ? (
+      {!items.length || status === "error" ? (
         <p className="px-2 py-2 text-[12px] text-v2-text-text-muted" role="status">
           {status === "loading"
             ? t("composer.filesLoading")

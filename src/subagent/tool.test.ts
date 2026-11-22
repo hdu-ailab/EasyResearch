@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
-import type { AgentSessionEvent, ExtensionContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, ExtensionToolContext, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { AGENT_ALIAS_ENTRY, readAgentAliases } from "./agent-alias";
 import type { AgentConfig } from "./agents";
@@ -262,7 +262,7 @@ function toolHarness(options: ToolHarnessOptions = {}) {
     model: { provider: "stage-provider", id: "stage-model" },
     thinkingLevel: "minimal",
     sessionManager: ownerManager,
-  } as unknown as ExtensionContext;
+  } as unknown as ExtensionToolContext;
 
   return {
     tool,

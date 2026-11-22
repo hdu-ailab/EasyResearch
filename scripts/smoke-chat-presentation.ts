@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, expect, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonObject } from "@earendil-works/pi-ai";
 import type { importPi } from "../src/runtime/pi-import";
 import type { SessionSnapshotDto, SkillCommandDto, TranscriptPageDto, TranscriptTimelineEntryDto } from "../src/web/contracts";
 import { messages, type MessageKey } from "../src/webui/src/i18n/messages";
@@ -38,7 +38,7 @@ export function fixture(pi: Pi, root: string, label: string) {
   writeFileSync(skill, "---\nname: chat-smoke-skill\ndescription: Isolated browser acceptance skill\n---\nUse only the supplied fixture.\n");
   writeFileSync(selectedFile, "# File reference fixture\n");
   writeFileSync(droppedFile, "Exact dropped file reference\n");
-  const tool = (manager: Manager, id: string, name: string, args: Record<string, unknown>, text: string, isError = false) => {
+  const tool = (manager: Manager, id: string, name: string, args: JsonObject, text: string, isError = false) => {
     manager.appendMessage({ ...assistant([{ type: "toolCall", id, name, arguments: args }]), stopReason: "toolUse" });
     manager.appendMessage({ role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text }], isError, timestamp: ++timestamp });
   };
@@ -139,7 +139,9 @@ function verifyRootBytes(pi: Pi, seed: ReturnType<typeof fixture>, allowAppend =
       assert(typeof entry.tokensBefore === "number" && Number.isFinite(entry.tokensBefore) && entry.tokensBefore >= 0);
     } else {
       const message = entry.message as { role?: string; content?: unknown; timestamp?: number } | undefined;
-      assert(message && (message.role === "user" || message.role === "assistant"));
+      // Pi 1.6 persists prompt/tool declarations internally. Public projections
+      // omit these system rows; native JSONL must keep them byte-preserved.
+      assert(message && (message.role === "user" || message.role === "assistant" || message.role === "system"));
       assert(typeof message.timestamp === "number" && Number.isFinite(message.timestamp));
       assert(typeof message.content === "string" || Array.isArray(message.content) && message.content.every((part: unknown) =>
         part !== null && typeof part === "object" && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string"));
@@ -521,14 +523,15 @@ async function checkComposer(page: Page, t: Labels, seed: ReturnType<typeof fixt
     await input.fill("/");
     const menu = work(page).getByRole("listbox");
     await expect(menu.getByRole("group", { name: t("composer.commands"), exact: true })).toBeVisible();
+    await expect(menu.getByRole("group", { name: t("composer.skills"), exact: true })).toHaveCount(0);
+    await input.fill("@chat-smoke-skill");
     await expect(menu.getByRole("group", { name: t("composer.skills"), exact: true })).toBeAttached();
-    await input.fill("/chat-smoke-skill");
     await input.press("Enter");
-    await expect(input).toHaveValue("/chat-smoke-skill ");
+    await expect(input).toHaveValue("@skill:chat-smoke-skill ");
     await expect(menu).toHaveCount(0);
     await input.press("End");
     await input.pressSequentially("with arguments");
-    await expect(input).toHaveValue("/chat-smoke-skill with arguments");
+    await expect(input).toHaveValue("@skill:chat-smoke-skill with arguments");
     assert.deepEqual(writes, [], "Choosing a Skill must only insert its invocation");
 
     await input.fill("/statistics");
@@ -542,7 +545,7 @@ async function checkComposer(page: Page, t: Labels, seed: ReturnType<typeof fixt
     const entriesResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/entries");
     await input.fill("@notes/");
     assert.equal((await entriesResponse).status(), 200);
-    await work(page).getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
+    await work(page).getByRole("listbox", { name: t("composer.context"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
     await expect(input).toHaveValue(`"${seed.selectedFile}" `);
     const selectedChip = work(page).locator("[data-composer-reference]").filter({ hasText: seed.selectedFile });
     await expect(selectedChip).toHaveAttribute("title", seed.selectedFile);
@@ -557,9 +560,9 @@ async function checkComposer(page: Page, t: Labels, seed: ReturnType<typeof fixt
       const url = new URL(response.url());
       return url.pathname === "/api/entries" && url.searchParams.get("path") === seed.cwd;
     });
-    await work(page).locator("[data-chat-composer]").getByRole("button", { name: t("composer.files"), exact: true }).click();
+    await work(page).locator("[data-chat-composer]").getByRole("button", { name: t("composer.context"), exact: true }).click();
     assert.equal((await toolbarEntries).status(), 200);
-    await work(page).getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "compact", exact: true }).click();
+    await work(page).getByRole("listbox", { name: t("composer.context"), exact: true }).getByRole("option", { name: "compact", exact: true }).click();
     const chips = work(page).locator("[data-composer-reference]");
     await expect(chips).toHaveCount(1);
     await expect(chips).toHaveAttribute("title", seed.droppedFile);
@@ -573,11 +576,11 @@ async function checkComposer(page: Page, t: Labels, seed: ReturnType<typeof fixt
     result.measurements.nativeComposerEdits = nativeEdits;
     for (const occurrence of ["first", "second"] as const) {
       await input.fill("A @notes/");
-      await work(page).getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
+      await work(page).getByRole("listbox", { name: t("composer.context"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
       await expect(input).toHaveValue(`A ${seed.selectedFile} `);
       await input.evaluate((element) => { const textarea = element as HTMLTextAreaElement; textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.value.length); });
       await input.pressSequentially(" B @notes/");
-      await work(page).getByRole("listbox", { name: t("composer.files"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
+      await work(page).getByRole("listbox", { name: t("composer.context"), exact: true }).getByRole("option", { name: "研究 100% +.md", exact: true }).click();
       await expect(input).toHaveValue(`A ${seed.selectedFile}  B ${seed.selectedFile} `);
       await expect(chips).toHaveCount(2);
       assert.deepEqual(await chips.evaluateAll((elements) => elements.map((element) => element.getAttribute("title"))), [seed.selectedFile, seed.selectedFile]);

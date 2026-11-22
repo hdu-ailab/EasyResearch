@@ -28,6 +28,7 @@ import { checkNpmUpdate } from "./update-check";
 import { createCompactionSettingsService } from "./compaction-settings";
 import { createProviderTimeoutSettingsService } from "./provider-timeout-settings";
 import { createApiUsageSettingsService } from "./api-usage-settings";
+import { createSessionTitleSettingsService } from "./session-title-settings";
 import {
   createConfigurationProjectWatches,
   type ConfigurationProjectWatches,
@@ -379,6 +380,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
     const compactionSettings = createCompactionSettingsService(config, live);
     const providerTimeoutSettings = createProviderTimeoutSettingsService(config, live);
     const apiUsageSettings = createApiUsageSettingsService(config, live);
+    const sessionTitleSettings = createSessionTitleSettingsService(config, live);
     const resolveDefaultModel = async (cwd: string): Promise<string | undefined> => {
       const settingsManager = SettingsManager.create(cwd, agentDir);
       const model = await resolvePiDefaultModel({
@@ -417,6 +419,8 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       patchProviderTimeoutSettings: (patch) => providerTimeoutSettings.patch(patch),
       patchCompactionSettings: (patch) => compactionSettings.patch(patch),
       getApiUsageSettings: () => apiUsageSettings.get(),
+      getSessionTitleSettings: () => sessionTitleSettings.get(),
+      patchSessionTitleSettings: (patch) => sessionTitleSettings.patch(patch),
       patchApiUsageSettings: (patch) => apiUsageSettings.patch(patch),
       getNetworkProxySettings: () => networkProxySettings.get(),
       patchNetworkProxySettings: (patch) => networkProxySettings.patch(patch),

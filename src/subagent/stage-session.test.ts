@@ -1414,9 +1414,11 @@ describe("createStageSessionLauncher", () => {
       );
       reloadCallsBeforeBoundary = session.reloadCalls;
       void resourceHost!.emit("turn_end", { turnIndex: 0 }, { cwd: "/project", abort: vi.fn() })
-        .then(() => {
+        .then(async () => {
+          expect(session.reloadCalls).toBe(0);
           session.isIdle = true;
           session.emitAssistantEndAndPersist();
+          await resourceHost!.emit("agent_settled", { aborted: false }, { cwd: "/project", isIdle: () => true });
           prompt.resolve();
         });
     };

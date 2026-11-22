@@ -25,6 +25,7 @@ export const routes = {
   compactionSettings: () => `${API_ROOT}/settings/compaction`,
   providerTimeoutSettings: () => `${API_ROOT}/settings/provider-timeout`,
   apiUsageSettings: () => `${API_ROOT}/settings/api-usage`,
+  sessionTitleSettings: () => `${API_ROOT}/settings/session-title`,
   networkProxySettings: () => `${API_ROOT}/settings/network-proxy`,
   networkProxyTest: () => `${API_ROOT}/settings/network-proxy/test`,
   runtimeRestart: () => `${API_ROOT}/runtime/restart`,
@@ -52,6 +53,10 @@ export const routes = {
   transcriptEntry: (id: string, entryId: string, childId?: string) =>
     `${session(id)}${childId === undefined ? "" : `/subagents/${encodeURIComponent(childId)}`}/history/${encodeURIComponent(entryId)}`,
   statistics: (id: string) => `${session(id)}/statistics`,
+  context: (id: string) => `${session(id)}/context`,
+  contextEdit: (id: string, operation: "preview" | "apply") => `${session(id)}/context/${operation}`,
+  contextItem: (id: string, revision: string, itemId: string, view: "original" | "current", offset: number) =>
+    `${session(id)}/context/item?${new URLSearchParams({ revision, itemId, view, offset: String(offset) })}`,
   childSnapshot: (parentId: string, childId: string) =>
     `${session(parentId)}/subagents/${encodeURIComponent(childId)}/snapshot`,
   messages: (id: string) => `${session(id)}/messages`,

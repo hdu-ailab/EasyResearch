@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { projectSessionTimeline } from "./session-timeline";
 
 describe("session timeline projection", () => {
+  it("excludes initial and updated native system declarations while retaining public entry identities", () => {
+    const entries = [
+      { type: "message", id: "system", message: { role: "system", content: "private prompt", sections: { role: "private role" }, toolsAdded: [{ name: "private-tool" }], timestamp: 1 } },
+      { type: "message", id: "user", message: { role: "user", content: "public task", timestamp: 2 } },
+      { type: "message", id: "declaration", message: { role: "system", content: "", toolsRemoved: [{ name: "private-tool" }], timestamp: 3 } },
+    ];
+    const original = structuredClone(entries);
+    expect(projectSessionTimeline(entries)).toEqual([{ kind: "message", entryId: "user", message: entries[1]!.message }]);
+    expect(entries).toEqual(original);
+  });
+
   it("places one completion batch at its real branch position without raw hidden bubbles", () => {
     const status = {
       type: "custom_message", id: "completion", timestamp: "2026-09-16T00:00:00.000Z",

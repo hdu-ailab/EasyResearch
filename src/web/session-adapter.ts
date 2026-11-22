@@ -51,6 +51,8 @@ import type {
 import { projectSessionUsage } from "./api-usage";
 import { projectSessionTimeline } from "./session-timeline";
 import { SessionStatsNotifier } from "./session-stats";
+import { ContextManagementError, RootContextManager, type ContextRuntime } from "./context-management";
+import type { ContextEditRequestDto, ContextItemTextDto, ContextPreviewDto, ContextSnapshotDto } from "./context-contracts";
 import {
   ManualCompactionController,
   type ManualCompactionAcceptedState,
@@ -65,6 +67,8 @@ const WEB_BUILTIN_COMMANDS: readonly WebSlashCommand[] = [
   { name: "history", description: "Browse the current session tree", source: "extension" },
   { name: "compact", description: "Compact the current session context", source: "extension" },
   { name: "statistics", description: "Show API usage statistics", source: "extension" },
+  { name: "context", description: "Inspect and edit the current model context", source: "extension" },
+  { name: "settings", description: "Open settings", source: "extension" },
 ];
 
 export interface StartSessionOptions {
@@ -212,6 +216,7 @@ export interface ManagedAgentSession {
   recovery?: LlmRecoveryController;
   retryPolicy?: ReturnType<typeof createLlmRetryPolicyBinding>;
   disposeRecovery?: () => void;
+  cancelSessionTitle?: () => void;
 }
 
 export type AgentSessionCreator = (
@@ -366,6 +371,7 @@ export interface PiRuntimeDependencies {
     compaction: ManualCompactionController;
     stats: SessionStatsNotifier;
     publishTimelineEntry: (entry: unknown) => void;
+    sessionTitleSignal?: AbortSignal;
   }): unknown[];
   createSettingsManager(cwd: string, agentDir: string): unknown;
   createModelRuntime(agentDir: string): Promise<AgentRuntimeModelRuntime>;
@@ -401,6 +407,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
     );
     const compaction = new ManualCompactionController();
     const stats = new SessionStatsNotifier();
+    const sessionTitleCancellation = new AbortController();
     const binding = createAgentRuntimeBinding({
       live: deps.liveConfiguration,
       agentName: "research-assistant",
@@ -442,6 +449,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         compaction,
         stats,
         publishTimelineEntry,
+        sessionTitleSignal: sessionTitleCancellation.signal,
       });
       const resourceLoader = deps.createResourceLoader({
         cwd: options.cwd,
@@ -525,7 +533,8 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         },
       });
       await binding.attach(createBindingSession(session, recovery));
-      return { session, coordinator, supervisor, binding, compaction, stats, recovery, retryPolicy, disposeRecovery };
+      return { session, coordinator, supervisor, binding, compaction, stats, recovery, retryPolicy, disposeRecovery,
+        cancelSessionTitle: () => sessionTitleCancellation.abort() };
     } catch (error) {
       recovery.cancel();
       const retryCleanup = createRuntimeSetupCleanup(session, compaction, supervisor, binding,
@@ -570,6 +579,10 @@ export interface SessionAdapter {
   getCompactionState(): ManualCompactionState;
   getCompactionPolicy(): CompactionPolicyDto;
   getContextUsage(): ContextUsageDto | undefined;
+  getContext?(): Promise<ContextSnapshotDto>;
+  getContextItem?(revision: string, itemId: string, view: "original" | "current", offset: number): Promise<ContextItemTextDto>;
+  previewContext?(request: ContextEditRequestDto): Promise<ContextPreviewDto>;
+  applyContext?(request: ContextEditRequestDto): Promise<ContextSnapshotDto>;
   getRuntimeConfigurationGeneration(): number;
   getSteeringMessages(): readonly string[];
   isSupervisorActive(): boolean;
@@ -641,7 +654,8 @@ export class PiSessionFactory implements SessionFactory {
         launchStage,
       }),
       createExtensionFactories: (runtime) =>
-        createResearchAssistantExtensions({ ...runtime, liveConfiguration })
+        createResearchAssistantExtensions({ ...runtime, liveConfiguration,
+          sessionTitleEnabled: () => liveConfiguration.sessionTitleSettings.autoSessionTitle })
           .map(({ name, factory }) => ({ name, factory })),
       createSettingsManager: (cwd, root) => pi.SettingsManager.create(cwd, root),
       createModelRuntime: async (root) => {
@@ -719,6 +733,10 @@ class DirectSessionAdapter implements SessionAdapter {
   private recoveryDisposeComplete = false;
   private readonly promptOperations = new Set<Promise<void>>();
   private treeNavigationOperation: Promise<unknown> | undefined;
+  private contextManager: RootContextManager | undefined;
+  private contextOperation: Promise<ContextSnapshotDto> | undefined;
+  private contextAdmissionHeld = false;
+  private contextCommitting = false;
   private readonly stopAbortOperations = new Set<Promise<void>>();
   private readonly stopAbortErrors: unknown[] = [];
   private readonly stopAbortProgressWaiters = new Set<() => void>();
@@ -791,6 +809,7 @@ class DirectSessionAdapter implements SessionAdapter {
           });
           if (isHiddenStatusEvent(agentEvent)) return;
           const jsonEvent = toJsonSessionEvent(agentEvent);
+          if (!jsonEvent) return;
           const publicEvent = jsonEvent.type === "agent_end"
             ? { ...jsonEvent, messages: jsonEvent.messages.filter((message) => !isHiddenStatusMessage(message)) }
             : jsonEvent.type === "queue_update"
@@ -859,6 +878,7 @@ class DirectSessionAdapter implements SessionAdapter {
     if (this.stopped) return;
     if (this.stopPromise) return this.stopPromise;
     this.stopRequested = true;
+    this.managed?.cancelSessionTitle?.();
     this.managed?.recovery?.cancel();
     const session = this.session;
     const supervisor = this.managed?.supervisor;
@@ -871,6 +891,7 @@ class DirectSessionAdapter implements SessionAdapter {
     this.stopPending = true;
     let tracked!: Promise<void>;
     tracked = runCleanupSteps([
+      async () => { await this.contextOperation?.catch(() => {}); },
       async () => {
         const activeCancellation = this.runCancellationPromise;
         if (!activeCancellation) return;
@@ -966,6 +987,8 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   async prompt(message: string, options?: SteerPromptOptions): Promise<void> {
+    if (this.contextOperation) throw new ContextManagementError("CONTEXT_BUSY");
+    if (/^\/(?:context|settings)(?:\s|$)/.test(message.trimStart())) throw new ContextManagementError("CONTEXT_INVALID");
     // Mirror Pi's rpc-mode prompt contract (ADR-083): fire the prompt without
     // awaiting the whole agent run and resolve as soon as it is accepted
     // (queued steer, handled extension command, or preflight success). Pi's
@@ -1006,6 +1029,12 @@ class DirectSessionAdapter implements SessionAdapter {
           throw new Error("The /web-tree command is not available in chat.");
         }
         let promptMessage = message;
+        const skillContext = /^@skill:([^\s]+)(?:\s+([\s\S]*))?$/.exec(message);
+        if (skillContext && session.resourceLoader.getSkills().skills.some((skill) => skill.name === skillContext[1])) {
+          // Context selection is a normal prompt, not an extension-command action.
+          // Pi remains the only implementation of Skill content expansion.
+          promptMessage = `/skill:${skillContext[1]}${skillContext[2] ? ` ${skillContext[2]}` : ""}`;
+        }
         const friendlySkill = /^\/([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/.exec(message);
         if (friendlySkill && !message.startsWith("/skill:")) {
           const name = friendlySkill[1]!;
@@ -1063,6 +1092,7 @@ class DirectSessionAdapter implements SessionAdapter {
     if (this.runCancellationPromise) return this.runCancellationPromise;
 
     this.runCancellationPending = true;
+    managed.cancelSessionTitle?.();
     managed.recovery?.cancel();
     let tracked!: Promise<void>;
     tracked = runCleanupSteps([
@@ -1087,6 +1117,7 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
+    if (this.contextOperation) throw new ContextManagementError("CONTEXT_BUSY");
     const session = this.requiredSession();
     const model = session.modelRuntime.getModel(provider, modelId);
     if (!model) throw new Error(`Unknown model: ${provider}/${modelId}`);
@@ -1094,6 +1125,7 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   retry(targetSessionId: string, failureId: string): Promise<LlmRetryAcceptedDto> {
+    if (this.contextOperation) throw new ContextManagementError("CONTEXT_BUSY");
     if (!this.session || !this.managed || this.stopRequested) throw new LlmRetryError("LLM_RETRY_UNAVAILABLE");
     if (this.runCancellationPending || this.treeNavigationOperation) throw new LlmRetryError("LLM_RETRY_BUSY");
     if (targetSessionId === this.session.sessionId && this.promptOperations.size) throw new LlmRetryError("LLM_RETRY_BUSY");
@@ -1105,11 +1137,13 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   async setThinkingLevel(level: string): Promise<void> {
+    if (this.contextOperation) throw new ContextManagementError("CONTEXT_BUSY");
     if (!THINKING_LEVELS.has(level as ThinkingLevel)) throw new Error(`Invalid thinking level: ${level}`);
     this.requiredSession().setThinkingLevel(level as ThinkingLevel);
   }
 
   async compact(customInstructions?: string): Promise<{ state: ManualCompactionAcceptedState }> {
+    if (this.contextOperation) throw new ContextManagementError("CONTEXT_BUSY");
     const managed = this.managed;
     if (!managed) throw new Error("Session has not started");
     return managed.compaction.request(customInstructions);
@@ -1127,6 +1161,72 @@ class DirectSessionAdapter implements SessionAdapter {
 
   getContextUsage(): ContextUsageDto | undefined {
     return this.readContextUsage(this.requiredSession());
+  }
+
+  async getContext(): Promise<ContextSnapshotDto> {
+    return (await this.getContextManager()).snapshot();
+  }
+
+  async getContextItem(revision: string, itemId: string, view: "original" | "current", offset: number): Promise<ContextItemTextDto> {
+    return (await this.getContextManager()).item(revision, itemId, view, offset);
+  }
+
+  async previewContext(request: ContextEditRequestDto): Promise<ContextPreviewDto> {
+    return (await this.getContextManager()).preview(request);
+  }
+
+  applyContext(request: ContextEditRequestDto): Promise<ContextSnapshotDto> {
+    if (this.contextOperation || this.contextBusy()) return Promise.reject(new ContextManagementError("CONTEXT_BUSY"));
+    const operation = Promise.resolve().then(async () => {
+      const manager = await this.getContextManager();
+      if (this.contextBusy(false)) throw new ContextManagementError("CONTEXT_BUSY");
+      const release = await this.managed!.supervisor.acquirePromptAdmission();
+      this.contextAdmissionHeld = true;
+      try {
+        await this.requiredBinding().ensureCurrent();
+        if (this.contextBusy(false)) throw new ContextManagementError("CONTEXT_BUSY");
+        this.contextCommitting = true;
+        return manager.apply(request);
+      } finally {
+        this.contextCommitting = false;
+        this.contextAdmissionHeld = false;
+        release();
+      }
+    }).catch((error) => {
+      if (error instanceof ContextManagementError) throw error;
+      throw new ContextManagementError("CONTEXT_UNAVAILABLE");
+    });
+    this.contextOperation = operation;
+    void operation.finally(() => {
+      if (this.contextOperation === operation) this.contextOperation = undefined;
+      this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
+    }).catch(() => {});
+    return operation;
+  }
+
+  private contextBusy(includeMutation = true): boolean {
+    const session = this.session;
+    if (includeMutation && this.contextOperation) return true;
+    if (!session || this.stopRequested || !session.isIdle || session.isStreaming || session.isCompacting
+      || this.startPending || this.startCleanup || this.promptOperations.size || this.treeNavigationOperation
+      || this.runCancellationPending || this.treeCleanupPending || this.stopPending
+      || this.managed?.compaction.hasWork() || this.managed?.recovery?.hasWork()) return true;
+    return this.contextAdmissionHeld
+      ? !!(this.managed?.supervisor.hasRunningChildren() || this.managed?.supervisor.hasPendingNotifications())
+      : this.isSupervisorActive();
+  }
+
+  private async getContextManager(): Promise<RootContextManager> {
+    const session = this.requiredSession();
+    if (!this.contextManager) {
+      const { importPi } = await import("../runtime/pi-import");
+      const pi = await importPi();
+      const ai = await import("@earendil-works/pi-ai");
+      if (this.stopRequested || this.session !== session) throw new ContextManagementError("CONTEXT_UNAVAILABLE");
+      this.contextManager ??= new RootContextManager(session as unknown as ContextRuntime, pi,
+        () => this.contextBusy(!this.contextCommitting), () => this.managed?.stats.notify(), () => this.runtimeConfigurationGeneration, ai);
+    }
+    return this.contextManager;
   }
 
   private readContextUsage(session: InProcessAgentSession): ContextUsageDto | undefined {
@@ -1268,6 +1368,7 @@ class DirectSessionAdapter implements SessionAdapter {
   hasBackgroundWork(): boolean {
     if (
       this.startPending
+      || this.contextOperation !== undefined
       || this.startCleanup !== undefined
       || this.promptOperations.size > 0
       || this.treeNavigationOperation !== undefined

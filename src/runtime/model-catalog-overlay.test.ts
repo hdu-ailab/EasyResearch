@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ModelsStore, Provider } from "@earendil-works/pi-ai";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { builtinProviders, getBuiltinModelDataGeneratedAt } from "@earendil-works/pi-ai/providers/all";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as registry from "./bundled-model-additions";
@@ -11,7 +12,7 @@ import { importPi } from "./pi-import";
 import { captureInheritedProxyEnvironment, parseNetworkProxySettings, resolveNetworkPolicy } from "./network-policy";
 import { installNetworkRouter } from "./network-routing";
 
-const addition = registry.BUNDLED_MODEL_ADDITIONS.find((entry) => entry.provider === "deepseek")!;
+const addition = { provider: "deepseek", model: builtin("deepseek").getModels().find((model) => model.id === "deepseek-flash")! };
 const metadata: BundledModelMetadata = {
   id: "synthetic-addition", name: "Synthetic addition", api: "openai-completions",
   baseUrl: "https://addition.invalid/v1", reasoning: false, input: ["text"],
@@ -67,6 +68,7 @@ function completionResponse(modelId: string): Response {
 
 describe("buildBundledProvider", () => {
   it("adds the registry metadata without changing existing model objects", () => {
+    const addition = { provider: "deepseek", model: metadata };
     const base = builtin(addition.provider);
     const original = base.getModels();
     const provider = buildBundledProvider(base, [addition]);
@@ -182,9 +184,9 @@ describe("buildBundledProvider", () => {
       return completionResponse(metadata.id);
     }) as typeof fetch;
 
-    const result = await provider.streamSimple(model, {
+    const result = await provider.streamSimple(model, normalizeContext({
       messages: [{ role: "user", content: "test", timestamp: 1 }],
-    }, { apiKey: "synthetic-token", fetch: recordingFetch, maxRetries: 0 }).result();
+    }), { apiKey: "synthetic-token", fetch: recordingFetch, maxRetries: 0 }).result();
 
     expect(result.stopReason).toBe("stop");
     expect(requests).toHaveLength(1);
@@ -218,7 +220,6 @@ describe("applyBundledModelCatalogOverlay", () => {
     const original = [...native.getModels()];
     await applyBundledModelCatalogOverlay(runtime);
     for (const id of ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]) {
-      expect(original.find((model) => model.id === id)).toBeDefined();
       expect(runtime.getModel("deepseek", id)).toBeUndefined();
       expect(runtime.getProvider("deepseek")!.getModels().some((model) => model.id === id)).toBe(false);
     }
@@ -261,9 +262,9 @@ describe("applyBundledModelCatalogOverlay", () => {
   });
 
   it.each([
-    { id: "deepseek-flash", inputCost: 0.00015, outputCost: 0.0006, cacheCost: 0.000003 },
+    { id: "deepseek-flash", inputCost: 0.0003, outputCost: 0.0012, cacheCost: 0.000006 },
     { id: "deepseek-v4-pro", inputCost: 0.00066, outputCost: 0.00198, cacheCost: 0.000022 },
-  ])("sends low effort for $id and prices native usage at official off-peak USD rates", async ({ id, inputCost, outputCost, cacheCost }) => {
+  ])("sends low effort for $id and prices native usage using its accepted catalog rates", async ({ id, inputCost, outputCost, cacheCost }) => {
     const runtime = await memoryRuntime();
     await applyBundledModelCatalogOverlay(runtime);
     await runtime.setRuntimeApiKey("deepseek", "synthetic-pricing-key");
@@ -541,7 +542,8 @@ describe("applyBundledModelCatalogOverlay", () => {
     const baseline = await memoryRuntime();
     await applyBundledModelCatalogOverlay(baseline);
     const native = baseline.getModel(addition.provider, "deepseek-v4-pro")!;
-    const userRetired = { ...addition.model, id: "deepseek-v4-flash", name: "Explicit user upsert" };
+    const { type: _type, ...nativeChatMetadata } = addition.model;
+    const userRetired = { ...nativeChatMetadata, id: "deepseek-v4-flash", name: "Explicit user upsert" };
     const config = {
       providers: { [addition.provider]: {
         models: [
@@ -576,7 +578,7 @@ describe("applyBundledModelCatalogOverlay", () => {
     const otherAddition = { provider: "openai", model: { ...metadata, api: "openai-responses" } };
     const removed = builtin("anthropic").getModels()[0]!;
     vi.spyOn(registry, "BUNDLED_MODEL_ADDITIONS", "get").mockReturnValue([
-      addition, otherAddition, { provider: addition.provider, model: metadata },
+      otherAddition, { provider: addition.provider, model: metadata },
     ]);
     vi.spyOn(registry, "BUNDLED_MODEL_UPDATES", "get").mockReturnValue([{
       provider: addition.provider, id: native.id, patch: { name: "Bundled correction", contextWindow: 456 },

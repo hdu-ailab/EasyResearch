@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
+import { getCurrentTools } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { importPi } from "./pi-import";
 
@@ -167,7 +168,7 @@ describe("Pi platform shell exclusion", () => {
       provider.setResponses([
         (context) => {
           providerRequests.push({
-            tools: context.tools?.map(({ name }) => name) ?? [],
+            tools: getCurrentTools(context.messages).map(({ name }) => name),
             messages: structuredClone(context.messages),
           });
           return fauxAssistantMessage("continued with the current Windows shell");

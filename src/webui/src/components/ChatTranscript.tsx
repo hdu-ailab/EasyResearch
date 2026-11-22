@@ -1064,20 +1064,6 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
             })}
           </div>
         </section>
-        {!scrollState.top ? (
-          <div
-            data-testid="transcript-top-fade"
-            aria-hidden
-            className="pointer-events-none absolute left-0 right-3 top-0 z-20 h-8 bg-gradient-to-b from-v2-background-bg-base via-v2-background-bg-base/75 to-transparent"
-          />
-        ) : null}
-        {scrollState.overflow && !scrollState.bottom ? (
-          <div
-            data-testid="transcript-bottom-fade"
-            aria-hidden
-            className="pointer-events-none absolute bottom-0 left-0 right-3 z-20 h-10 bg-gradient-to-t from-v2-background-bg-base via-v2-background-bg-base/75 to-transparent"
-          />
-        ) : null}
       </div>
       {steers.length > 0 ? (
         <div

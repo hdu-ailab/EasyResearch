@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionEvent, InlineExtension } from "@earendil-works/pi-coding-agent";
 import { runCleanupSteps } from "../runtime/cleanup";
+import { isSystemTranscriptMessage } from "../runtime/json-session-event";
 import { isLlmRetryControl } from "../runtime/llm-recovery";
 import { type ReservedDispatch, SubagentCoordinator } from "./coordinator";
 import type { SubagentJobIdentity, SubagentLaunchDetails, SubagentProgressEvent } from "./contracts";
@@ -117,7 +118,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isHiddenStatusMessage(value: unknown): boolean {
-  return isObject(value) && (value.customType === AGENT_STATUS_TYPE || isLlmRetryControl(value));
+  return isSystemTranscriptMessage(value)
+    || (isObject(value) && (value.customType === AGENT_STATUS_TYPE || isLlmRetryControl(value)));
 }
 
 function publicChildEvent(event: SubagentProgressEvent): SubagentProgressEvent | undefined {
@@ -125,10 +127,10 @@ function publicChildEvent(event: SubagentProgressEvent): SubagentProgressEvent |
     const completion = projectSubagentCompletionEntry(event.entry);
     if (completion) return { type: "timeline_entry_appended", entry: completion };
   }
-  const value = event.type === "message_start" || event.type === "message_end"
+  const value = event.type === "message_start" || event.type === "message_end" || event.type === "turn_end"
     ? event.message
     : event.type === "entry_appended"
-      ? event.entry
+      ? event.entry.type === "message" ? event.entry.message : event.entry
       : undefined;
   if (isHiddenStatusMessage(value)) return undefined;
   if (event.type !== "agent_end") return event;

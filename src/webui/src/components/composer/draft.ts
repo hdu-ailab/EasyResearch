@@ -3,6 +3,7 @@ import { isAbsoluteFilesystemPath, isSameOrDescendantPath, joinFilesystemPath } 
 
 export interface DraftReference {
   id: number;
+  kind?: "skill";
   path: string;
   start: number;
   end: number;
@@ -11,6 +12,15 @@ export interface DraftReference {
 export interface ComposerDraft {
   text: string;
   references: DraftReference[];
+}
+
+/** Pi expands one leading Skill; keep its native arguments as the user's draft. */
+export function promptWithContext(draft: ComposerDraft): string {
+  const literal = protectLeadingReference(draft);
+  const skill = literal.references.find((reference) => reference.kind === "skill");
+  if (!skill) return literal.text.trim();
+  const prompt = replaceDraftRange(literal, skill.start, skill.end, "").text.trim();
+  return `${skill.path}${prompt ? ` ${prompt}` : ""}`;
 }
 
 /** Pi recognizes slash syntax independently of the currently loaded command list. */
@@ -87,12 +97,8 @@ export function replaceDraftRange(draft: ComposerDraft, start: number, end: numb
   };
 }
 
-export function slashInvocation(command: SkillCommandDto, commands: SkillCommandDto[]): string {
-  if (command.source !== "skill") return `/${command.name}`;
-  const collides =
-    command.requiresPrefix ||
-    commands.some((candidate) => candidate.source !== "skill" && candidate.name === command.name);
-  return collides ? `/skill:${command.name}` : `/${command.name}`;
+export function slashInvocation(command: SkillCommandDto): string {
+  return `/${command.name}`;
 }
 
 export function slashQuery(text: string, caret: number) {
@@ -103,7 +109,7 @@ export function slashQuery(text: string, caret: number) {
   return { start, end, query: (match[2] ?? "").toLowerCase(), args: text.slice(end).trim() };
 }
 
-export function fileQuery(text: string, caret: number, cwd: string) {
+export function fileQuery(text: string, caret: number, cwd?: string) {
   const match = /(?:^|\s)@(?:"([^"\n]*)|([^\s@"]*))$/.exec(text.slice(0, caret));
   if (!match) return undefined;
   const quoted = match[1] !== undefined;
@@ -111,15 +117,28 @@ export function fileQuery(text: string, caret: number, cwd: string) {
   const start = caret - query.length - (quoted ? 2 : 1);
   const tail = text.slice(caret);
   const end = caret + (quoted ? (/^[^"\n]*"?/.exec(tail)?.[0].length ?? 0) : (/^[^\s@]*/.exec(tail)?.[0].length ?? 0));
-  const windows = /^[A-Za-z]:[\\/]|^\\\\/.test(cwd);
+  const skillQuery = !quoted && !/[\\/]/.test(query) ? query.replace(/^skill:/, "").toLowerCase() : undefined;
+  const windows = /^[A-Za-z]:[\\/]|^\\\\/.test(cwd ?? "");
   const slash = windows ? Math.max(query.lastIndexOf("/"), query.lastIndexOf("\\")) : query.lastIndexOf("/");
   const prefix = query.slice(0, slash + 1);
-  const directory = prefix ? (isAbsoluteFilesystemPath(prefix) ? prefix : joinFilesystemPath(cwd, prefix)) : cwd;
+  const directory = cwd
+    ? prefix
+      ? isAbsoluteFilesystemPath(prefix)
+        ? prefix
+        : joinFilesystemPath(cwd, prefix)
+      : cwd
+    : undefined;
   return {
     start,
     end,
     query: query.slice(slash + 1).toLowerCase(),
-    directory: isSameOrDescendantPath(cwd, directory) ? directory : null,
+    skillQuery,
+    directory:
+      !cwd || (!quoted && query.startsWith("skill:"))
+        ? undefined
+        : directory && isSameOrDescendantPath(cwd, directory)
+          ? directory
+          : null,
   };
 }
 

@@ -8,7 +8,6 @@ export function createAgentDefinitionExtension(
   platform: NodeJS.Platform = process.platform,
 ): ExtensionFactory {
   return (pi) => {
-    const applyAtActiveBoundary = async () => binding.ensureCurrent({ activeBoundary: true });
     pi.on("session_start", () => {
       const agent = binding.current();
       const activeTools = agent.tools === undefined
@@ -25,8 +24,8 @@ export function createAgentDefinitionExtension(
         throw error;
       }
     });
-    pi.on("turn_end", applyAtActiveBoundary);
-    pi.on("agent_end", applyAtActiveBoundary);
+    // Pi 1.6 permits reload only after the entire run, including recovery, ends.
+    pi.on("agent_settled", async () => binding.ensureCurrent());
   };
 }
 

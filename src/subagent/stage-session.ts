@@ -584,6 +584,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       unsubscribe = session.subscribe((rawEvent) => {
         const agentEvent = rawEvent as AgentSessionEvent;
         const event = toJsonSessionEvent(agentEvent);
+        if (!event) return;
         if (abortRequested && !abortReapplied && event.type === "agent_start") {
           abortReapplied = true;
           reappliedSessionAbortRequired = true;

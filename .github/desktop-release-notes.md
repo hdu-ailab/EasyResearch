@@ -2,29 +2,21 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.21 highlights
+## 0.1.22 highlights
 
-- Increase default automatic model retries to ten, with waits of 5, 10, 20, 40,
-  80, then 120 seconds capped. Existing explicit retry settings take precedence.
-- Add **Retry model request** for failed main, nested and custom Agents. Continue
-  the retained context without sending another message or replaying completed
-  tool operations; another failure starts a fresh automatic retry cycle.
-- Preserve each Agent's retry status across browser reconnects and prevent stale
-  responses or repeated clicks from starting duplicate recovery requests.
-- Add keyless Firecrawl/Tavily web search, Firecrawl paper-index search and
-  selected-page extraction, with source provenance and provider-limit handling.
+- Add **Context manager**, available through `/context` and the Work page's top-right button. Inspect the main Agent's effective system prompt, user inputs, assistant replies, thinking and tools through Overview, Details and read-only raw text.
+- Preview token quantities, shares and an explicitly estimated cache hit rate. Fold tool output, delete linked tool calls/results, or use existing whole-session compression. Edits affect future model context while preserving the original chat history; Apply requires idle work and a current snapshot.
+- Add `/settings` and automatic first-message session titles using the Research Assistant's model. Automatic titles can be disabled in Conversation settings; manual naming takes precedence.
+- Use `/` for executable actions and `@` for files and Skill context. Remove transcript edge fades for unobscured reading.
+- Upgrade the agent runtime to Pi 1.6.0 with native GPT-6.2 model support. Running Agents finish their current run before applying pending configuration updates.
 
-Manual Retry applies to the current retained Agent session; historical errors
-after the runtime has stopped do not create a new retry action.
+## 0.1.22 更新
 
-## 0.1.21 更新
-
-- 默认模型自动重试增加至十次，等待 5、10、20、40、80 秒，随后保持 120 秒；已有显式重试配置仍优先生效。
-- 为主 Agent、嵌套子 Agent 和自定义 Agent 增加 **重试模型请求** 按钮，从保留的上下文继续，无需发送新消息或重放已完成的工具操作；再次失败会进入新一轮自动重试。
-- 浏览器重连后恢复各 Agent 的重试状态，防止过期响应和重复点击启动多次恢复请求。
-- 增加免密钥 Firecrawl/Tavily 网页搜索、Firecrawl 论文索引搜索及指定页面提取，保留来源信息并处理服务限额。
-
-手动重试适用于当前仍保留的 Agent 会话；运行时已停止后的历史错误不会产生新的重试入口。
+- 新增 **上下文管理**，通过 `/context` 或工作页右上角按钮打开。按「总览 / 详情 / 原始文本」查看主 Agent 当前有效的系统提示词、用户输入、助手回复、思考和工具内容。
+- 展示 Token 数量、占比及明确标注的缓存命中率预估。支持折叠工具输出、成对删除工具调用与结果，以及原有的整段会话压缩。变更影响后续模型上下文，原始聊天历史仍保留；仅在任务空闲且快照有效时应用。
+- 新增 `/settings`，并使用研究助手模型根据首条消息自动生成会话标题。可在会话设置中关闭自动标题，手动命名优先。
+- `/` 用于执行命令，`@` 用于引用文件和 Skill 上下文；移除聊天上下边缘的淡出遮罩。
+- Agent 运行时升级至 Pi 1.6.0，原生支持 GPT-6.2 模型；正在执行的 Agent 会在当前完整运行结束后应用待更新配置。
 
 ## Downloads
 
@@ -36,7 +28,7 @@ after the runtime has stopped do not create a new retry action.
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.21
+version=0.1.22
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -44,7 +36,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.21
+version=0.1.22
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 

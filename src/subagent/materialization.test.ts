@@ -177,7 +177,7 @@ describe("createSessionMaterializationBarrier", () => {
 });
 
 describe("pinned Pi session persistence", () => {
-  it("keeps a fresh JSONL absent until the first assistant message", async () => {
+  it("does not acknowledge a fresh child from early persisted user rows alone", async () => {
     const root = await mkdtemp(join(tmpdir(), "easyresearch-materialization-"));
     const cwd = join(root, "project");
     const agentDir = join(root, "agent");
@@ -196,12 +196,19 @@ describe("pinned Pi session persistence", () => {
 
       manager.appendMessage({ role: "user", content: "start", timestamp: 1 });
       manager.appendCustomEntry("test:state", { ready: true });
-      await expect(access(sessionPath!)).rejects.toThrow();
+      await expect(access(sessionPath!)).resolves.toBeUndefined();
+      const barrier = createSessionMaterializationBarrier({ sessionPath: sessionPath!, continuation: false });
+      barrier.observe(userMessageEnd());
+      barrier.settlePrompt();
+      await expect(barrier.materialized).rejects.toThrow(/assistant/i);
 
       manager.appendMessage(assistantMessage());
 
       await expect(readFile(sessionPath!, "utf8")).resolves.toContain('"role":"assistant"');
       expect((await stat(sessionPath!)).isFile()).toBe(true);
+      const ready = createSessionMaterializationBarrier({ sessionPath: sessionPath!, continuation: false });
+      ready.observe(assistantMessageEnd());
+      await expect(ready.materialized).resolves.toBeUndefined();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

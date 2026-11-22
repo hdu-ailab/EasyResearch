@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { ContextManagementError, parseContextEditRequest } from "./context-management";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { bundledFilePath } from "../runtime/bundled-assets";
@@ -16,6 +17,7 @@ import type {
   AuthProvidersResponseDto,
   AuthRespondRequestDto,
   ApiUsageSettingsDto,
+  SessionTitleSettingsDto,
   ApiUsageSettingsPatchDto,
   ApiUsageRecordDto,
   CompactionSettingsDto,
@@ -97,6 +99,8 @@ export interface RouteServices {
   patchProviderTimeoutSettings: (patch: ProviderTimeoutSettingsPatchDto) => Promise<ProviderTimeoutSettingsDto>;
   patchCompactionSettings: (patch: CompactionSettingsPatchDto) => Promise<CompactionSettingsDto>;
   getApiUsageSettings: () => Promise<ApiUsageSettingsDto>;
+  getSessionTitleSettings?: () => Promise<SessionTitleSettingsDto>;
+  patchSessionTitleSettings?: (patch: SessionTitleSettingsDto) => Promise<SessionTitleSettingsDto>;
   patchApiUsageSettings: (patch: ApiUsageSettingsPatchDto) => Promise<ApiUsageSettingsDto>;
   getNetworkProxySettings: () => Promise<NetworkProxySettingsDto>;
   patchNetworkProxySettings: (patch: NetworkProxySettingsPatchDto) => Promise<NetworkProxySettingsDto>;
@@ -228,6 +232,12 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
       if (req.method === "GET" && path === "/api/settings/api-usage") {
         return jsonResponse(await services.getApiUsageSettings());
+      }
+      if (req.method === "GET" && path === "/api/settings/session-title" && services.getSessionTitleSettings) {
+        return jsonResponse(await services.getSessionTitleSettings());
+      }
+      if (req.method === "PATCH" && path === "/api/settings/session-title" && services.patchSessionTitleSettings) {
+        return jsonResponse(await services.patchSessionTitleSettings(await jsonBody<SessionTitleSettingsDto>(req)));
       }
       if (req.method === "PATCH" && path === "/api/settings/api-usage") {
         return jsonResponse(await services.patchApiUsageSettings(
@@ -536,6 +546,28 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         });
       }
 
+      const contextMatch = path.match(/^\/api\/sessions\/([^/]+)\/context(?:\/(item|preview|apply))?$/);
+      if (contextMatch) {
+        const id = contextMatch[1]!;
+        const action = contextMatch[2];
+        if (req.method === "GET" && !action) return jsonResponse(await services.registry.getContext(id));
+        if (req.method === "GET" && action === "item") {
+          const revision = url.searchParams.get("revision");
+          const itemId = url.searchParams.get("itemId");
+          const view = url.searchParams.get("view");
+          const rawOffset = url.searchParams.get("offset") ?? "0";
+          const offset = Number(rawOffset);
+          if (!revision || revision.length > 256 || !itemId || itemId.length > 512 || (view !== "original" && view !== "current")
+            || !/^\d+$/.test(rawOffset) || !Number.isSafeInteger(offset)) throw new ContextManagementError("CONTEXT_INVALID");
+          return jsonResponse(await services.registry.getContextItem(id, revision, itemId, view, offset));
+        }
+        if (req.method === "POST" && (action === "preview" || action === "apply")) {
+          const body = parseContextEditRequest(await jsonBody<unknown>(req));
+          return jsonResponse(await (action === "preview" ? services.registry.previewContext(id, body) : services.registry.applyContext(id, body)));
+        }
+        return errorResponse(405, "Method not allowed");
+      }
+
       const treeMatch = path.match(/^\/api\/sessions\/([^/]+)\/tree$/);
       if (req.method === "GET" && treeMatch) {
         const { tree, ...state } = await services.registry.getTree(treeMatch[1]!);
@@ -756,6 +788,18 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       return new Response("Not found", { status: 404 });
     } catch (error) {
+      if (error instanceof ContextManagementError) return errorResponse(error.status, error.message, { code: error.code });
+      if (/^\/api\/sessions\/[^/]+\/context(?:\/|$)/.test(new URL(req.url).pathname)) {
+        if (error instanceof UnknownSessionError) return errorResponse(404, "Root session context is unavailable.", { code: "CONTEXT_UNAVAILABLE" });
+        if (error instanceof SessionLifecycleConflictError || error instanceof SessionRegistryShuttingDownError) {
+          const conflict = new ContextManagementError("CONTEXT_BUSY");
+          return errorResponse(conflict.status, conflict.message, { code: conflict.code });
+        }
+        if (error instanceof BodyError) {
+          const invalid = new ContextManagementError(error.status === 413 ? "CONTEXT_TOO_LARGE" : "CONTEXT_INVALID");
+          return errorResponse(error.status, invalid.message, { code: invalid.code });
+        }
+      }
       if (error instanceof FileOperationError) return errorResponse(error.status, error.message, { code: error.code });
       if (error instanceof WorkspaceError) return errorResponse(error.status, error.message, { code: error.code, cwd: error.cwd });
       if (error instanceof WorkspaceBusyError) return errorResponse(409, error.message, { code: error.code, affectedCwds: error.affectedCwds });

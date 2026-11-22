@@ -1,4 +1,4 @@
-import { AtSign, FileText, Slash, Square, X } from "lucide-react";
+import { AtSign, FileText, Slash, Sparkles, Square, X } from "lucide-react";
 import {
   forwardRef,
   useCallback,
@@ -19,6 +19,7 @@ import {
   type ComposerDraft,
   directoryTrigger,
   fileQuery,
+  promptWithContext,
   protectLeadingReference,
   referenceLiteral,
   replaceDraftRange,
@@ -38,7 +39,7 @@ export interface ChatComposerProps {
   /** Owned work can be stopped while the model is paused awaiting recovery. */
   canAbort?: boolean;
   onSend: (text: string) => void;
-  /** Non-Skill slash commands execute immediately; Skills remain editable completions. */
+  /** Slash commands execute immediately; Skill context is sent through onSend. */
   onCommand?: (command: SkillCommandDto, args: string) => void;
   onAbort: () => void;
   /** Public slash commands of the current session agent; popover hidden when empty. */
@@ -54,8 +55,7 @@ export interface ChatComposerHandle {
 /**
  * Chat composer. The Send button turns into Stop while the agent is
  * streaming (opencode prompt-input behavior); multiline input preserved.
- * A leading `/` opens a command popover (ADR-066/078). Skills use the friendly
- * `/<name>` form unless a command collision requires Pi's `/skill:<name>` form.
+ * A leading `/` executes commands; `@` supplies files and Skill context.
  */
 export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(function ChatComposer(
   { cwd, chatFontSize, disabled, streaming, canAbort = streaming, onSend, onCommand, onAbort, commands = [] },
@@ -189,33 +189,31 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       : undefined;
   }, [text, selectionStart, commands, disabled, dismissed, draft.references, interactive]);
 
-  const file = useMemo(
-    () => (cwd && !disabled && !dismissed && interactive ? fileQuery(text, selectionStart, cwd) : undefined),
-    [text, selectionStart, cwd, disabled, dismissed, interactive],
-  );
+  const file = useMemo(() => {
+    if (disabled || dismissed || !interactive) return undefined;
+    const query = fileQuery(text, selectionStart, cwd);
+    return query && !draft.references.some((reference) => reference.start <= query.start && reference.end > query.start)
+      ? query
+      : undefined;
+  }, [text, selectionStart, cwd, disabled, dismissed, interactive, draft.references]);
   const files = useComposerFiles(file?.directory, file?.query ?? "");
 
   const filtered = useMemo(() => {
     if (!slash) return [];
-    return commands
-      .filter((command) => {
-        const invocation = slashInvocation(command, commands).slice(1).toLowerCase();
-        const name = command.name.toLowerCase();
-        return invocation.startsWith(slash.query) || invocation.includes(slash.query) || name.includes(slash.query);
-      })
-      .sort((a, b) => Number(a.source === "skill") - Number(b.source === "skill"));
+    return commands.filter((command) => {
+      if (command.source === "skill") return false;
+      const invocation = slashInvocation(command).slice(1).toLowerCase();
+      const name = command.name.toLowerCase();
+      return invocation.startsWith(slash.query) || invocation.includes(slash.query) || name.includes(slash.query);
+    });
   }, [slash, commands]);
 
-  const insertSlash = (command: SkillCommandDto) => {
-    if (slash === undefined) return;
-    const after = text.slice(slash.end);
-    const invocation = slashInvocation(command, commands);
-    const insertion = invocation + (/^\s/.test(after) ? "" : " ");
-    setDraft((current) => replaceDraftRange(current, slash.start, slash.end, insertion));
-    insertedCaret.current = slash.start + invocation.length + 1;
-    setSelectionStart(insertedCaret.current);
-    setDismissed(true);
-  };
+  const skills = useMemo(() => {
+    const query = file?.skillQuery;
+    return query === undefined
+      ? []
+      : commands.filter((command) => command.source === "skill" && command.name.toLowerCase().includes(query));
+  }, [file?.skillQuery, commands]);
 
   const executeCommand = (command: SkillCommandDto, args: string) => {
     setDraft({ text: "", references: [] });
@@ -225,36 +223,59 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       onCommand(command, args);
       return;
     }
-    const invocation = slashInvocation(command, commands);
+    const invocation = slashInvocation(command);
     onSend(args ? `${invocation} ${args}` : invocation);
   };
 
-  const selectSlash = (command: SkillCommandDto) => {
-    if (command.source === "skill") {
-      insertSlash(command);
-      return;
-    }
-    executeCommand(command, slash?.args ?? "");
-  };
-
   const suggestions: ComposerSuggestion[] = file
-    ? files.entries.map((entry) => ({ id: entry.path, kind: entry.kind, label: entry.name }))
+    ? [
+        ...skills.map((skill) => ({
+          id: `skill:${skill.name}`,
+          kind: "skill" as const,
+          label: `@skill:${skill.name}`,
+          description: skill.description,
+        })),
+        ...files.entries.map((entry) => ({ id: entry.path, kind: entry.kind, label: entry.name })),
+      ]
     : filtered.map((command) => ({
         id: `${command.source}:${command.name}`,
-        kind: command.source === "skill" ? "skill" : "command",
-        label: slashInvocation(command, commands),
+        kind: "command",
+        label: slashInvocation(command),
         description: command.description,
       }));
   const selectedIndex = Math.min(activeIndex, Math.max(0, suggestions.length - 1));
-  const popover = file ? "files" : slash ? "slash" : undefined;
+  const popover = file ? "context" : slash ? "slash" : undefined;
   const selectSuggestion = (index: number) => {
     if (!activity.current.interactive) return;
     if (!file) {
       const command = filtered[index];
-      if (command) selectSlash(command);
+      if (command) executeCommand(command, slash?.args ?? "");
       return;
     }
-    const entry = files.entries[index];
+    const skill = skills[index];
+    if (skill) {
+      const literal = `@skill:${skill.name}`;
+      const insertion = literal + (/^\s/.test(text.slice(file.end)) ? "" : " ");
+      const id = ++referenceId.current;
+      let next = replaceDraftRange(draft, file.start, file.end, insertion);
+      next.references.push({ id, kind: "skill", path: literal, start: file.start, end: file.start + literal.length });
+      // Pi expands one Skill per prompt. Replace the previous context in this
+      // same draft, retaining all other text and reference-range ownership.
+      for (const previous of next.references
+        .filter((reference) => reference.kind === "skill" && reference.id !== id)
+        .sort((a, b) => b.start - a.start)) {
+        next = replaceDraftRange(next, previous.start, previous.end, "");
+      }
+      const inserted = next.references.find((reference) => reference.id === id);
+      if (!inserted) return;
+      insertedCaret.current = Math.min(inserted.end + 1, next.text.length);
+      setDraft(next);
+      setSelectionStart(insertedCaret.current);
+      setActiveIndex(0);
+      setDismissed(true);
+      return;
+    }
+    const entry = files.entries[index - skills.length];
     if (!entry) return;
     const directory = entry.kind === "directory";
     const literal = referenceLiteral(entry.path, !text.slice(0, file.start).trim());
@@ -302,7 +323,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
 
   const submit = () => {
     const literalDraft = protectLeadingReference(draft);
-    const trimmed = literalDraft.text.trim();
+    const trimmed = promptWithContext(literalDraft);
     if (!trimmed || disabled || !activity.current.interactive) return;
     const commandMatch = /^(\/\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
     const startsWithReference = literalDraft.references.some(
@@ -310,7 +331,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     );
     if (commandMatch && !startsWithReference) {
       const command = commands.find(
-        (candidate) => candidate.source !== "skill" && slashInvocation(candidate, commands) === commandMatch[1],
+        (candidate) => candidate.source !== "skill" && slashInvocation(candidate) === commandMatch[1],
       );
       if (command) {
         executeCommand(command, commandMatch[2]?.trim() ?? "");
@@ -347,6 +368,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           items={suggestions}
           activeIndex={selectedIndex}
           status={file ? files.status : undefined}
+          replacesSkill={draft.references.some((reference) => reference.kind === "skill")}
           onActive={setActiveIndex}
           onSelect={selectSuggestion}
         />
@@ -361,7 +383,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
                 className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-v2-grey-200 bg-v2-background-bg-base py-1 pr-1 pl-2 text-[12px] text-v2-text-text-muted"
                 title={reference.path}
               >
-                <FileText size={13} className="shrink-0" aria-hidden />
+                {reference.kind === "skill" ? (
+                  <Sparkles size={13} className="shrink-0" aria-hidden />
+                ) : (
+                  <FileText size={13} className="shrink-0" aria-hidden />
+                )}
                 <span className="truncate">{reference.path}</span>
                 <button
                   type="button"
@@ -434,6 +460,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
             // Safari may end composition before its confirmation keydown (229).
             if (composing.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (popover) {
+              if (e.key === "Tab") {
+                setDismissed(true);
+                return;
+              }
               if (e.key === "Escape") {
                 e.preventDefault();
                 setActiveIndex(0);
@@ -470,18 +500,18 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           type="button"
           aria-label={t("composer.commands")}
           title={t("composer.commands")}
-          disabled={disabled || !commands.length}
+          disabled={disabled || !commands.some((command) => command.source !== "skill")}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => openSuggestions("/")}
           className="flex size-8 items-center justify-center rounded-md text-v2-text-text-muted hover:bg-v2-grey-100 disabled:opacity-40"
         >
           <Slash size={15} aria-hidden />
         </button>
-        {cwd ? (
+        {cwd || commands.some((command) => command.source === "skill") ? (
           <button
             type="button"
-            aria-label={t("composer.files")}
-            title={t("composer.files")}
+            aria-label={t("composer.context")}
+            title={t("composer.context")}
             disabled={disabled}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => openSuggestions("@")}

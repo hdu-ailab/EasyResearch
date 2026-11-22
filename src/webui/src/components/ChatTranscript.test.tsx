@@ -980,7 +980,7 @@ describe("ChatTranscript", () => {
     expect(el.scrollTop).toBe(1000);
   });
 
-  it("shows transcript fades only beyond the corresponding scroll boundaries", () => {
+  it("keeps transcript edges unobscured at every scroll boundary", () => {
     renderTranscript(<ChatTranscript messages={[msg({ key: "a" }), msg({ key: "b" })]} tools={[]} />);
     const el = scrollContainer();
     metricStub(el, { scrollHeight: 1000, clientHeight: 200 });
@@ -989,18 +989,18 @@ describe("ChatTranscript", () => {
     fireEvent.scroll(el);
     flushFollowFrame();
     expect(screen.queryByTestId("transcript-top-fade")).toBeNull();
-    expect(screen.getByTestId("transcript-bottom-fade")).toBeVisible();
+    expect(screen.queryByTestId("transcript-bottom-fade")).toBeNull();
 
     el.scrollTop = 100;
     fireEvent.scroll(el);
     flushFollowFrame();
-    expect(screen.getByTestId("transcript-top-fade")).toBeVisible();
-    expect(screen.getByTestId("transcript-bottom-fade")).toBeVisible();
+    expect(screen.queryByTestId("transcript-top-fade")).toBeNull();
+    expect(screen.queryByTestId("transcript-bottom-fade")).toBeNull();
 
     el.scrollTop = 800;
     fireEvent.scroll(el);
     flushFollowFrame();
-    expect(screen.getByTestId("transcript-top-fade")).toBeVisible();
+    expect(screen.queryByTestId("transcript-top-fade")).toBeNull();
     expect(screen.queryByTestId("transcript-bottom-fade")).toBeNull();
   });
 

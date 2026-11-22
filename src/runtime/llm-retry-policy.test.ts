@@ -9,7 +9,7 @@ import {
 
 function fixture() {
   const settings: LlmRetrySettingsManager = {
-    getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 2_000 }),
+    getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 2_000, maxAgentDelayMs: 60_000 }),
     getGlobalSettings: () => ({}),
     getProjectSettings: () => ({}),
   };
@@ -104,7 +104,7 @@ describe("native retry observation", () => {
 
 describe("retry binding ownership", () => {
   it("rejects duplicate attachment and active disposal, then restores the own descriptor", () => {
-    const original = () => ({ enabled: false, maxRetries: 0, baseDelayMs: 0 });
+    const original = () => ({ enabled: false, maxRetries: 0, baseDelayMs: 0, maxAgentDelayMs: 60_000 });
     const settings: LlmRetrySettingsManager = {
       getRetrySettings: original,
       getGlobalSettings: () => ({}),
@@ -129,7 +129,7 @@ describe("retry binding ownership", () => {
 
   it("does not overwrite a later method owner during disposal", () => {
     const f = fixture();
-    const replacement = () => ({ enabled: false, maxRetries: 1, baseDelayMs: 1 });
+    const replacement = () => ({ enabled: false, maxRetries: 1, baseDelayMs: 1, maxAgentDelayMs: 60_000 });
     f.settings.getRetrySettings = replacement;
     f.binding.dispose();
     expect(f.settings.getRetrySettings).toBe(replacement);

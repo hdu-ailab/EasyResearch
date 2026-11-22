@@ -161,12 +161,12 @@ function summaryDelays(events: AgentSessionEvent[]): number[] {
 }
 
 describe("LLM retry policy with pinned native Pi", () => {
-  it("demonstrates uncapped native summaries without the host projection", async () => {
+  it("uses the native summary delay ceiling without the host defaults", async () => {
     const f = await fixture({ decorated: false, seed: "normal", global: { retry: { maxRetries: 10, baseDelayMs: 5_000 } } });
     f.provider.setResponses([...Array.from({ length: 10 }, f.error), f.success()]);
     fakeClock();
     await drive(f.session.compact());
-    expect(intervals(f.requests.map((request) => request.time)).slice(-2)).toEqual([1_280_000, 2_560_000]);
+    expect(intervals(f.requests.map((request) => request.time)).slice(-2)).toEqual([60_000, 60_000]);
   });
 
   it("caps real manual compaction and preserves native usage/provider options", async () => {
@@ -246,7 +246,7 @@ describe("LLM retry policy with pinned native Pi", () => {
     const f = await fixture({ seed: "normal", auto: true });
     f.provider.setResponses([
       f.step(ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "maximum context length exceeded" })),
-      ...Array.from({ length: 10 }, f.error), f.success("overflow summary"), f.success("recovered"),
+      ...Array.from({ length: 10 }, f.error), f.success("overflow summary"), f.success("turn prefix"), f.success("recovered"),
     ]);
     fakeClock();
     await drive(f.session.prompt("overflow recovery"));
@@ -263,6 +263,9 @@ describe("LLM retry policy with pinned native Pi", () => {
     [{ retry: { maxRetries: 4, baseDelayMs: 7_000 } }, { retry: { maxRetries: 2, baseDelayMs: 3_000 } }, [3_000, 6_000]],
     [{ retry: { maxRetries: 4, baseDelayMs: 7_000 } }, { retry: { maxRetries: 2, baseDelayMs: 0 } }, [0, 0]],
     [{ retry: { maxRetries: 2, baseDelayMs: 200_000 } }, {}, [120_000, 120_000]],
+    [{ retry: { maxRetries: 2, maxAgentDelayMs: 1_000 } }, {}, [1_000, 1_000]],
+    [{ retry: { maxRetries: 2, maxAgentDelayMs: 1_000 } }, { retry: { maxAgentDelayMs: 0 } }, [0, 0]],
+    [{ retry: { maxRetries: 2, baseDelayMs: 200_000, maxAgentDelayMs: 300_000 } }, {}, [120_000, 120_000]],
   ])("preserves native configured precedence and the host delay ceiling (%j, %j)", async (global, project, expected) => {
     const f = await fixture({ seed: "normal", global, project });
     f.provider.setResponses(Array.from({ length: 11 }, f.error));
@@ -308,13 +311,13 @@ describe("LLM retry policy with pinned native Pi", () => {
     expect(f.settings.getRetrySettings()).toMatchObject({ maxRetries: 1, baseDelayMs: 777 });
   });
 
-  it("keeps the active captured policy when native reload replaces extension instances", async () => {
+  it("keeps the captured policy when native reload is rejected during summarization", async () => {
     const f = await fixture({ seed: "normal" });
     const firstFailure = f.error();
     f.provider.setResponses([
       async (...args) => {
         expect(f.session.isCompacting).toBe(true);
-        await f.session.reload();
+        await expect(f.session.reload()).rejects.toThrow(/compaction.*finish/i);
         expect(f.session.isCompacting).toBe(true);
         return firstFailure(...args);
       },

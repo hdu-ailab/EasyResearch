@@ -25,11 +25,11 @@ describe("createResearchAssistantExtension", () => {
       { cwd: "/paper", reason: "startup" },
       { cwd: "/paper" },
     );
-    await handlers.get("turn_end")?.({ turnIndex: 0 }, { cwd: "/paper", abort: vi.fn() });
+    await handlers.get("agent_settled")?.({ aborted: false }, { cwd: "/paper", abort: vi.fn() });
 
     expect(setActiveTools).toHaveBeenCalledWith(["read", "subagent"]);
     expect(resources).toEqual({ skillPaths: ["/skills/research-project-workflow"] });
-    expect(ensureCurrent).toHaveBeenCalledWith({ activeBoundary: true });
+    expect(ensureCurrent).toHaveBeenCalledWith();
     expect(handlers.has("before_agent_start")).toBe(false);
   });
 });

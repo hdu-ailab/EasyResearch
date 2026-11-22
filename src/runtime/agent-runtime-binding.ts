@@ -44,7 +44,7 @@ export interface AgentRuntimeBindingSession {
 }
 
 export interface EnsureCurrentOptions {
-  /** `turn_end` is active but is Pi's guaranteed pre-next-request boundary. */
+  /** Request a checked application boundary; never bypasses native idle state. */
   activeBoundary?: boolean;
   /** Pi reload/save rebuilt effective settings and discarded transient overrides. */
   recaptureCompactionBase?: boolean;
@@ -363,7 +363,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       }
 
       const attached = session;
-      if (attached && !attached.isIdle && !activeBoundary) {
+      if (attached && !attached.isIdle) {
         try {
           await candidate.modelRuntimeCandidate.dispose();
         } catch {
@@ -422,12 +422,12 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
   const ensureCurrent = (ensureOptions: EnsureCurrentOptions = {}): Promise<void> => {
     if (disposed) return Promise.reject(new Error("Agent runtime binding has been disposed."));
     if (closing) return Promise.reject(new Error("Agent runtime binding has been closed."));
+    if (session && !session.isIdle) return Promise.resolve();
     if (ensureOptions.activeBoundary === true) {
       activeBoundaryRequested = true;
       abortOnActiveFailureRequested = true;
     }
     if (ensureOptions.recaptureCompactionBase === true) recaptureCompactionBaseRequested = true;
-    if (session && !session.isIdle && ensureOptions.activeBoundary !== true) return Promise.resolve();
     if (applyPromise) return applyPromise;
 
     let operation: Promise<void>;
@@ -460,7 +460,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           (
             activeBoundaryRequested ||
             recaptureCompactionBaseRequested ||
-            (eventApplyRequested && (session === undefined || session.isIdle || activeBoundary))
+             (eventApplyRequested && (session === undefined || session.isIdle))
           )
         );
         abortOnActiveFailureRequested = false;

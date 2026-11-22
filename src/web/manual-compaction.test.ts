@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AgentTurnContext, FinishTurn } from "@earendil-works/pi-agent-core";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import {
   createManualCompactionExtension,
   ManualCompactionController,
@@ -15,6 +17,11 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function completedTurn(stopReason: AgentTurnContext["message"]["stopReason"] = "stop"): AgentTurnContext {
+  const message = fauxAssistantMessage("finished", { stopReason });
+  return { message, toolResults: [], context: { messages: [message], tools: [] }, newMessages: [message] };
+}
+
 class FakeCompactionSession implements ManualCompactionSession {
   isStreaming = false;
   isCompacting = false;
@@ -22,9 +29,9 @@ class FakeCompactionSession implements ManualCompactionSession {
   abortCalls = 0;
   abortCompactionCalls = 0;
   compactImpl: () => Promise<void> = async () => {};
-  priorStop = vi.fn(async () => false);
+  priorFinish = vi.fn<FinishTurn>(async () => undefined);
   agent = {
-    shouldStopAfterTurn: this.priorStop as ManualCompactionSession["agent"]["shouldStopAfterTurn"],
+    finishTurn: this.priorFinish as FinishTurn | undefined,
   };
 
   async compact(customInstructions?: string): Promise<void> {
@@ -90,15 +97,16 @@ describe("ManualCompactionController", () => {
     expect(controller.request("Old focus")).toEqual({ state: "queued" });
     expect(controller.request("Latest focus")).toEqual({ state: "queued" });
     expect(session.compactCalls).toEqual([]);
-    expect(await session.agent.shouldStopAfterTurn?.({})).toBe(true);
+    expect(await session.agent.finishTurn?.(completedTurn())).toEqual({ action: "end" });
+    expect(session.priorFinish).toHaveBeenCalledOnce();
 
     await controller.onAgentEnd();
 
     expect(session.compactCalls).toEqual(["Latest focus"]);
     expect(session.abortCalls).toBe(0);
     expect(states).toEqual(["queued", "queued", "running", "idle"]);
-    expect(await session.agent.shouldStopAfterTurn?.({})).toBe(false);
-    expect(session.priorStop).toHaveBeenCalledOnce();
+    expect(await session.agent.finishTurn?.(completedTurn())).toBeUndefined();
+    expect(session.priorFinish).toHaveBeenCalledTimes(2);
   });
 
   it("cancels pending and running work without starting another compaction", async () => {
@@ -113,7 +121,7 @@ describe("ManualCompactionController", () => {
     expect(controller.isCancelling()).toBe(true);
     expect(() => controller.request()).toThrow(/cancellation/);
     expect(controller.state()).toBe("idle");
-    expect(await session.agent.shouldStopAfterTurn?.({})).toBe(false);
+    expect(await session.agent.finishTurn?.(completedTurn())).toBeUndefined();
     expect(session.compactCalls).toEqual([]);
 
     const gate = deferred<void>();
@@ -190,13 +198,33 @@ describe("ManualCompactionController", () => {
 
   it("restores the prior turn hook when disposed", async () => {
     const session = new FakeCompactionSession();
-    const prior = session.agent.shouldStopAfterTurn;
+    const prior = session.agent.finishTurn;
     const controller = new ManualCompactionController();
     controller.attach(session);
 
     await controller.dispose();
 
-    expect(session.agent.shouldStopAfterTurn).toBe(prior);
+    expect(session.agent.finishTurn).toBe(prior);
+  });
+
+  it.each(["error", "aborted"] as const)("preserves a native %s hard exit and runs the preceding boundary", async (reason) => {
+    const session = new FakeCompactionSession();
+    session.isStreaming = true;
+    const controller = new ManualCompactionController();
+    controller.attach(session);
+    controller.request();
+    expect(await session.agent.finishTurn?.(completedTurn(reason))).toBeUndefined();
+    expect(session.priorFinish).toHaveBeenCalledOnce();
+    await controller.dispose();
+  });
+
+  it("preserves the prior continuation decision when no compaction is queued", async () => {
+    const session = new FakeCompactionSession();
+    session.priorFinish.mockResolvedValue({ action: "continue" });
+    const controller = new ManualCompactionController();
+    controller.attach(session);
+    expect(await session.agent.finishTurn?.(completedTurn())).toEqual({ action: "continue" });
+    await controller.dispose();
   });
 });
 

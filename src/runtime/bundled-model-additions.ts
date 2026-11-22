@@ -18,12 +18,6 @@ export interface BundledModelRemoval {
   id: string;
 }
 
-// https://api-docs.deepseek.com/zh-cn/quick_start/pricing (CNY)
-// https://api-docs.deepseek.com/quick_start/pricing (USD)
-// Official off-peak USD per 1M tokens; peak rates are twice these references.
-const deepseekFlashCost: BundledModelMetadata["cost"] = {
-  input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0,
-};
 // https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
 // Expose canonical efforts rather than their duplicate API aliases.
 const deepseekThinkingLevelMap: BundledModelMetadata["thinkingLevelMap"] = {
@@ -34,31 +28,8 @@ const deepseekThinkingLevelMap: BundledModelMetadata["thinkingLevelMap"] = {
   max: "max",
 };
 
-export const BUNDLED_MODEL_ADDITIONS: readonly BundledModelAddition[] = [
-  // Release: https://api-docs.deepseek.com/news/news260910
-  {
-    provider: "deepseek",
-    model: {
-      id: "deepseek-flash",
-      name: "DeepSeek V4.1 Flash",
-      api: "openai-completions",
-      baseUrl: "https://api.deepseek.com",
-      reasoning: true,
-      input: ["text", "image"],
-      thinkingLevelMap: deepseekThinkingLevelMap,
-      contextWindow: 1_000_000,
-      maxTokens: 384_000,
-      cost: deepseekFlashCost,
-      compat: {
-        supportsStore: false,
-        supportsDeveloperRole: false,
-        maxTokensField: "max_tokens",
-        requiresReasoningContentOnAssistantMessages: true,
-        thinkingFormat: "deepseek",
-      },
-    },
-  },
-];
+// Pi now supplies deepseek-flash and GPT-6.2 through its native catalog.
+export const BUNDLED_MODEL_ADDITIONS: readonly BundledModelAddition[] = [];
 
 export const BUNDLED_MODEL_UPDATES: readonly BundledModelUpdate[] = [
   {

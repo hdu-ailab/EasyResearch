@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { isSystemTranscriptMessage } from "../runtime/json-session-event";
 import { AGENT_STATUS_TYPE, projectSubagentCompletionEntry } from "../subagent/notifications";
 import type { TranscriptTimelineEntryDto } from "./contracts";
 
@@ -11,9 +12,9 @@ function isAgentMessage(value: unknown): value is AgentMessage {
 }
 
 function isHiddenStatusMessage(value: unknown): boolean {
-  return isRecord(value)
+  return isSystemTranscriptMessage(value) || (isRecord(value)
     && value.role === "custom"
-    && (value.customType === AGENT_STATUS_TYPE || value.display === false);
+    && (value.customType === AGENT_STATUS_TYPE || value.display === false));
 }
 
 export function projectSessionTimeline(entries: readonly unknown[]): TranscriptTimelineEntryDto[] {

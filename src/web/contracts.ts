@@ -220,7 +220,7 @@ export type ApiUsageAnchorDto =
 export interface ApiUsageRecordDto {
   id: string;
   sessionId: string;
-  source: "assistant" | "tool" | "compaction" | "branch-summary";
+  source: "assistant" | "tool" | "compaction" | "branch-summary" | "title";
   timestamp: string;
   anchor: ApiUsageAnchorDto;
   provider?: string;
@@ -288,6 +288,10 @@ export interface ApiUsageSettingsDto {
 }
 
 export type ApiUsageSettingsPatchDto = ApiUsageSettingsDto;
+
+export interface SessionTitleSettingsDto {
+  autoSessionTitle: boolean;
+}
 
 export type NetworkProxyScopeDto = "all" | "llm" | "search";
 export type NetworkProxySettingsFieldDto = "settings" | NetworkProxyScopeDto;

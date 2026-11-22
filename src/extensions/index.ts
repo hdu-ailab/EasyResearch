@@ -60,6 +60,8 @@ export interface ResearchAssistantExtensionRuntime {
   supervisor: SubagentSupervisor;
   compaction: ManualCompactionController;
   stats: SessionStatsNotifier;
+  sessionTitleEnabled?: () => boolean;
+  sessionTitleSignal?: AbortSignal;
   publishTimelineEntry: (entry: unknown) => void;
 }
 
@@ -132,7 +134,10 @@ export function createResearchAssistantExtensions(runtime: ResearchAssistantExte
     },
     {
       name: "session-name",
-      factory: requireExtensionFactory(createSessionNameExtension()),
+      factory: requireExtensionFactory(createSessionNameExtension({
+        enabled: runtime.sessionTitleEnabled ?? (() => true),
+        signal: runtime.sessionTitleSignal,
+      })),
     },
   ];
 }

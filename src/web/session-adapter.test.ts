@@ -498,6 +498,8 @@ describe("PiSessionFactory", () => {
       { name: "history", description: "Browse the current session tree", source: "extension" },
       { name: "compact", description: "Compact the current session context", source: "extension" },
       { name: "statistics", description: "Show API usage statistics", source: "extension" },
+      { name: "context", description: "Inspect and edit the current model context", source: "extension" },
+      { name: "settings", description: "Open settings", source: "extension" },
       { name: "clear", description: "Clear", source: "extension" },
       { name: "review", description: "Review", source: "prompt" },
       { name: "skill:arxiv", description: "arXiv", source: "skill" },
@@ -695,13 +697,34 @@ describe("PiSessionFactory", () => {
       ]);
   });
 
-  it("normalizes a loaded Skill's friendly slash command before prompting Pi", async () => {
+  it.each(["context", "settings"])("reserves /%s ahead of extensions/templates while preserving explicit Skill context", async (name) => {
+    const session = new FakeAgentSession();
+    session.skills = [{ name, description: "Colliding Skill" }];
+    session.promptTemplates = [{ name, description: "Colliding template", source: "prompt" }];
+    session.extensionRunner.getRegisteredCommands = () => [{ invocationName: name, description: "Colliding extension", source: "extension" }];
+    const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
+    await adapter.start();
+    try {
+      const commands = await adapter.getCommands();
+      const reserved = commands.filter((command) => command.name === name);
+      expect(reserved).toHaveLength(1);
+      expect(reserved[0]?.description).not.toContain("Colliding");
+      expect(commands).toContainEqual({ name: `skill:${name}`, description: "Colliding Skill", source: "skill", requiresPrefix: true });
+      await expect(adapter.prompt(`/${name}`)).rejects.toMatchObject({ code: "CONTEXT_INVALID" });
+      await expect(adapter.prompt(` /${name} arguments`)).rejects.toMatchObject({ code: "CONTEXT_INVALID" });
+      expect(session.promptCalls).toEqual([]);
+      await adapter.prompt(`@skill:${name} arguments`);
+      expect(session.promptCalls).toEqual([`/skill:${name} arguments (steer)`]);
+    } finally { await adapter.stop(); }
+  });
+
+  it.each(["/customize-easyresearch", "@skill:customize-easyresearch"])("normalizes loaded Skill input %s before prompting Pi", async (invocation) => {
     const session = new FakeAgentSession();
     session.skills = [{ name: "customize-easyresearch", description: "Customize EasyResearch" }];
     const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
     await adapter.start();
 
-    await adapter.prompt("/customize-easyresearch add a medical-review agent");
+    await adapter.prompt(`${invocation} add a medical-review agent`);
 
     expect(session.promptCalls).toEqual([
       "/skill:customize-easyresearch add a medical-review agent (steer)",
@@ -718,7 +741,7 @@ describe("PiSessionFactory", () => {
     const adapter = new PiSessionFactory(async () => created(session, binding)).create({ cwd: "/project" });
     await adapter.start();
 
-    await adapter.prompt("/autoresearch improve validation F1");
+    await adapter.prompt("@skill:autoresearch improve validation F1");
 
     expect(session.promptCalls).toEqual([
       "/skill:autoresearch improve validation F1 (steer)",
@@ -754,6 +777,23 @@ describe("PiSessionFactory", () => {
       source: "skill",
       requiresPrefix: true,
     });
+  });
+
+  it("normalizes explicit Skill context independently of command collisions and preserves unknown mentions", async () => {
+    const session = new FakeAgentSession();
+    session.skills = [{ name: "clear", description: "Clear Skill" }, { name: "review", description: "Review Skill" }];
+    const adapter = new PiSessionFactory(async () => created(session)).create({ cwd: "/project" });
+    await adapter.start();
+    await adapter.prompt("@skill:clear /clear is prompt context\nkeep this");
+    await adapter.prompt("@skill:review");
+    await adapter.prompt("@skill:unknown text");
+    await adapter.prompt("Read @skill:clear as text");
+    expect(session.promptCalls).toEqual([
+      "/skill:clear /clear is prompt context\nkeep this (steer)",
+      "/skill:review (steer)",
+      "@skill:unknown text (steer)",
+      "Read @skill:clear as text (steer)",
+    ]);
   });
 
   it("removes the internal web-tree command from chat while preserving typed tree navigation", async () => {
@@ -1978,6 +2018,7 @@ function liveConfiguration(agent: AgentConfig = researchAssistant()): LiveConfig
     error: null,
     compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
     apiUsageSettings: { showApiUsageDetails: false },
+    sessionTitleSettings: { autoSessionTitle: true },
     providerTimeoutSettings: { timeoutMs: 3_600_000, source: "default" },
     skillPolicy: { enableDotAgentsSkill: false },
     start: async () => {},
@@ -2870,6 +2911,7 @@ describe("createPiAgentSessionCreator", () => {
       error: null,
       compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
       apiUsageSettings: { showApiUsageDetails: false },
+      sessionTitleSettings: { autoSessionTitle: true },
       providerTimeoutSettings: { timeoutMs: 3_600_000, source: "default" },
       skillPolicy: { enableDotAgentsSkill: false },
       start: async () => {},
@@ -2967,6 +3009,7 @@ describe("createPiAgentSessionCreator", () => {
       error: null,
       compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
       apiUsageSettings: { showApiUsageDetails: false },
+      sessionTitleSettings: { autoSessionTitle: true },
       providerTimeoutSettings: { timeoutMs: 3_600_000, source: "default" },
       skillPolicy: { enableDotAgentsSkill: false },
       start: async () => {},

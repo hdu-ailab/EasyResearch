@@ -32,6 +32,26 @@ const assistant = {
 };
 
 describe("toJsonSessionEvent", () => {
+  it("omits native system instructions and declaration updates without mutating Pi events", () => {
+    const messages = [
+      { role: "system", content: "private instructions", sections: { handoff: "private handoff" }, toolsAdded: [{ name: "private-tool", description: "private declaration", parameters: {} }], timestamp: 1 },
+      { role: "system", content: "", sections: { handoff: null }, toolsRemoved: [{ name: "private-tool" }], timestamp: 2 },
+    ];
+    const original = structuredClone(messages);
+    for (const message of messages) {
+      for (const type of ["message_start", "message_end", "turn_end"]) {
+        expect(toJsonSessionEvent({ type, message, toolResults: [] } as unknown as AgentSessionEvent)).toBeUndefined();
+      }
+      expect(toJsonSessionEvent({ type: "entry_appended", entry: {
+        type: "message", id: "system-entry", parentId: null, timestamp: "2026-11-22T00:00:00Z", message,
+      } } as unknown as AgentSessionEvent)).toBeUndefined();
+    }
+    const event = { type: "agent_end", messages: [messages[0], assistant, messages[1]] } as Extract<AgentSessionEvent, { type: "agent_end" }>;
+    expect(toJsonSessionEvent(event)).toEqual({ type: "agent_end", messages: [assistant] });
+    expect(event.messages).toHaveLength(3);
+    expect(messages).toEqual(original);
+  });
+
   it("isolates assistant starts from provider-owned content without changing metadata or final messages", () => {
     const message = {
       ...assistant,

@@ -38,25 +38,15 @@ export interface LlmRetryPolicyBinding {
 type RetryPolicy = ReturnType<SettingsManager["getRetrySettings"]>;
 type RetryWait = Omit<AutomaticRetrySnapshot, "remainingMs"> & { deadline: number };
 
-function projectedBase(nominal: number, previousAttempts: number): number {
-  return Math.min(nominal, MAX_LLM_RETRY_DELAY_MS / 2 ** previousAttempts);
-}
-
 /**
- * Pi 0.85.1 public-method adapter; retain the real SettingsManager and its writers.
- * AgentSession reads getRetrySettings before incrementing public retryAttempt.
- * Its native summarizers instead retain the returned plain policy and reread its
- * base for each retry. Their scheduled event follows calculation of the current
- * delay, so a projection there affects only the NEXT native wait. Split-turn
- * compaction shares one policy across two summary calls: finished resets its base
- * without releasing it. Keep real-Pi tests for these contracts when upgrading Pi.
+ * Supply host defaults through the real SettingsManager's public getter. Pi 1.6
+ * applies maxAgentDelayMs in both Agent and summary retry loops, including split
+ * compaction. Captured native policies remain immutable for their operation.
  * This binding owns no timer, retry counter, request, or continuation loop.
  */
 export function createLlmRetryPolicyBinding(settings: LlmRetrySettingsManager): LlmRetryPolicyBinding {
   const originalGetter = settings.getRetrySettings;
   const originalDescriptor = Object.getOwnPropertyDescriptor(settings, "getRetrySettings");
-  // Extra diagnostic getter reads must not displace a policy held by Pi's loop.
-  const summaryPolicies = new Map<RetryPolicy, number>();
   const listeners = new Set<() => void>();
   let session: LlmRetryPolicySession | undefined;
   let unsubscribeSession: (() => void) | undefined;
@@ -79,17 +69,7 @@ export function createLlmRetryPolicyBinding(settings: LlmRetrySettingsManager): 
     wait = undefined;
     notify();
   };
-  const resetSummaryBases = (): void => {
-    for (const [policy, nominal] of summaryPolicies) {
-      policy.baseDelayMs = projectedBase(nominal, 0);
-    }
-  };
-  const releaseSummaryPolicies = (): void => {
-    resetSummaryBases();
-    summaryPolicies.clear();
-  };
   const finishSummary = (): void => {
-    releaseSummaryPolicies();
     summarySource = undefined;
     clearWait("summary");
   };
@@ -103,20 +83,15 @@ export function createLlmRetryPolicyBinding(settings: LlmRetrySettingsManager): 
     const native = originalGetter.call(this);
     const global = this.getGlobalSettings().retry;
     const project = this.getProjectSettings().retry;
-    const nominal = project?.baseDelayMs ?? global?.baseDelayMs ?? DEFAULT_LLM_RETRY_BASE_DELAY_MS;
-    const policy: RetryPolicy = {
+    return {
       ...native,
       maxRetries: project?.maxRetries ?? global?.maxRetries ?? DEFAULT_LLM_MAX_RETRIES,
-      baseDelayMs: projectedBase(nominal, 0),
+      baseDelayMs: project?.baseDelayMs ?? global?.baseDelayMs ?? DEFAULT_LLM_RETRY_BASE_DELAY_MS,
+      maxAgentDelayMs: Math.min(
+        project?.maxAgentDelayMs ?? global?.maxAgentDelayMs ?? MAX_LLM_RETRY_DELAY_MS,
+        MAX_LLM_RETRY_DELAY_MS,
+      ),
     };
-    // Public isCompacting includes branch summarization as well as both compact modes.
-    if (session?.isCompacting) {
-      summaryPolicies.set(policy, nominal);
-    } else {
-      releaseSummaryPolicies();
-      policy.baseDelayMs = projectedBase(nominal, session?.retryAttempt ?? 0);
-    }
-    return policy;
   };
   settings.getRetrySettings = projectedGetter;
 
@@ -145,14 +120,9 @@ export function createLlmRetryPolicyBinding(settings: LlmRetrySettingsManager): 
         clearWait("agent");
         break;
       case "compaction_start":
-        // Automatic compaction publishes this before setting its controller. The
-        // getter checks isCompacting later, at Pi's actual policy capture point.
         beginSummary("compaction");
         break;
       case "summarization_retry_scheduled":
-        for (const [policy, nominal] of summaryPolicies) {
-          policy.baseDelayMs = projectedBase(nominal, event.attempt);
-        }
         // Compaction always publishes compaction_start first; branch navigation
         // normally supplies its source through the shared before-tree extension.
         observeWait(summarySource ?? "branchSummary", event);
@@ -162,7 +132,6 @@ export function createLlmRetryPolicyBinding(settings: LlmRetrySettingsManager): 
         clearWait("summary");
         break;
       case "summarization_retry_finished":
-        resetSummaryBases();
         clearWait("summary");
         break;
       case "compaction_end":
@@ -205,7 +174,6 @@ export function createLlmRetryPolicyBinding(settings: LlmRetrySettingsManager): 
       }
       unsubscribeSession?.();
       unsubscribeSession = undefined;
-      releaseSummaryPolicies();
       summarySource = undefined;
       if (settings.getRetrySettings === projectedGetter) {
         if (originalDescriptor) Object.defineProperty(settings, "getRetrySettings", originalDescriptor);

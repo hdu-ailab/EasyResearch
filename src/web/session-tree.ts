@@ -1,8 +1,10 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionTreeNode } from "@earendil-works/pi-coding-agent";
+import { isSystemTranscriptMessage } from "../runtime/json-session-event";
 import type { WebTreeEntryDto } from "./contracts";
 
 function messageText(message: AgentMessage): string {
+  if (isSystemTranscriptMessage(message)) return "";
   const content = "content" in message ? message.content : undefined;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {

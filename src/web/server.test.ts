@@ -327,6 +327,7 @@ function fakeConfiguration(
     },
     compactionPolicy: { triggerPercent: 70, globalEnabled: true, globalKeepRecentTokens: 20_000 },
     apiUsageSettings: { showApiUsageDetails: false },
+    sessionTitleSettings: { autoSessionTitle: true },
     providerTimeoutSettings: { timeoutMs: 3_600_000, source: "default" },
     skillPolicy: { enableDotAgentsSkill: false },
     start: async () => {},

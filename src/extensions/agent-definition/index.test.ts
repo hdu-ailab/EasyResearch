@@ -69,7 +69,7 @@ describe("createAgentDefinitionExtension", () => {
     expect(setActiveTools).toHaveBeenCalledWith(["read", "powershell", "ssh-bash"]);
   });
 
-  it("awaits active-generation application from turn_end", async () => {
+  it("awaits pending configuration application after the complete run settles", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -82,25 +82,26 @@ describe("createAgentDefinitionExtension", () => {
     } as AgentRuntimeBinding;
     const { handlers } = await loadExtension(runtimeBinding);
 
-    const turnEnd = handlers.get("turn_end")?.({ turnIndex: 0 }, { cwd: "/paper" }).then(() => {
+    const turnEnd = handlers.get("agent_settled")?.({ aborted: false }, { cwd: "/paper" }).then(() => {
       settled = true;
     });
     await Promise.resolve();
 
     expect(settled).toBe(false);
-    expect(ensureCurrent).toHaveBeenCalledWith({ activeBoundary: true });
+    expect(ensureCurrent).toHaveBeenCalledWith();
     release();
     await turnEnd;
     expect(settled).toBe(true);
   });
 
-  it("applies active configuration before Pi's post-run threshold check", async () => {
+  it("leaves active tool follow-ups and post-run recovery on the accepted configuration", async () => {
     const runtimeBinding = binding(["read"]);
     const { handlers } = await loadExtension(runtimeBinding);
 
     await handlers.get("agent_end")?.({}, { cwd: "/paper" });
+    await handlers.get("turn_end")?.({}, { cwd: "/paper" });
 
-    expect(runtimeBinding.ensureCurrent).toHaveBeenCalledWith({ activeBoundary: true });
+    expect(runtimeBinding.ensureCurrent).not.toHaveBeenCalled();
   });
 
   it("reapplies model-aware compaction before model selection settles", async () => {

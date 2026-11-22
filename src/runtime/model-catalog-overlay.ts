@@ -1,4 +1,4 @@
-import type { Provider } from "@earendil-works/pi-ai";
+import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import { importPi } from "./pi-import";
 import {
   BUNDLED_MODEL_ADDITIONS,
@@ -14,6 +14,8 @@ export interface BundledOverlayRuntime {
   refresh(options?: { allowNetwork?: boolean }): Promise<unknown>;
 }
 
+type ProviderModel = ReturnType<NonNullable<Provider["getAllModels"]>>[number];
+
 export function buildBundledProvider(
   base: Provider,
   additions: readonly BundledModelAddition[] = [],
@@ -24,20 +26,25 @@ export function buildBundledProvider(
   const providerUpdates = updates.filter((entry) => entry.provider === base.id);
   const removedIds = new Set(removals.filter((entry) => entry.provider === base.id).map((entry) => entry.id));
   if (providerAdditions.length === 0 && providerUpdates.length === 0 && removedIds.size === 0) return base;
+  const isChat = (model: ProviderModel): model is Model<Api> => model.type === undefined || model.type === "chat";
+  const merge = (original: readonly ProviderModel[]): ProviderModel[] => {
+    const models = [...original];
+    for (const addition of providerAdditions) {
+      if (models.some((model) => model.id === addition.model.id)) continue;
+      models.push({ ...addition.model, provider: base.id });
+    }
+    for (const update of providerUpdates) {
+      const index = models.findIndex((model) => model.id === update.id);
+      const model = models[index];
+      if (model && isChat(model)) models[index] = { ...model, ...update.patch };
+    }
+    return models.filter((model) => !isChat(model) || !removedIds.has(model.id));
+  };
   return {
     ...base,
-    getModels: () => {
-      const models = [...base.getModels()];
-      for (const addition of providerAdditions) {
-        if (models.some((model) => model.id === addition.model.id)) continue;
-        models.push({ ...addition.model, provider: base.id });
-      }
-      for (const update of providerUpdates) {
-        const index = models.findIndex((model) => model.id === update.id);
-        if (index >= 0) models[index] = { ...models[index]!, ...update.patch };
-      }
-      return models.filter((model) => !removedIds.has(model.id));
-    },
+    getModels: () => merge(base.getModels()).filter(isChat),
+    // Pi 1.6 composes configured providers from this mixed-model catalog.
+    getAllModels: () => merge(base.getAllModels?.() ?? base.getModels()),
   };
 }
 

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { Context, FauxResponseFactory } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { importPi } from "../runtime/pi-import";
@@ -200,6 +201,268 @@ async function harness(options: {
 }
 
 describe("Pinned Pi lifecycle ownership", () => {
+  it("inspects native idle prompt/tool refreshes before the next provider request", async () => {
+    const h = await harness({ extensions: [(api) => {
+      for (const name of ["hold", "other"]) api.registerTool({ name, label: name, description: `${name} fixture tool`, parameters: Type.Object({}),
+        execute: async () => ({ content: [{ type: "text", text: "complete" }], details: {} }) });
+    }] });
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    await adapter.start();
+    try {
+      await adapter.prompt("Initial");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      const session = h.sessions[0]!;
+      const before = await adapter.getContext!();
+      const requests = h.provider.state.callCount;
+      h.rows[0]!.tools = ["other"];
+      h.rows[0]!.effectiveTools = ["other"];
+      h.publishConfiguration();
+      await vi.waitFor(() => expect(adapter.getRuntimeConfigurationGeneration()).toBe(2));
+      expect(session.getActiveToolNames()).toEqual(["other"]);
+      const after = await adapter.getContext!();
+      const system = after.items.filter((item) => item.type === "system");
+      expect(system).toHaveLength(1);
+      const raw = await adapter.getContextItem!(after.revision, system[0]!.id, "current", 0);
+      expect(raw.text).toContain("research-assistant test role updated");
+      expect(raw.text).toContain("other fixture tool");
+      const pi = await importPi();
+      const effective = h.ai.createInitialSystemMessage(session.systemPrompt, session.agent.state.tools.map((tool) => h.ai.toToolDeclaration(tool)))!;
+      expect(system[0]!.tokens).toBe(pi.estimateTokens(effective));
+      expect((await adapter.previewContext!({ revision: after.revision, edits: [] })).cache.hitRate).toBeNull();
+      await expect(adapter.getContextItem!(before.revision, before.items[0]!.id, "current", 0)).rejects.toMatchObject({ code: "CONTEXT_STALE" });
+      expect(h.provider.state.callCount).toBe(requests);
+    } finally { await adapter.stop(); }
+  });
+
+  it("applies manual root context edits through native admission and the next real provider input", async () => {
+    const h = await harness({ extensions: [(api) => api.registerTool({ name: "hold", label: "Hold", description: "Fixture output",
+      parameters: Type.Object({ value: Type.String() }), execute: async (_id, args) => ({ content: [{ type: "text", text: `RAW_${args.value}_`.repeat(1000) }], details: {} }) })] });
+    h.provider.setResponses([
+      h.ai.fauxAssistantMessage([{ type: "text", text: "Retain mixed prose" }, { type: "thinking", thinking: "Retain thinking" },
+        h.ai.fauxToolCall("hold", { value: "A" }, { id: "pair-a" }), h.ai.fauxToolCall("hold", { value: "B" }, { id: "pair-b" })], { stopReason: "toolUse" }),
+      h.ai.fauxAssistantMessage("Complete"),
+    ]);
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start();
+    try {
+      await adapter.prompt("Start");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      const session = h.sessions[0]!;
+      const bytes = readFileSync(session.sessionFile!);
+      const snapshot = await adapter.getContext!();
+      expect(snapshot.busy).toBe(false);
+      const outputs = snapshot.items.filter((item) => item.type === "tool-result");
+      const request = { revision: snapshot.revision, edits: [
+        { target: "item" as const, id: outputs[0]!.id, action: "fold" as const },
+        { target: "item" as const, id: outputs[1]!.id, action: "delete" as const },
+      ] };
+      const calls = h.provider.state.callCount;
+      const prediction = await adapter.previewContext!(request);
+      events.length = 0;
+      const after = await adapter.applyContext!(request);
+      expect(after.totalTokens).toBe(prediction.afterTokens);
+      expect(after.busy).toBe(false);
+      expect(h.provider.state.callCount).toBe(calls);
+      expect(events).toContainEqual(expect.objectContaining({ type: "session_stats_changed" }));
+      expect(JSON.stringify(events)).not.toContain("Current system");
+      expect(readFileSync(session.sessionFile!).subarray(0, bytes.length)).toEqual(bytes);
+      expect(JSON.stringify(await adapter.getTranscriptSnapshot())).toContain("RAW_B_");
+      const inputs: string[] = [];
+      h.provider.setResponses([(context) => { inputs.push(JSON.stringify(context.messages)); return h.ai.fauxAssistantMessage("After edits"); }]);
+      await adapter.prompt("Continue");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]).toContain("已折叠的工具输出");
+      expect(inputs[0]).toContain("Retain mixed prose");
+      for (const absent of ["RAW_A_", "RAW_B_", "pair-b"]) expect(inputs[0]).not.toContain(absent);
+    } finally { await adapter.stop(); }
+  });
+
+  it("fences context mutation against prompt/retry/navigation/compaction and owns it through disposal", async () => {
+    const h = await harness();
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    const entered = deferred();
+    const release = deferred();
+    await adapter.start();
+    try {
+      await adapter.prompt("Initial");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      const session = h.sessions[0]!;
+      const snapshot = await adapter.getContext!();
+      const prose = snapshot.items.find((item) => item.type === "assistant")!;
+      const bytes = readFileSync(session.sessionFile!);
+      vi.spyOn(h.bindings[0]!, "ensureCurrent").mockImplementationOnce(async () => { entered.resolve(); await release.promise; });
+      const operation = adapter.applyContext!({ revision: snapshot.revision, edits: [{ target: "item", id: prose.id, action: "delete" }] });
+      const rejected = expect(operation).rejects.toMatchObject({ code: "CONTEXT_BUSY" });
+      await entered.promise;
+      await expect(adapter.prompt("Race")).rejects.toMatchObject({ code: "CONTEXT_BUSY" });
+      await expect(adapter.compact()).rejects.toMatchObject({ code: "CONTEXT_BUSY" });
+      expect(() => adapter.retry!(session.sessionId, "race")).toThrow(expect.objectContaining({ code: "CONTEXT_BUSY" }));
+      await expect(adapter.navigateTree(session.sessionManager.getLeafId()!)).rejects.toThrow();
+      expect(adapter.hasBackgroundWork()).toBe(true);
+      const stop = adapter.stop();
+      release.resolve();
+      await rejected;
+      await stop;
+      expect(readFileSync(session.sessionFile!)).toEqual(bytes);
+    } finally { release.resolve(); await adapter.stop(); }
+  });
+
+  it("rechecks context revision after current configuration is applied under admission", async () => {
+    const h = await harness();
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    const entered = deferred();
+    const release = deferred();
+    await adapter.start();
+    try {
+      await adapter.prompt("Initial");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      const session = h.sessions[0]!;
+      const snapshot = await adapter.getContext!();
+      const prose = snapshot.items.find((item) => item.type === "assistant")!;
+      const ensureCurrent = h.bindings[0]!.ensureCurrent.bind(h.bindings[0]!);
+      vi.spyOn(h.bindings[0]!, "ensureCurrent").mockImplementationOnce(async () => {
+        entered.resolve(); await release.promise; await ensureCurrent();
+      });
+      const operation = adapter.applyContext!({ revision: snapshot.revision, edits: [{ target: "item", id: prose.id, action: "delete" }] });
+      const rejected = expect(operation).rejects.toMatchObject({ code: "CONTEXT_STALE" });
+      await entered.promise;
+      h.publishConfiguration();
+      release.resolve();
+      await rejected;
+      expect(session.sessionManager.getEntries().some((entry) => entry.type === "context_edit")).toBe(false);
+    } finally { release.resolve(); await adapter.stop(); }
+  });
+
+  it.each(["root", "stage"] as const)("rejects context writes while %s recovery owns unfinished work", async (scope) => {
+    const h = await harness({ dispatch: scope === "stage" });
+    const responder: FauxResponseFactory = (context) => {
+      if (scope === "root" || getCurrentSystemPrompt(context.messages).includes("search test role")) return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 unavailable" });
+      if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original" }), { stopReason: "toolUse" });
+      }
+      return h.ai.fauxAssistantMessage("Waiting");
+    };
+    h.provider.setResponses(Array.from({ length: 12 }, () => responder));
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    await adapter.start();
+    try {
+      await adapter.prompt("Start");
+      await vi.waitFor(() => expect(h.sessions[scope === "root" ? 0 : 1]
+        && adapter.getRetryState!(h.sessions[scope === "root" ? 0 : 1]!.sessionId)?.llmRecovery?.status).toBe("available"));
+      const snapshot = await adapter.getContext!();
+      expect(snapshot.busy).toBe(true);
+      const bytes = readFileSync(h.sessions[0]!.sessionFile!);
+      await expect(adapter.applyContext!({ revision: snapshot.revision, edits: [] })).rejects.toMatchObject({ code: "CONTEXT_BUSY" });
+      expect(readFileSync(h.sessions[0]!.sessionFile!)).toEqual(bytes);
+    } finally { await adapter.stop(); }
+  });
+
+  it.each([false, true])("expands @ Skill context through native Pi without executing a colliding command (streaming=%s)", async (streaming) => {
+    const entered = deferred();
+    const release = deferred();
+    const skill = join(root, "context-skill");
+    mkdirSync(skill);
+    const skillPath = join(skill, "SKILL.md");
+    writeFileSync(skillPath, "---\nname: context-skill\ndescription: Fixture context\n---\nNATIVE_SKILL_BODY\n");
+    const command = vi.fn();
+    const h = await harness({ extensions: [(api) => {
+      api.on("resources_discover", () => ({ skillPaths: [skill] }));
+      api.registerCommand("context-skill", { description: "Collision", handler: command });
+      api.registerTool({
+        name: "hold", label: "Hold", description: "Wait", parameters: Type.Object({}),
+        execute: async () => {
+          entered.resolve();
+          await release.promise;
+          return { content: [{ type: "text", text: "released" }], details: {} };
+        },
+      });
+    }] });
+    const contexts: string[] = [];
+    const answer: FauxResponseFactory = (context) => {
+      contexts.push(JSON.stringify(context.messages));
+      return h.ai.fauxAssistantMessage("done");
+    };
+    h.provider.setResponses(streaming ? [
+      h.ai.fauxAssistantMessage(h.ai.fauxToolCall("hold", {}), { stopReason: "toolUse" }), answer,
+    ] : [answer]);
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    await adapter.start();
+    try {
+      if (streaming) {
+        await adapter.prompt("Start");
+        await entered.promise;
+      }
+      await adapter.prompt('@skill:context-skill Compare "/project/paper.md"\nkeep user instructions');
+      release.resolve();
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(command).not.toHaveBeenCalled();
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0]).toContain("NATIVE_SKILL_BODY");
+      const users = h.sessions[0]!.messages.filter((message) => message.role === "user");
+      const expanded = users.at(-1)!;
+      const text = typeof expanded.content === "string" ? expanded.content : expanded.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+      expect(text).toBe(`<skill name="context-skill" location="${skillPath}">\nReferences are relative to ${skill}.\n\nNATIVE_SKILL_BODY\n</skill>\n\nCompare "/project/paper.md"\nkeep user instructions`);
+    } finally {
+      release.resolve();
+      await adapter.stop();
+    }
+  });
+
+  it.each(["root", "stage"] as const)("keeps native %s system declarations in model context and JSONL but out of public transport/history", async (scope) => {
+    const h = await harness({ extensions: [(api) => {
+      api.registerTool({
+        name: "hold", label: "Hold", description: "PRIVATE_DECLARATION_MARKER", parameters: Type.Object({}),
+        execute: async () => ({ content: [{ type: "text", text: "public result" }], details: {} }),
+      });
+    }] });
+    for (const row of h.rows) row.systemPrompt = "PRIVATE_ROLE_MARKER";
+    const contexts: string[] = [];
+    const answer: FauxResponseFactory = (context) => {
+      contexts.push(JSON.stringify(context.messages));
+      return h.ai.fauxAssistantMessage("public answer");
+    };
+    h.provider.setResponses([answer, answer]);
+    const events: unknown[] = [];
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    const stage = scope === "stage" ? await h.launch("public task") : undefined;
+    if (stage) stage.handle.subscribe((event) => events.push(event));
+    else {
+      adapter.onEvent((event) => events.push(event));
+      await adapter.start();
+      await adapter.prompt("public task");
+    }
+    try {
+      if (stage) await stage.handle.completion;
+      else await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      const session = stage?.session ?? h.sessions[0]!;
+      session.setActiveToolsByName([]);
+      await session.prompt("second public task");
+      const nativeSystems = session.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "system");
+      expect(nativeSystems.length).toBeGreaterThan(1);
+      expect(JSON.stringify(nativeSystems)).toContain("toolsRemoved");
+      expect(contexts).toHaveLength(2);
+      for (const marker of ["PRIVATE_ROLE_MARKER", "PRIVATE_DECLARATION_MARKER"]) {
+        expect(contexts[0]).toContain(marker);
+        expect(readFileSync(session.sessionFile!, "utf8")).toContain(marker);
+        expect(JSON.stringify(events)).not.toContain(marker);
+      }
+      expect(JSON.stringify(events)).not.toContain('"role":"system"');
+      const timeline = stage
+        ? projectSessionTimeline(session.sessionManager.getBranch())
+        : (await adapter.getTranscriptSnapshot()).timeline;
+      expect(JSON.stringify(timeline)).not.toContain("PRIVATE_");
+      expect(timeline.filter((entry) => entry.kind === "message").map((entry) => entry.message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+      expect(events).toContainEqual(expect.objectContaining({ type: "message_end", message: expect.objectContaining({ role: "assistant", content: [{ type: "text", text: "public answer" }] }) }));
+      expect(events).toContainEqual(expect.objectContaining({ type: "agent_settled" }));
+    } finally {
+      if (stage) await stage.handle.dispose();
+      else await adapter.stop();
+    }
+  });
+
   it("retains a parked root's idle lease until Stop releases the checkpoint", async () => {
     const h = await harness();
     h.provider.setResponses([h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" })]);
@@ -240,7 +503,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     let manual = false;
     const h = await harness({ dispatch: scope === "stage", retry: { enabled: true, maxRetries: 1, baseDelayMs: 60_000 } });
     const responder: FauxResponseFactory = (context) => {
-      const target = scope === "root" || context.systemPrompt?.includes("search test role");
+      const target = scope === "root" || getCurrentSystemPrompt(context.messages).includes("search test role");
       if (target) return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: manual ? "503 overloaded" : "400 invalid request" });
       if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
         return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original task" }), { stopReason: "toolUse" });
@@ -271,7 +534,7 @@ describe("Pinned Pi lifecycle ownership", () => {
   it.each(["root", "stage"] as const)("owns and cancels %s recovery configuration preflight without a late native wake", async (scope) => {
     const h = await harness({ dispatch: scope === "stage" });
     const responder: FauxResponseFactory = (context) => {
-      if (scope === "root" || context.systemPrompt?.includes("search test role")) {
+      if (scope === "root" || getCurrentSystemPrompt(context.messages).includes("search test role")) {
         return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" });
       }
       if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
@@ -369,8 +632,8 @@ describe("Pinned Pi lifecycle ownership", () => {
       } });
     }] });
     const responder: FauxResponseFactory = (context) => {
-      const role = context.systemPrompt?.includes("reviewer test role") ? "reviewer"
-        : context.systemPrompt?.includes("search test role") ? "search" : "research-assistant";
+      const role = getCurrentSystemPrompt(context.messages).includes("reviewer test role") ? "reviewer"
+        : getCurrentSystemPrompt(context.messages).includes("search test role") ? "search" : "research-assistant";
       const toolDone = (name: string) => context.messages.some((message) => message.role === "toolResult" && message.toolName === name);
       if (role === "reviewer") return h.ai.fauxAssistantMessage(toolDone("hold") ? "nested completed"
         : h.ai.fauxToolCall("hold", {}), { stopReason: toolDone("hold") ? "stop" : "toolUse" });
@@ -443,7 +706,7 @@ describe("Pinned Pi lifecycle ownership", () => {
   it.each(["abort", "stop"] as const)("%s releases a parked child and publishes one terminal outcome without another model turn", async (action) => {
     const h = await harness({ dispatch: true });
     const responder: FauxResponseFactory = (context) => {
-      if (context.systemPrompt?.includes("search test role")) return h.ai.fauxAssistantMessage("partial", { stopReason: "error", errorMessage: "503 overloaded" });
+      if (getCurrentSystemPrompt(context.messages).includes("search test role")) return h.ai.fauxAssistantMessage("partial", { stopReason: "error", errorMessage: "503 overloaded" });
       if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
         return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original task" }), { stopReason: "toolUse" });
       }
@@ -489,8 +752,8 @@ describe("Pinned Pi lifecycle ownership", () => {
       });
       h.rows.find((row) => row.name === "reviewer")?.builtin && (h.rows.find((row) => row.name === "reviewer")!.builtin = false);
       const response: FauxResponseFactory = (context) => {
-        const role = context.systemPrompt?.includes("reviewer test role") ? "reviewer"
-          : context.systemPrompt?.includes("search test role") ? "search" : "research-assistant";
+        const role = getCurrentSystemPrompt(context.messages).includes("reviewer test role") ? "reviewer"
+          : getCurrentSystemPrompt(context.messages).includes("search test role") ? "search" : "research-assistant";
         const hasTool = (name: string) => context.messages.some((message) => message.role === "toolResult" && message.toolName === name);
         if (role === targetAgent) {
           if (!hasTool("hold")) return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("hold", {}), { stopReason: "toolUse" });
@@ -547,7 +810,7 @@ describe("Pinned Pi lifecycle ownership", () => {
         expect(requestContexts.every((context) => context.messages.filter((message) => message.role === "user").length === 1)).toBe(true);
         expect(requestContexts.every((context) => !JSON.stringify(context.messages).includes(LLM_RETRY_CONTROL_TYPE))).toBe(true);
         expect(requestContexts.every((context) => !context.messages.some((message) => message.role === "assistant" && message.stopReason === "error"))).toBe(true);
-        expect(requestContexts.slice(2).every((context) => context.systemPrompt?.includes("updated"))).toBe(true);
+        expect(requestContexts.slice(2).every((context) => getCurrentSystemPrompt(context.messages).includes("updated"))).toBe(true);
         const retryEvents = events.flatMap((event) => event.type === "subagent_supervisor" ? [event.event] : [event])
           .filter((event) => event?.type === "auto_retry_start");
         expect(retryEvents.map((event) => event.attempt)).toEqual([1, 1, 1]);
@@ -599,7 +862,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     const order: string[] = [];
     const toolTurns: Array<{ contextTokens: number | null | undefined; responseTokens: number; resultTokens: number }> = [];
     const compactions: Array<{ reason: string; tokensBefore: number }> = [];
-    const oldEvidence = "initial evidence ".repeat(1_000);
+    const oldEvidence = "initial evidence ".repeat(1_700);
     const largeEvidence = "evidence ".repeat(2_000);
     let toolResults = 0;
     let agentStarts = 0;
@@ -713,7 +976,7 @@ describe("Pinned Pi lifecycle ownership", () => {
         h.ai.fauxAssistantMessage("X".repeat(1600), { stopReason: "length" }),
         summarizeOrRetry, summarizeOrRetry, summarizeOrRetry,
       ]);
-      running = native.prompt("recent evidence");
+      running = native.prompt("recent evidence ".repeat(100));
       await Promise.race([atRetry.promise, running]);
       expect(willRetry).toBe(true);
       expect(native.isIdle).toBe(false);
@@ -779,19 +1042,17 @@ describe("Pinned Pi lifecycle ownership", () => {
   it.each([
     ["root", "inline"], ["root-stop", "inline"], ["stage", "inline"],
     ["root", "filesystem"], ["root-stop", "filesystem"], ["stage", "filesystem"],
-  ] as const)("retains %s Stop intent through delayed automatic compaction startup with %s hooks", async (scope, source) => {
+  ] as const)("does not start %s automatic compaction after Stop during agent-end with %s hooks", async (scope, source) => {
     const atAgentEnd = deferred();
     const releaseAgentEnd = deferred();
-    const beforeCompact = deferred<AbortSignal>();
-    const releaseCompaction = deferred();
+    let beforeCompactCalls = 0;
     const hooks: ExtensionFactory = (api) => {
       api.on("agent_end", async () => {
         atAgentEnd.resolve();
         await releaseAgentEnd.promise;
       });
       api.on("session_before_compact", async (event) => {
-        beforeCompact.resolve(event.signal);
-        await releaseCompaction.promise;
+        beforeCompactCalls += 1;
         return { cancel: true };
       });
     };
@@ -825,14 +1086,11 @@ describe("Pinned Pi lifecycle ownership", () => {
       .then(() => { stopped = true; });
     await abortReached.promise;
     releaseAgentEnd.resolve();
-    const signal = await beforeCompact.promise;
     try {
-      expect(signal.aborted).toBe(true);
-      expect(stopped).toBe(false);
-      expect(session.isCompacting).toBe(true);
-    } finally {
-      releaseCompaction.resolve();
       await stopping;
+      expect(beforeCompactCalls).toBe(0);
+      expect(h.provider.state.callCount).toBe(1);
+    } finally {
       if (stage) {
         await stage.handle.completion;
         await stage.handle.dispose();
@@ -1680,7 +1938,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     }
   });
 
-  it("recovers a handoff rejected by an out-of-host native preflight race without spinning", async () => {
+  it("queues handoffs during native preflight without starting a reentrant run or spinning", async () => {
     const preflightEntered = deferred();
     const releasePreflight = deferred();
     const toolEntered = deferred();
@@ -1722,10 +1980,9 @@ describe("Pinned Pi lifecycle ownership", () => {
       batchId: "A", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_A", triggerTurn: true,
     });
     await supervisor.flushNotifications();
-    await toolEntered.promise;
     releasePreflight.resolve();
-    expect(await user).toBeInstanceOf(Error);
-    expect(session.isStreaming).toBe(false);
+    await toolEntered.promise;
+    expect(session.isStreaming).toBe(true);
     expect(session.agent.state.isStreaming).toBe(true);
     coordinator.recordNotificationBatch({
       batchId: "B", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_B", triggerTurn: true,
@@ -1734,14 +1991,15 @@ describe("Pinned Pi lifecycle ownership", () => {
     try {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(scheduled).toBeLessThan(30);
-      expect(coordinator.journal().pendingBatches.map(({ batchId }) => batchId)).toEqual(["B"]);
       releaseTool.resolve();
-      await session.agent.waitForIdle();
+      expect(await user).toBeUndefined();
+      await session.waitForIdle();
       await new Promise<void>((resolve) => setImmediate(resolve));
       supervisor.runtimeBecameCoherent();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(coordinator.journal().pendingBatches).toEqual([]);
       expect(requests.at(-1)).toContain("HANDOFF_B");
+      expect(requests.at(-1)).toContain("HANDOFF_A");
       await supervisor.waitForQuiescence();
     } finally {
       releaseTool.resolve();

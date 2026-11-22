@@ -152,7 +152,9 @@ describe("session reducer", () => {
         expect(reduceSessionEvent(root, start)).toBe(root);
         expect(reduceSessionEvent(root, { ...end, errorMessage: "native failure" })).toBe(root);
         expect(terminateSessionRun(root).compactionState).toBe(compactionState);
-        expect(reduceSessionEvent(root, { type: "agent_settled" }).compactionState).toBe(compactionState);
+        expect(reduceSessionEvent(root, { type: "agent_settled", aborted: false }).compactionState).toBe(
+          compactionState,
+        );
       }
     });
 
@@ -229,7 +231,7 @@ describe("session reducer", () => {
       const running = reduceSessionEvent(emptyState, start, "child");
       for (const state of [
         reduceSessionEvent(running, { ...end, aborted: true, errorMessage: "Aborted" }, "child"),
-        reduceSessionEvent(running, { type: "agent_settled" }, "child"),
+        reduceSessionEvent(running, { type: "agent_settled", aborted: false }, "child"),
         terminateSessionRun(running, false, "child"),
         terminateDeletedSession(running),
       ]) {

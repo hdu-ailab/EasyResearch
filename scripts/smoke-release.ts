@@ -75,6 +75,7 @@ import { smokeWorkFileOperations } from "./smoke-work-files-api";
 import { smokeImmutablePublisher } from "./smoke-immutable-publisher";
 import { createKeylessSearchSmoke, KEYLESS_HOSTS, runInvalidKeylessSearchSmoke, runKeylessSearchSmoke, startKeylessSmokeOrigin } from "./smoke-keyless-search";
 import { SMOKE_KEYLESS_CA } from "./smoke-keyless-tls";
+import { createContextManagementSmoke, runContextManagementSmoke } from "./smoke-context-management";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -108,6 +109,7 @@ const stageValidationScript = join(root, "validate-easyresearch-agent-network.py
 const setupRunId = randomUUID();
 const writeRecoverySmoke = createWriteRecoverySmoke(setupRunId);
 const llmRetrySmoke = createLlmRetryFixture({ runId: setupRunId, directory: join(root, "llm-retry-fixture"), venv: true });
+const contextManagementSmoke = createContextManagementSmoke(setupRunId);
 const googleCredentialsPath = join(root, "gaxios-adc.json");
 const firstRunStdoutPath = join(root, "first-run-stdout.txt");
 const firstRunStderrPath = join(root, "first-run-stderr.txt");
@@ -208,6 +210,7 @@ const firstRunPipObservation = new Promise<SmokeProxyRecord>((resolveObservation
 let daemonPid: number | undefined;
 let gaxiosRequests = 0;
 let modelRequests = 0;
+let titleRequests = 0;
 let loopbackProviderRequests = 0;
 let ipv6ProviderRequests = 0;
 let vertexProviderRequests = 0;
@@ -377,8 +380,17 @@ const modelServer = Bun.serve({
       messages?: Array<{ role?: string; content?: unknown; tool_call_id?: string }>;
       tools?: Array<{ function?: { name?: string; description?: string } }>;
     };
+    if (body.messages?.some((message) => (message.role === "system" || message.role === "developer")
+      && typeof message.content === "string" && message.content.startsWith("Generate a short session title"))) {
+      assert.equal(body.model, "smoke-model");
+      assert.equal(body.tools?.length ?? 0, 0);
+      assert.equal(body.messages.filter((message) => message.role === "user").length, 1);
+      titleRequests += 1;
+      return openAiStream({ text: "Native smoke research" });
+    }
     modelRequests += 1;
     if (llmRetrySmoke.laneFor(body)) return llmRetrySmoke.respond(body);
+    if (contextManagementSmoke.matches(body)) return contextManagementSmoke.respond(body);
     if (keylessSmoke.laneFor(body)) {
       try {
         const action = keylessSmoke.select(body);
@@ -1802,7 +1814,14 @@ try {
   requireCommandUnavailable("bun");
   const version = repoPackageVersion();
   if (!versionVerifiedByRunner) validateNativeVersionOutput(0, runVersion(), version, target.name);
-  const cacheAddition = BUNDLED_MODEL_ADDITIONS[0];
+  const { builtinProviders } = await import("@earendil-works/pi-ai/providers/all");
+  const nativeProviders = builtinProviders();
+  const nativeGpt62 = nativeProviders
+    .filter((provider) => ["openai", "azure", "openai-codex"].includes(provider.id))
+    .flatMap((provider) => provider.getModels().filter((model) => model.id.startsWith("gpt-6.2"))
+      .map((model) => ({ provider: provider.id, model })));
+  const nativeCacheModel = nativeProviders.find((provider) => provider.id === "deepseek")!.getModels()[0]!;
+  const cacheAddition = BUNDLED_MODEL_ADDITIONS[0] ?? { provider: nativeCacheModel.provider, model: nativeCacheModel };
   const cacheOnlyModel: Model<Api> | undefined = cacheAddition
     ? {
         ...cacheAddition.model,
@@ -1893,6 +1912,18 @@ try {
   if (initialStatus.agentDir !== agentDir) {
     throw new Error("initial compiled daemon used the wrong isolated Agent directory");
   }
+  const titleSetting = await requestSmokeJsonBeforeDeadline({
+    url: `${base}/api/settings/session-title`, deadline: firstRunDeadline, label: "automatic title default",
+  }) as { autoSessionTitle?: boolean };
+  assert.equal(titleSetting.autoSessionTitle, true);
+  const setTitles = async (autoSessionTitle: boolean) => {
+    const value = await requestSmokeJsonBeforeDeadline({
+      url: `${base}/api/settings/session-title`, deadline: firstRunDeadline, label: "automatic title setting",
+      init: { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoSessionTitle }) },
+    }) as { autoSessionTitle?: boolean };
+    assert.equal(value.autoSessionTitle, autoSessionTitle);
+  };
+  await setTitles(false);
   smokeDiagnosticSecrets.push(initialIdentity.token);
   daemonPid = initialIdentity.pid;
   if (initialIdentity.host !== "127.0.0.1" || initialIdentity.port !== port) {
@@ -2165,6 +2196,7 @@ try {
   if (restoredAgent.model !== "smoke/smoke-model") {
     throw new Error("public provider Agent restoration was not accepted");
   }
+  await setTitles(true);
   await startConfigurationEventStream(base, initialStatus.bootId);
   const created = await requireOk(await fetch(`${base}/api/sessions`, {
     method: "POST",
@@ -2331,7 +2363,14 @@ try {
     deadline: firstRunDeadline,
     label: "Model catalog probe",
   });
-  assertSmokeModelCatalog(modelCatalog, BUNDLED_MODEL_ADDITIONS, cacheOnlyModel, BUNDLED_MODEL_REMOVALS);
+  assertSmokeModelCatalog(modelCatalog, [...BUNDLED_MODEL_ADDITIONS, ...nativeGpt62], cacheOnlyModel, BUNDLED_MODEL_REMOVALS);
+  await pollSmokeCondition("automatic title persisted through native session name", async () => {
+    const status = await requestSmokeJsonBeforeDeadline({ url: `${base}/api/status`, deadline: firstRunDeadline, label: "automatic title status" }) as { sessions?: Array<{ id: string; name?: string }> };
+    return status.sessions?.find((session) => session.id === created.id)?.name === "Native smoke research" ? true : undefined;
+  });
+  assert.equal(titleRequests, 1);
+  await setTitles(false);
+  assert.equal(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).easyresearch.web.autoSessionTitle, false);
   const timeoutBaseline = observedRootAppliedGeneration ?? 0;
   const timeoutSettings = await requestSmokeJsonBeforeDeadline({
     url: `${base}/api/settings/provider-timeout`, deadline: firstRunDeadline, label: "provider timeout save",
@@ -2411,6 +2450,8 @@ try {
   await runWriteRecoverySmoke({ base, project, deadline: firstRunDeadline, scenario: writeRecoverySmoke });
   console.log("[smoke] root and child failed-write guidance, section preservation, recovery and terminal handoff passed");
   await runLlmRetrySmoke({ base, root, agentDir, deadline: firstRunDeadline, fixture: llmRetrySmoke });
+  await runContextManagementSmoke({ base, root, deadline: firstRunDeadline, fixture: contextManagementSmoke });
+  console.log("[smoke] context fold/pair-delete, original history, stale/busy admission, next request and native compaction passed");
 
   writeFileSync(join(agentDir, "agents", `${keylessAgentName}.md`), [
     "---", `name: ${keylessAgentName}`, "description: Native keyless tool acceptance", "enable: true",
@@ -2841,6 +2882,7 @@ try {
 
   const expectedModelRequests = smokeModelState.completedRequests
     + llmRetrySmoke.requests
+    + contextManagementSmoke.requests.length
     + keylessSmoke.requests
     + writeRecoverySmoke.requests
     + loopbackProviderRequests
@@ -2848,6 +2890,7 @@ try {
     + initialWebFetchState.completedRequests
     + successorWebFetchState.completedRequests
     + invalidSearchWebFetchState.completedRequests;
+  assert.equal(titleRequests, 1, "disabled automatic titles must not issue more requests");
   if (modelRequests !== expectedModelRequests) {
     throw new Error(`native smoke completed an unexpected total model-request sequence: ${smokeProgressDiagnostics()}`);
   }

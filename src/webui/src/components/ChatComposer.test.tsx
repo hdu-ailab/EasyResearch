@@ -76,7 +76,7 @@ describe("ChatComposer slash popover", () => {
     expect(api.listEntries).toHaveBeenCalledOnce();
   });
 
-  it.each(["plain draft", "/na", "/ar", "/name draft"])(
+  it.each(["plain draft", "/na", "@ar", "/name draft"])(
     "does not submit or complete %s during IME confirmation, but accepts ordinary Enter",
     async (draft) => {
       const onSend = vi.fn();
@@ -103,7 +103,7 @@ describe("ChatComposer slash popover", () => {
       fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
       expect(input).toHaveValue(draft);
       await user.keyboard("{Enter}");
-      if (draft === "/ar") expect(input).toHaveValue("/arxiv ");
+      if (draft === "@ar") expect(input).toHaveValue("@skill:arxiv ");
       else if (draft.startsWith("/na")) expect(onCommand).toHaveBeenCalledOnce();
       else expect(onSend).toHaveBeenCalledWith(draft);
     },
@@ -122,13 +122,14 @@ describe("ChatComposer slash popover", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("opens on a leading slash and lists skill commands", async () => {
+  it("opens on a leading slash and lists only executable commands", async () => {
     const { user } = await renderComposer();
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
     await user.click(input);
     await user.keyboard("/");
-    expect(await screen.findByText("/arxiv")).toBeTruthy();
-    expect(screen.getByText("/drawio")).toBeTruthy();
+    expect(await screen.findByText("/name")).toBeTruthy();
+    expect(screen.queryByText("/arxiv")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Skills" })).toBeNull();
     const activeId = input.getAttribute("aria-activedescendant");
     expect(activeId).toBeTruthy();
     expect(document.getElementById(activeId ?? "")).toHaveRole("option");
@@ -147,18 +148,18 @@ describe("ChatComposer slash popover", () => {
     const { user } = await renderComposer();
     const input = screen.getByLabelText(/message/i);
     await user.click(input);
-    await user.keyboard("/dr");
-    expect(screen.queryByText("/arxiv")).toBeNull();
-    expect(screen.getByText("/drawio")).toBeTruthy();
+    await user.keyboard("@dr");
+    expect(screen.queryByText("@skill:arxiv")).toBeNull();
+    expect(screen.getByText("@skill:drawio")).toBeTruthy();
   });
 
-  it("inserts the friendly Skill command on Enter and closes", async () => {
+  it("inserts Skill context on Enter and closes without dispatching", async () => {
     const { user } = await renderComposer();
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
     await user.click(input);
-    await user.keyboard("/ar");
+    await user.keyboard("@ar");
     await user.keyboard("{Enter}");
-    expect(input.value).toBe("/arxiv ");
+    expect(input.value).toBe("@skill:arxiv ");
     expect(screen.queryByRole("listbox")).toBeNull();
   });
 
@@ -198,14 +199,16 @@ describe("ChatComposer slash popover", () => {
     expect(input.value).toBe("");
   });
 
-  it("navigates across command and Skill groups with ArrowDown", async () => {
-    const { user } = await renderComposer();
+  it("navigates across Skill and file context groups with ArrowDown", async () => {
+    vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
+    const { user } = await renderComposer({ cwd: "/p" });
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
     await user.click(input);
-    await user.keyboard("/");
-    await user.keyboard("{ArrowDown}");
+    await user.keyboard("@");
+    await screen.findByRole("option", { name: "notes.md" });
+    await user.keyboard("{ArrowDown}{ArrowDown}");
     await user.keyboard("{Enter}");
-    expect(input.value).toBe("/arxiv ");
+    expect(input.value).toBe('"/p/notes.md" ');
   });
 
   it("moves command selection to Home and End", async () => {
@@ -214,14 +217,14 @@ describe("ChatComposer slash popover", () => {
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
     await user.click(input);
     await user.keyboard("/{End}");
-    expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("/drawio");
+    expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("/name");
     await user.keyboard("{Home}");
     expect(document.getElementById(input.getAttribute("aria-activedescendant") ?? "")).toHaveTextContent("/name");
     await user.keyboard("{Enter}");
     expect(onCommand).toHaveBeenCalledWith(expect.objectContaining({ name: "name" }), "");
   });
 
-  it("displays and inserts the native prefix when a Skill collides with another command", async () => {
+  it("uses explicit Skill context when a Skill collides with another command", async () => {
     const { user } = await renderComposer({
       commands: [
         ...commands,
@@ -230,10 +233,10 @@ describe("ChatComposer slash popover", () => {
     });
     const input = screen.getByLabelText(/message/i) as HTMLTextAreaElement;
     await user.click(input);
-    await user.keyboard("/skill:nam");
-    await user.click(await screen.findByRole("option", { name: /\/skill:name/ }));
+    await user.keyboard("@nam");
+    await user.click(await screen.findByRole("option", { name: /@skill:name/ }));
 
-    expect(input.value).toBe("/skill:name ");
+    expect(input.value).toBe("@skill:name ");
   });
 
   it("does not open when commands are empty", async () => {
@@ -254,23 +257,27 @@ describe("ChatComposer slash popover", () => {
     expect(onSend).toHaveBeenCalledWith("write a summary");
   });
 
-  it("labels executable commands separately from editable Skills", async () => {
+  it("puts Skills in the context picker rather than the executable command picker", async () => {
     const { user } = await renderComposer();
     await user.type(screen.getByRole("textbox"), "/");
     expect(within(screen.getByRole("group", { name: "Commands" })).getByRole("option")).toHaveTextContent("/name");
+    expect(screen.queryByRole("group", { name: "Skills" })).toBeNull();
+    await user.clear(screen.getByRole("textbox"));
+    await user.type(screen.getByRole("textbox"), "@");
+    expect(screen.queryByRole("group", { name: "Commands" })).toBeNull();
     expect(within(screen.getByRole("group", { name: "Skills" })).getAllByRole("option")).toHaveLength(2);
   });
 
   it("Escape dismisses suggestions without changing the draft or caret", async () => {
     const { user } = await renderComposer();
     const input = screen.getByRole("textbox") as HTMLTextAreaElement;
-    await user.type(input, "/ar");
+    await user.type(input, "@ar");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("listbox")).toBeNull();
-    expect(input).toHaveValue("/ar");
+    expect(input).toHaveValue("@ar");
     expect(input.selectionStart).toBe(3);
     await user.keyboard("x");
-    expect(screen.getByRole("option")).toHaveTextContent("/arxiv");
+    expect(screen.getByRole("option")).toHaveTextContent("@skill:arxiv");
   });
 
   it.each([false, true])(
@@ -282,13 +289,13 @@ describe("ChatComposer slash popover", () => {
         commands: [{ name: "arxiv", source: "skill", requiresPrefix: collision }],
       });
       const input = screen.getByRole("textbox") as HTMLTextAreaElement;
-      const prefix = collision ? "/skill:ar" : "/ar";
+      const prefix = collision ? "@skill:ar" : "@ar";
       fireEvent.change(input, { target: { value: `${prefix} 1706.03762\nkeep this suffix` } });
       input.focus();
       input.setSelectionRange(prefix.length, prefix.length);
       fireEvent.select(input);
       await user.keyboard("{Enter}");
-      const invocation = collision ? "/skill:arxiv" : "/arxiv";
+      const invocation = "@skill:arxiv";
       expect(input).toHaveValue(`${invocation} 1706.03762\nkeep this suffix`);
       expect(input.selectionStart).toBe(invocation.length + 1);
       expect(onSend).not.toHaveBeenCalled();
@@ -322,30 +329,101 @@ describe("ChatComposer slash popover", () => {
   it("scrolls keyboard selection into view and accepts a touch-style click", async () => {
     const scroll = vi.fn();
     const { user } = await renderComposer();
-    await user.type(screen.getByRole("textbox"), "/");
+    await user.type(screen.getByRole("textbox"), "@");
     const options = screen.getAllByRole("option");
     options.at(-1)!.scrollIntoView = scroll;
     await user.keyboard("{End}");
     expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
     fireEvent.click(options.at(-1)!);
-    expect(screen.getByRole("textbox")).toHaveValue("/drawio ");
+    expect(screen.getByRole("textbox")).toHaveValue("@skill:drawio ");
   });
 
-  it("opens Commands from the toolbar while keeping a populated draft as Skill arguments", async () => {
+  it("opens context from the toolbar and sends the attached Skill with the existing prompt", async () => {
     const onSend = vi.fn();
     const { user } = await renderComposer({ onSend });
     const input = screen.getByRole("textbox") as HTMLTextAreaElement;
     await user.type(input, "1706.03762");
-    await user.click(screen.getByRole("button", { name: "Commands" }));
-    await user.click(screen.getByRole("option", { name: /\/arxiv/ }));
-    expect(input).toHaveValue("/arxiv 1706.03762");
-    expect(input.selectionStart).toBe("/arxiv ".length);
+    await user.click(screen.getByRole("button", { name: "Add context" }));
+    await user.click(screen.getByRole("option", { name: /@skill:arxiv/ }));
+    expect(input).toHaveValue("1706.03762 @skill:arxiv ");
+    expect(input.selectionStart).toBe(input.value.length);
     expect(input).toHaveFocus();
     expect(onSend).not.toHaveBeenCalled();
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledWith("@skill:arxiv 1706.03762");
   });
 });
 
 describe("ChatComposer file references", () => {
+  it("keeps a same-named file and Skill distinct and replaces only the selected Skill", async () => {
+    vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "arxiv", path: "/p/arxiv" }]);
+    const onCommand = vi.fn();
+    const onSend = vi.fn();
+    const { user } = await renderComposer({ cwd: "/p", onSend, onCommand });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await user.type(input, "Read @ar");
+    await user.click(await screen.findByRole("option", { name: "arxiv" }));
+    await user.type(input, "with @ar");
+    await user.keyboard("{Enter}");
+    expect(input).toHaveValue("Read /p/arxiv with @skill:arxiv ");
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    await user.type(input, "@dr");
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("button", { name: "Remove reference @skill:arxiv" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove reference @skill:drawio" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Remove reference /p/arxiv" })).toBeVisible();
+    expect(input.selectionStart).toBe(input.value.length);
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledWith("@skill:drawio Read /p/arxiv with");
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it("retains Skill suggestions when file lookup fails and exits them with native Tab", async () => {
+    vi.mocked(api.listEntries).mockRejectedValue(new Error("unavailable"));
+    const { user } = await renderComposer({ cwd: "/p" });
+    const input = screen.getByRole("textbox");
+    await user.type(input, "@");
+    expect(await screen.findByText("Could not load files")).toBeVisible();
+    expect(screen.getByRole("option", { name: /@skill:arxiv/ })).toBeVisible();
+    await user.tab();
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input).toHaveValue("@");
+    expect(input).not.toHaveFocus();
+  });
+
+  it("removes Skill context without discarding a suffix or dispatching a command", async () => {
+    const onCommand = vi.fn();
+    const onSend = vi.fn();
+    const { user } = await renderComposer({ onCommand, onSend });
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Use @ar for this paper" } });
+    input.focus();
+    input.setSelectionRange(7, 7);
+    fireEvent.select(input);
+    await user.keyboard("{Enter}");
+    expect(input).toHaveValue("Use @skill:arxiv for this paper");
+    expect(input.selectionStart).toBe("Use @skill:arxiv ".length);
+    await user.click(screen.getByRole("button", { name: "Remove reference @skill:arxiv" }));
+    expect(input).toHaveValue("Use  for this paper");
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledWith("Use  for this paper");
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it("does not replace keyboard selection on synthetic hover, but responds to pointer movement", async () => {
+    const { user } = await renderComposer();
+    const input = screen.getByRole("textbox");
+    await user.type(input, "@{End}");
+    const first = screen.getByRole("option", { name: /@skill:arxiv/ });
+    const last = screen.getByRole("option", { name: /@skill:drawio/ });
+    expect(last).toHaveAttribute("aria-selected", "true");
+    fireEvent.mouseEnter(first);
+    expect(last).toHaveAttribute("aria-selected", "true");
+    fireEvent.pointerMove(first);
+    expect(first).toHaveAttribute("aria-selected", "true");
+  });
+
   it.each([
     { path: "/name draft/file.md", cwd: "/name draft", commands: [], method: "drop" },
     { path: "/name draft/file.md", cwd: "/name draft", commands: [], method: "suggestion" },
@@ -376,7 +454,7 @@ describe("ChatComposer file references", () => {
         await user.click(await screen.findByRole("option", { name: path.split("/").at(-1)! }));
       }
       expect(input).toHaveValue(`"${path}" `);
-      expect(screen.getByRole("list", { name: "File references" })).toHaveTextContent(path);
+      expect(screen.getByRole("list", { name: "Context references" })).toHaveTextContent(path);
       // Copying the real textarea representation also preserves Pi-safe intent.
       input.select();
       const copied = await user.copy();
@@ -401,7 +479,7 @@ describe("ChatComposer file references", () => {
     await user.type(input, value);
     input.setSelectionRange(start, end);
     fireEvent.select(input);
-    await user.click(screen.getByRole("button", { name: "Files" }));
+    await user.click(screen.getByRole("button", { name: "Add context" }));
     await user.click(await screen.findByRole("option", { name: "a" }));
     expect(input).toHaveValue(expected);
     expect(input).toHaveFocus();
@@ -568,10 +646,10 @@ describe("ChatComposer file references", () => {
     await user.type(input, "@na");
     await user.click(await screen.findByRole("option", { name: "name" }));
     expect(input).toHaveValue('"/name" ');
-    expect(screen.getByRole("list", { name: "File references" })).toHaveTextContent("/name");
+    expect(screen.getByRole("list", { name: "Context references" })).toHaveTextContent("/name");
     await user.click(screen.getByRole("button", { name: "Remove reference /name" }));
     expect(input).toHaveValue(" ");
-    expect(screen.queryByRole("list", { name: "File references" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Context references" })).toBeNull();
     expect(onCommand).not.toHaveBeenCalled();
   });
 
@@ -613,10 +691,10 @@ describe("ChatComposer file references", () => {
     await user.type(input, "Read OLD please");
     input.setSelectionRange(5, 8);
     fireEvent.select(input);
-    await user.click(screen.getByRole("button", { name: "Files" }));
+    await user.click(screen.getByRole("button", { name: "Add context" }));
     await user.click(await screen.findByRole("option", { name: "notes.md" }));
     expect(input).toHaveValue("Read /p/notes.md please");
-    expect(screen.getByRole("list", { name: "File references" })).toHaveTextContent("/p/notes.md");
+    expect(screen.getByRole("list", { name: "Context references" })).toHaveTextContent("/p/notes.md");
   });
 
   it("lists only requested directories, navigates folders and inserts exact text without sending", async () => {
