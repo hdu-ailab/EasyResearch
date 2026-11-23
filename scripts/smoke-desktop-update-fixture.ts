@@ -9,7 +9,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep,
 import { pipeline } from "node:stream/promises";
 import type { WindowsFixtureProcess } from "./smoke-desktop-update-windows";
 import type { UpdateActionResult } from "../src/runtime/update-contract";
-import type { DesktopUpdateReceipt } from "../src/desktop/update-protocol";
+import { desktopUpdateFailure, type DesktopUpdateReceipt } from "../src/desktop/update-protocol";
 import { smokeAgentText, type SmokeAgentRequest } from "./smoke-agent-scenario";
 
 export function desktopUpdateFixtureInput(request: SmokeAgentRequest, marker: string): "history" | "active" | undefined {
@@ -25,8 +25,8 @@ export function desktopCustodyDiagnostic(receipt: DesktopUpdateReceipt): Record<
   for (const key of ["workerPid", "installerGuardPid"] as const) if (Number.isSafeInteger(receipt[key]) && receipt[key]! > 0) result[key] = receipt[key];
   for (const key of ["installerSettled", "custodyUnresolved", "recovery"] as const) if (typeof receipt[key] === "boolean") result[key] = receipt[key];
   if (receipt.failure && /^(?:verify-(?:registry|version|files)|rollback-(?:stop|lease|server|quarantine|remove-current|restore-files|registry|verify)|recovery-(?:verify|version|launch))$/u.test(receipt.failure.operation)
-    && /^(?:EPERM|EACCES|ENOENT|EBUSY|ENOTEMPTY|EEXIST|ETIMEDOUT|EINVAL|EIO|FAILED)$/u.test(receipt.failure.code)) {
-    result.failure = { operation: receipt.failure.operation, code: receipt.failure.code };
+    && /^(?:EPERM|EACCES|ENOENT|EBUSY|ENOTEMPTY|EEXIST|ETIMEDOUT|EINVAL|EIO|FAILED|UPDATE_PROCESS_EXIT)$/u.test(receipt.failure.code)) {
+    result.failure = desktopUpdateFailure(receipt.failure.operation, receipt.failure);
   }
   if (receipt.outcome) {
     const outcome: Record<string, unknown> = {};

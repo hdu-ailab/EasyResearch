@@ -98,10 +98,34 @@ export interface DesktopUpdateReceipt {
 export type DesktopUpdateOperation = "verify-registry" | "verify-version" | "verify-files" | "rollback-stop"
   | "rollback-lease" | "rollback-server" | "rollback-quarantine" | "rollback-remove-current" | "rollback-restore-files"
   | "rollback-registry" | "rollback-verify" | "recovery-verify" | "recovery-version" | "recovery-launch";
-export interface DesktopUpdateFailure { operation: DesktopUpdateOperation; code: string }
+export interface DesktopUpdateFailure {
+  operation: DesktopUpdateOperation; code: string;
+  childExitCode?: number; childSignal?: string; stderr?: string;
+}
 export function desktopUpdateFailure(operation: DesktopUpdateOperation, error: unknown): DesktopUpdateFailure {
-  const code = (error as { code?: unknown } | null)?.code;
-  return { operation, code: typeof code === "string" && ["EPERM", "EACCES", "ENOENT", "EBUSY", "ENOTEMPTY", "EEXIST", "ETIMEDOUT", "EINVAL", "EIO"].includes(code) ? code : "FAILED" };
+  const value = error as { code?: unknown; childExitCode?: unknown; childSignal?: unknown; stderr?: unknown; stderrTruncated?: unknown } | null;
+  const code = value?.code;
+  const failure: DesktopUpdateFailure = { operation, code: typeof code === "string" && ["EPERM", "EACCES", "ENOENT", "EBUSY", "ENOTEMPTY", "EEXIST", "ETIMEDOUT", "EINVAL", "EIO", "UPDATE_PROCESS_EXIT"].includes(code) ? code : "FAILED" };
+  if (code === "UPDATE_PROCESS_EXIT") {
+    if (typeof value?.childExitCode === "number" && Number.isSafeInteger(value.childExitCode) && Math.abs(value.childExitCode) <= 0xffffffff) failure.childExitCode = value.childExitCode;
+    if (typeof value?.childSignal === "string" && /^SIG[A-Z0-9]{1,10}$/u.test(value.childSignal)) failure.childSignal = value.childSignal;
+    if (typeof value?.stderr === "string") {
+      const input = Buffer.from(value.stderr);
+      let start = Math.max(0, input.length - 8192);
+      if (start || value.stderrTruncated === true) {
+        const newline = input.indexOf(10, start);
+        start = newline < 0 ? input.length : newline + 1;
+      }
+      const text = input.subarray(start).toString("utf8").split(/\r?\n/u).map(line =>
+        /(?:authorization|cookie|api[-_]?key|password|secret|token|credential)\s*["']?\s*[:=]|\b(?:Bearer|Basic)\s+\S+/iu.test(line)
+          ? "[redacted credential-bearing line]" : line.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/gu, "[redacted]")
+      ).join("\n");
+      const output = Buffer.from(text); start = Math.max(0, output.length - 4096);
+      while (start < output.length && (output[start]! & 0xc0) === 0x80) start += 1;
+      failure.stderr = output.subarray(start).toString("utf8");
+    }
+  }
+  return failure;
 }
 
 export function canReclaimDesktopUpdateReceipt(receipt: DesktopUpdateReceipt): boolean {

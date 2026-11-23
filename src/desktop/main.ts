@@ -115,8 +115,9 @@ const updateHelpers = new Set<DesktopUpdateCustodian>();
 const updateSuccessor = consumeDesktopUpdateSuccessor(process.env);
 let updateSuccessorReady = false;
 if (updateSuccessor) {
-  process.stdin.once("end", () => { if (!updateSuccessorReady) void terminalExit(); });
-  process.stdin.once("error", () => { if (!updateSuccessorReady) void terminalExit(); });
+  writeDesktopLog(`Desktop update successor entered; single-instance lock ${hasSingleInstanceLock ? "acquired" : "denied"}.`);
+  process.stdin.once("end", () => { if (!updateSuccessorReady) { writeDesktopLog("Desktop update parent pipe ended before readiness."); void terminalExit(); } });
+  process.stdin.once("error", () => { if (!updateSuccessorReady) { writeDesktopLog("Desktop update parent pipe failed before readiness."); void terminalExit(); } });
   process.stdin.resume();
   process.stdout.on("error", () => {});
 }

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { desktopUpdateFailure } from "./update-protocol";
 
 it("owns the real child before acknowledgement and waits for its actual close", async () => {
   const token = "t".repeat(43);
@@ -65,6 +66,40 @@ it("reports a spawn failure without treating it as installer completion", async 
   const child = spawnUpdateProcess("/definitely-missing-easyresearch-update-process", []);
   await expect(child.event("prepared", "t".repeat(43), 1000)).rejects.toThrow();
   await child.stop(); expect(child.closed).toBe(true);
+});
+
+it("retains actual early child exit evidence without leaking credential-bearing stderr", async () => {
+  const child = spawnUpdateProcess(process.execPath, ["-e", "process.stderr.write('fatal: startup resource missing\\nAuthorization: Bearer private-value\\nworker_token=private-token\\n');process.exitCode=17"]);
+  try {
+    const error = await child.event("successor-ready", "t".repeat(43), 5000).catch(error => error);
+    const failure = desktopUpdateFailure("recovery-launch", error);
+    expect(failure).toMatchObject({ operation: "recovery-launch", code: "UPDATE_PROCESS_EXIT", childExitCode: 17 });
+    expect(failure.stderr).toContain("startup resource missing");
+    expect(JSON.stringify(failure)).not.toMatch(/private-value|private-token/);
+  } finally { await child.stop(); }
+});
+
+it("drops a truncated credential line before redacting the bounded child stderr", async () => {
+  const secret = "a".repeat(42) + "Z";
+  const label = "worker_token=";
+  const start = `${label}${secret}\n`;
+  const lines = `Authorization: Bearer ${"x".repeat(2030)}\n`.repeat(3);
+  const remaining = 8192 + label.length + 1 - Buffer.byteLength(start + lines + "Authorization: Bearer \n");
+  const text = `${start}${lines}Authorization: Bearer ${"x".repeat(remaining)}\n`;
+  const child = spawnUpdateProcess(process.execPath, ["-e", `process.stderr.write(${JSON.stringify(text)});process.exitCode=17`]);
+  try {
+    const error = await child.event("successor-ready", "t".repeat(43), 5000).catch(error => error);
+    const failure = desktopUpdateFailure("recovery-launch", error);
+    expect(failure.childExitCode).toBe(17);
+    expect(JSON.stringify(failure)).not.toContain(secret.slice(1));
+    expect(Buffer.byteLength(failure.stderr ?? "")).toBeLessThanOrEqual(4096);
+    const normalized = desktopUpdateFailure("recovery-launch", { code: "UPDATE_PROCESS_EXIT", stderr: text });
+    expect(JSON.stringify(normalized)).not.toContain(secret.slice(1));
+    const unicode = desktopUpdateFailure("recovery-launch", { code: "UPDATE_PROCESS_EXIT", stderr: "错误".repeat(1000) });
+    expect(Buffer.byteLength(unicode.stderr ?? "")).toBeLessThanOrEqual(4096);
+    expect(unicode.stderr).toContain("错误");
+    expect(unicode.stderr).not.toContain("\ufffd");
+  } finally { await child.stop(); }
 });
 
 it("timeout does not detach a still-running helper", async () => {

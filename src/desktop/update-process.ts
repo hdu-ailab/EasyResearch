@@ -89,6 +89,7 @@ export function spawnUpdateProcess(executable: string, args: string[], options: 
   const events: Record<string, unknown>[] = [];
   const waiters = new Set<() => void>();
   let stdout = ""; let outputBytes = 0;
+  let stderr: Buffer = Buffer.alloc(0); let stderrTruncated = false;
   const notify = () => { for (const waiter of waiters) waiter(); };
   child.on("error", (error) => { failure = error; notify(); });
   child.stdin.on("error", () => {});
@@ -122,7 +123,12 @@ export function spawnUpdateProcess(executable: string, args: string[], options: 
   const consume = (chunk: Buffer, machine: boolean) => {
     outputBytes += chunk.length;
     if (outputBytes > 256 * 1024) { failure = new Error("Update process output exceeded its limit."); notify(); return; }
-    if (!machine) return;
+    if (!machine) {
+      const combined = Buffer.concat([stderr, chunk]);
+      if (combined.length > 8192) { stderr = combined.subarray(combined.length - 8192); stderrTruncated = true; }
+      else stderr = combined;
+      return;
+    }
     stdout += chunk.toString("utf8");
     let newline: number;
     while ((newline = stdout.indexOf("\n")) !== -1) {
@@ -146,7 +152,12 @@ export function spawnUpdateProcess(executable: string, args: string[], options: 
           if (error) reject(error); else resolve(value!);
         };
         const check = () => {
-          if (failure || closed) { done(failure ?? new Error("Update process exited before acknowledgement.")); return; }
+          if (failure || closed) {
+            done(failure ?? Object.assign(new Error("Update process exited before acknowledgement."), {
+              code: "UPDATE_PROCESS_EXIT", childExitCode: rootExit?.code, childSignal: rootExit?.signal, stderr: stderr.toString("utf8"), stderrTruncated,
+            }));
+            return;
+          }
           const index = events.findIndex((event) => event.type === type && event.token === token);
           if (index >= 0) { done(undefined, events.splice(index, 1)[0]); return; }
         };
