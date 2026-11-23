@@ -25,7 +25,7 @@ describe("Work file HTTP contract", () => {
       bootId: "file-test",
       webuiDist: join(root, "webui-dist"),
       directories: new DirectoryService(root),
-      registry: { list: vi.fn(() => [{ cwd }]), create: vi.fn(() => { throw new Error("Must not open a session"); }) },
+      registry: { list: vi.fn(() => [{ cwd }]), activeWorkCount: () => 0, create: vi.fn(() => { throw new Error("Must not open a session"); }) },
       listAllSessions: vi.fn(async () => []),
       workspaces: {
         rename: vi.fn(async () => ({ cwd, sessionIds: [] })),
@@ -272,7 +272,7 @@ describe("Work file HTTP contract", () => {
       const headers = { [DAEMON_TOKEN_HEADER]: "lifecycle" };
       const info = await read(DAEMON_CONTROL_PATH, { headers });
       expect(info.status).toBe(200);
-      expect(await info.json()).toEqual({ runtimeId: "test-runtime" });
+      expect(await info.json()).toEqual({ runtimeId: "test-runtime", busy: { code: "RUNTIME_BUSY", activeSessions: 0, authFlowActive: false } });
       expect((await read(DAEMON_CONTROL_PATH, { method: "POST", headers })).status).toBe(200);
       expect(services.daemonControl.requestShutdown).toHaveBeenCalledOnce();
     });

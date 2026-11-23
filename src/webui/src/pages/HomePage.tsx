@@ -194,6 +194,7 @@ export function HomePage({
   }, [visible, refresh, cancelStatusRefresh]);
 
   useEffect(() => {
+    if (window.easyresearchDesktop) return;
     let active = true;
     checkForUpdate()
       .then((result) => {

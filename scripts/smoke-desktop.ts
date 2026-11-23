@@ -18,6 +18,7 @@ import {
 } from "./build";
 import {
   assertNativeDesktopHost,
+  assertWindowsElectronLocales,
   desktopTarget,
   validateDesktopSidecar,
   type DesktopBuildManifest,
@@ -175,6 +176,7 @@ async function runPackagedSmoke(pkg: DesktopSmokePackage, root: string): Promise
 
   try {
     const appPaths = preparePackage();
+    if (targetName === "windows-x64") assertWindowsElectronLocales(installRoot);
     verifyPackagedSidecar(appPaths.sidecar, nativeArtifact, version);
     verifyDesktopSidecarIdentity(desktopManifest.sidecar, nativeArtifact);
     verifyPackagedNotice(

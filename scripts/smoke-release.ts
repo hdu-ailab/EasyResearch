@@ -64,7 +64,7 @@ import { BUNDLED_MODEL_ADDITIONS, BUNDLED_MODEL_REMOVALS } from "../src/runtime/
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
 import type { SubagentCompletionEntryDto } from "../src/web/contracts";
 import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
-import { assertBundledAgentCapabilities } from "./smoke-agent-scenario";
+import { assertBundledAgentCapabilities, smokeAgentText } from "./smoke-agent-scenario";
 import { createWriteRecoverySmoke, runWriteRecoverySmoke } from "./smoke-write-recovery";
 import { createLlmRetryFixture } from "./smoke-llm-retry-fixture";
 import { runLlmRetrySmoke } from "./smoke-llm-retry";
@@ -404,6 +404,11 @@ const modelServer = Bun.serve({
     const backgroundScenario = [remoteBackgroundSmoke.scenario, backgroundSmoke].find(scenario => scenario.matches(body));
     if (backgroundScenario) {
       try {
+        const system = body.messages?.filter(message => message.role === "system" || message.role === "developer")
+          .map(message => smokeAgentText(message.content)).join("\n\n") ?? "";
+        assert(system.startsWith("You are EasyResearch"), "Compiled root/stage request lost the research identity");
+        assert(!system.includes("You are a coding assistant running inside pi"), "Compiled request retained the coding-only default");
+        assert.equal(system.match(/KaTeX-compatible LaTeX/g)?.length, 1, "Compiled request duplicated or omitted shared Agent guidance");
         const action = await backgroundScenario.select(body);
         return action.kind === "tool"
           ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })

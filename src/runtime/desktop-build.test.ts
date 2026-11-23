@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { Platform } from "electron-builder";
+import { createElectronFrameworkSupport } from "app-builder-lib/out/electron/ElectronFramework";
+import type { BeforeCopyExtraFilesOptions } from "app-builder-lib/out/Framework";
+import { Packager } from "app-builder-lib/out/packager";
 import type { BuildManifest } from "../../scripts/build";
 import {
   assertNativeDesktopHost,
@@ -114,7 +118,119 @@ describe("accepted third-party notices", () => {
   });
 });
 
+describe("Windows package locale acceptance", () => {
+  function packageFixture(): string {
+    const appOutDir = join(root, "installed app");
+    const localesDir = join(appOutDir, "locales");
+    mkdirSync(localesDir, { recursive: true });
+    for (const language of ["en-US", "en-GB", "zh-CN", "zh-TW"]) {
+      writeFileSync(join(localesDir, `${language}.pak`), `locale bytes: ${language}`);
+    }
+    return appOutDir;
+  }
+
+  async function acceptPackage(appOutDir: string): Promise<void> {
+    const config = electronBuilderConfig("windows-x64", "1.2.3", join(root, "stage"), join(root, "desktop"));
+    expect(typeof config.afterPack).toBe("function");
+    await (config.afterPack as (context: { appOutDir: string }) => Promise<void>)({ appOutDir });
+  }
+
+  it("accepts physical nonempty packs for both English and Chinese regional variants without rewriting them", async () => {
+    const appOutDir = packageFixture();
+    const localesDir = join(appOutDir, "locales");
+    const before = readdirSync(localesDir).map(name => [name, readFileSync(join(localesDir, name))]);
+
+    await acceptPackage(appOutDir);
+
+    expect(readdirSync(localesDir).map(name => [name, readFileSync(join(localesDir, name))])).toEqual(before);
+  });
+
+  it("rejects stale unselected locale packs rather than silently repairing package contents", async () => {
+    const appOutDir = packageFixture();
+    const stale = join(appOutDir, "locales", "fr.pak");
+    writeFileSync(stale, "old installation locale");
+
+    await expect(acceptPackage(appOutDir)).rejects.toThrow(/unexpected.*fr\.pak/i);
+    expect(readFileSync(stale, "utf8")).toBe("old installation locale");
+  });
+
+  it.each(["en-US", "en-GB", "zh-CN", "zh-TW"])("rejects a missing %s pack, including the English fallback", async (language) => {
+    const appOutDir = packageFixture();
+    rmSync(join(appOutDir, "locales", `${language}.pak`));
+
+    await expect(acceptPackage(appOutDir)).rejects.toThrow(`missing: ${language}.pak`);
+  });
+
+  it.each(["empty", "directory"])("rejects a named fallback pack that is %s", async (kind) => {
+    const appOutDir = packageFixture();
+    const fallback = join(appOutDir, "locales", "en-US.pak");
+    rmSync(fallback);
+    if (kind === "directory") mkdirSync(fallback);
+    else writeFileSync(fallback, "");
+
+    await expect(acceptPackage(appOutDir)).rejects.toThrow(/en-US\.pak.*nonempty regular file/i);
+  });
+
+  it("rejects an absent locale directory", async () => {
+    const appOutDir = packageFixture();
+    rmSync(join(appOutDir, "locales"), { recursive: true });
+
+    await expect(acceptPackage(appOutDir)).rejects.toThrow(/ENOENT|locales|no such file/i);
+  });
+});
+
 describe("electron-builder configuration", () => {
+  it("prunes only unselected Windows locale files through the pinned builder while preserving retained bytes", async () => {
+    const stage = join(root, "stage");
+    const appOutDir = join(root, "win-unpacked");
+    const localesDir = join(appOutDir, "locales");
+    mkdirSync(stage);
+    mkdirSync(localesDir, { recursive: true });
+    writeFileSync(join(stage, "package.json"), JSON.stringify({
+      name: "desktop-locale-fixture",
+      version: "1.2.3",
+      description: "Isolated desktop packaging fixture",
+      author: "fixture",
+    }));
+    const retained = ["en-US", "en-GB", "zh-CN", "zh-TW"];
+    for (const language of [...retained, "fr", "de", "ja", "en-AU", "zh-HK"]) {
+      writeFileSync(join(localesDir, `${language}.pak`), Buffer.from(`\0${language}\xff`, "latin1"));
+    }
+    const preserved = new Map([
+      [join(appOutDir, "LICENSES.chromium.html"), "required Chromium notices"],
+      [join(appOutDir, "icudtl.dat"), "required Unicode data"],
+      [join(appOutDir, "resources.pak"), "required shared resources"],
+    ]);
+    for (const [path, bytes] of preserved) writeFileSync(path, bytes);
+    writeFileSync(join(appOutDir, "electron.exe"), "fixture host");
+
+    const invocation = desktopBuilderInvocation("windows-x64", "1.2.3", stage, join(root, "desktop"));
+    const builder = new Packager(invocation);
+    await builder.validateConfig();
+    const framework = await createElectronFrameworkSupport(builder.config, builder);
+    // Execute the real builder's file-stage hook only: no Electron download,
+    // native executable, signing, full build or repository output is involved.
+    await framework.beforeCopyExtraFiles!({
+      appOutDir,
+      asarIntegrity: null,
+      platformName: "win32",
+      packager: {
+        config: builder.config,
+        platformSpecificBuildOptions: builder.config.win!,
+        platform: Platform.WINDOWS,
+        appInfo: { productFilename: "EasyResearch" },
+        getResourcesDir: (directory: string) => join(directory, "resources"),
+      } as BeforeCopyExtraFilesOptions["packager"],
+    });
+
+    expect(readdirSync(localesDir).sort()).toEqual(retained.map(language => `${language}.pak`).sort());
+    for (const language of retained) {
+      expect(readFileSync(join(localesDir, `${language}.pak`)))
+        .toEqual(Buffer.from(`\0${language}\xff`, "latin1"));
+    }
+    for (const [path, bytes] of preserved) expect(readFileSync(path, "utf8")).toBe(bytes);
+  });
+
   it("builds both ARM64 Linux formats with explicit desktop naming and sandbox-preserving arguments", () => {
     const config = electronBuilderConfig("linux-arm64", "1.2.3", join(root, "stage"), join(root, "desktop"));
     expect(config.linux).toMatchObject({

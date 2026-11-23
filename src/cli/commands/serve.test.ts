@@ -210,6 +210,118 @@ function deferred<T>() {
 }
 
 describe("runServe startup failure", () => {
+  it("retires the old executable only after terminal owned-work settlement and disposes a failed successor candidate", async () => {
+    const artifacts = await import("../npm-update-artifact");
+    const order: string[] = [];
+    const register = vi.spyOn(artifacts, "registerNpmArtifactProcess").mockReturnValue({ retire() { order.push("retire"); }, close() { order.push("close-use"); } });
+    const discard = vi.spyOn(artifacts, "discardNpmUpdateCandidate").mockImplementation(async () => { order.push("discard-candidate"); });
+    const stopped = deferred<void>();
+    bootstrapMock.mockResolvedValue(undefined);
+    startServerMock.mockResolvedValue({ port: 3000, beginShutdown() {}, stop: async () => { await stopped.promise; order.push("settled"); } });
+    startCliDaemonSuccessorMock.mockImplementation(async () => { order.push("spawn"); throw new Error("successor setup failed and child cleanup completed"); });
+    const { runServe } = await import("./serve");
+    const running = runServe();
+    try {
+      await vi.waitFor(() => expect(startServerMock).toHaveBeenCalled());
+      const owner = startServerMock.mock.calls[0]![0].npmUpdate;
+      const lease = await owner.reserve();
+      owner.activate({ executable: "/owned/candidate", version: "2.0.0", sha256: "a".repeat(64), runtimeId: "new" }, lease);
+      expect(order).not.toContain("retire");
+      stopped.resolve(); expect(await running).toBe(1);
+      expect(order.indexOf("settled")).toBeLessThan(order.indexOf("retire"));
+      expect(order.indexOf("retire")).toBeLessThan(order.indexOf("spawn"));
+      expect(order).toContain("discard-candidate");
+    } finally { stopped.resolve(); await running; register.mockRestore(); discard.mockRestore(); }
+  });
+  it("waits for new-version first-run setup before constructing Web or publishing readiness", async () => {
+    const entry = await import("../npm-update-entry");
+    const pending = deferred<void>();
+    const order: string[] = [];
+    const setup = vi.spyOn(entry, "prepareNpmUpdateBoot").mockImplementation(async () => {
+      order.push("setup-start"); await pending.promise; order.push("setup-finished");
+    });
+    bootstrapMock.mockImplementation(async () => { order.push("bootstrap"); });
+    let shutdown!: () => void;
+    startServerMock.mockImplementation(async (options) => {
+      order.push("web"); shutdown = options.daemonControl.requestShutdown;
+      return { port: 3000, beginShutdown() {}, stop: async () => {} };
+    });
+    const { runServe } = await import("./serve");
+    const running = runServe("127.0.0.1", 3000, {
+      updateBoot: { host: "127.0.0.1", port: 3000, version: "2.0.0", sha256: "a".repeat(64) },
+      onReady() { order.push("ready"); shutdown(); },
+    });
+    try {
+      await vi.waitFor(() => expect(order).toEqual(["setup-start"]));
+      expect(startServerMock).not.toHaveBeenCalled();
+      expect(readServerPid(root)).toBeUndefined();
+      pending.resolve();
+      expect(await running).toBe(0);
+      expect(order).toEqual(["setup-start", "setup-finished", "bootstrap", "web", "ready"]);
+    } finally { pending.resolve(); await running; setup.mockRestore(); }
+  });
+
+  it("keeps new-version setup failure from entering Web or claiming successor readiness", async () => {
+    const entry = await import("../npm-update-entry");
+    const setup = vi.spyOn(entry, "prepareNpmUpdateBoot").mockRejectedValue(new Error("new-version setup failed"));
+    const ready = vi.fn();
+    try {
+      const { runServe } = await import("./serve");
+      expect(await runServe("127.0.0.1", 3000, {
+        updateBoot: { host: "127.0.0.1", port: 3000, version: "2.0.0", sha256: "a".repeat(64) }, onReady: ready,
+      })).toBe(1);
+      expect(startServerMock).not.toHaveBeenCalled();
+      expect(ready).not.toHaveBeenCalled();
+      expect(readServerPid(root)).toBeUndefined();
+      expect(serverLeaseMock.held).toBe(false);
+    } finally { setup.mockRestore(); }
+  });
+
+  it("uses terminal cleanup for update activation and launches only the selected candidate", async () => {
+    bootstrapMock.mockResolvedValue(undefined);
+    const stop = vi.fn(async () => {});
+    startServerMock.mockResolvedValue({ port: 3000, beginShutdown() {}, stop });
+    const { runServe } = await import("./serve");
+    const running = runServe();
+    await vi.waitFor(() => expect(startServerMock).toHaveBeenCalled());
+    const owner = startServerMock.mock.calls[0]![0].npmUpdate;
+    const lease = await owner.reserve();
+    await expect(startServerMock.mock.calls[0]![0].daemonControl.reserveRestart()).rejects.toThrow();
+    owner.activate({ executable: "/owned/new-executable", version: "2.0.0", sha256: "a".repeat(64), runtimeId: "new-runtime" }, lease);
+    expect(await running).toBe(0);
+    expect(stop).toHaveBeenCalledWith(undefined);
+    expect(startCliDaemonSuccessorMock.mock.calls[0]![0]).toMatchObject({ daemonExecutable: "/owned/new-executable", runtimeId: "new-runtime", expectedVersion: "2.0.0", updateCandidate: { version: "2.0.0", sha256: "a".repeat(64) } });
+  });
+  it("consumes npm provenance before Web creation and forwards it through a safe restart", async () => {
+    bootstrapMock.mockResolvedValue(undefined);
+    const provenance = { schema: 1, metaRoot: join(root, "meta"), launcher: join(root, "meta/launcher.mjs"), platformManifest: join(root, "platform/package.json"), binary: join(root, "platform/bin/easyresearch"), nodeExecutable: process.execPath, platform: "linux", arch: "x64", version: "1.0.0" };
+    process.env.EASYRESEARCH_NPM_PROVENANCE = JSON.stringify(provenance);
+    startServerMock.mockImplementation(async () => {
+      expect(process.env.EASYRESEARCH_NPM_PROVENANCE).toBeUndefined();
+      return { port: 3000, beginShutdown() {}, stop: async () => {} };
+    });
+    const { runServe } = await import("./serve");
+    const running = runServe();
+    await vi.waitFor(() => expect(startServerMock).toHaveBeenCalled());
+    const control = startServerMock.mock.calls[0]![0].daemonControl;
+    (await control.reserveRestart()).commit();
+    expect(await running).toBe(0);
+    expect(startCliDaemonSuccessorMock.mock.calls[0]![0]).toMatchObject({ currentEnvironment: { EASYRESEARCH_NPM_PROVENANCE: JSON.stringify(provenance) } });
+  });
+  it("closes new-work admission synchronously on terminal shutdown before the response-flush delay", async () => {
+    bootstrapMock.mockResolvedValue(undefined);
+    const beginShutdown = vi.fn();
+    const stop = vi.fn(async () => {});
+    startServerMock.mockResolvedValue({ port: 3000, beginShutdown, stop });
+    const { runServe } = await import("./serve");
+    let shutdown!: () => void;
+    const running = runServe("127.0.0.1", 3000, { registerShutdownTrigger(request) { shutdown = request; return () => {}; } });
+    await vi.waitFor(() => expect(shutdown).toBeDefined());
+    shutdown();
+    expect(beginShutdown).toHaveBeenCalledOnce();
+    expect(stop).not.toHaveBeenCalled();
+    expect(await running).toBe(0);
+  });
   it("restores and consumes daemon credentials before agent-dir or owner reads without resurrecting them", async () => {
     bootstrapMock.mockResolvedValue(undefined);
     startServerMock.mockRejectedValue(new Error("bind failed"));
@@ -367,7 +479,7 @@ describe("runServe startup failure", () => {
     const { runServe } = await import("./serve");
     expect(await runServe("127.0.0.1", 3000)).toBe(1);
 
-    expect(startServerMock).toHaveBeenCalledWith({
+    expect(startServerMock).toHaveBeenCalledWith(expect.objectContaining({
       host: "127.0.0.1",
       port: 3000,
       ownsExclusiveServerLease: true,
@@ -378,7 +490,7 @@ describe("runServe startup failure", () => {
         runtimeId: "runtime-current",
         requestShutdown: expect.any(Function),
       }),
-    });
+    }));
     expect(readServerPid(root)).toBeUndefined();
   });
 
@@ -407,7 +519,7 @@ describe("runServe startup failure", () => {
     if (entry.kind !== "owned") throw new Error("expected owned server record");
     expect(serverOwner(entry.record)).toBe("desktop");
     expect(entry.record.port).toBe(43123);
-    expect(startServerMock).toHaveBeenCalledWith({
+    expect(startServerMock).toHaveBeenCalledWith(expect.objectContaining({
       host: "127.0.0.1",
       port: 0,
       ownsExclusiveServerLease: true,
@@ -415,7 +527,7 @@ describe("runServe startup failure", () => {
       networkPolicy: expect.any(Object),
       daemonControl: expect.objectContaining({ token: "desktop-control" }),
       desktopAccess: { token: "renderer-token" },
-    });
+    }));
     const desktopControl = startServerMock.mock.calls[0]?.[0]?.daemonControl as Record<string, unknown>;
     expect(desktopControl).toHaveProperty("reserveRestart", expect.any(Function));
 

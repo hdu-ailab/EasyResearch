@@ -1,12 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as launcher from "../../launcher.mjs";
 
 describe("npm launcher diagnostics", () => {
+  it("captures the actual launcher Node and canonical package relationship without inheriting a forged descriptor", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "launcher-provenance-")));
+    try {
+      const platformRoot = join(root, "node_modules/easyresearch-linux-x64");
+      mkdirSync(join(platformRoot, "bin"), { recursive: true });
+      writeFileSync(join(root, "launcher.mjs"), "");
+      writeFileSync(join(root, "package.json"), JSON.stringify({ name: "easyresearch", version: "1.0.0", optionalDependencies: { "easyresearch-linux-x64": "1.0.0" } }));
+      writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: "easyresearch-linux-x64", version: "1.0.0" }));
+      const binary = join(platformRoot, "bin/easyresearch"); writeFileSync(binary, "fixture");
+      const captured = launcher.captureNpmProvenance(root, binary, "easyresearch-linux-x64", { platform: "linux", arch: "x64", execPath: process.execPath });
+      expect(captured).toMatchObject({ metaRoot: root, binary, version: "1.0.0", nodeExecutable: realpathSync(process.execPath) });
+      writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: "easyresearch-linux-x64", version: "0.9.0" }));
+      expect(launcher.captureNpmProvenance(root, binary, "easyresearch-linux-x64", { platform: "linux", arch: "x64", execPath: process.execPath })).toBeUndefined();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it("distinguishes missing optional packages from unsupported platforms", () => {
     const missingOptionalPackageMessage = (launcher as typeof launcher & {
       missingOptionalPackageMessage(name: string): string;

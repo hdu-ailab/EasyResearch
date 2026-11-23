@@ -584,7 +584,10 @@ describe("createStageSessionLauncher", () => {
       extensionFactories: unknown[];
     };
     expect(loader.additionalSkillPaths).toEqual([]);
-    expect(loader.appendSystemPromptOverride(["Pi base"])).toEqual(["Pi base", "Search carefully."]);
+    const promptParts = loader.appendSystemPromptOverride(["Pi base"]);
+    expect(promptParts[0]).toBe("Pi base");
+    expect(promptParts.at(-1)).toBe("Search carefully.");
+    expect(new Set(promptParts).size).toBe(promptParts.length);
     expect(loader.extensionFactories).toEqual(expect.arrayContaining([
       { name: "stage", caller: "search", coordinator, supervisor: harness.supervisors[0] },
       { name: "web-search" },
@@ -1439,7 +1442,10 @@ describe("createStageSessionLauncher", () => {
     expect(reloadCallsBeforeBoundary).toBe(0);
     expect(initialSkillPaths).toEqual(["/project/.easyresearch/skills/paper"]);
     expect(initialModelName).toBe("routed-metadata-v1");
-    expect(resourceHost!.prompt).toEqual(["Pi base", "Search generation two."]);
+    expect(resourceHost!.prompt[0]).toBe("Pi base");
+    expect(resourceHost!.prompt.at(-1)).toBe("Search generation two.");
+    expect(resourceHost!.prompt).not.toContain("Search generation one.");
+    expect(new Set(resourceHost!.prompt).size).toBe(resourceHost!.prompt.length);
     expect(session.activeTools.at(-1)).toEqual(["web-search", "subagent"]);
     expect(resourceHost!.skillPaths).toEqual(["/agent/skills/paper"]);
     expect(runtimeBinding!.current().subagents).toEqual(["reviewer"]);

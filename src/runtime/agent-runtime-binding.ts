@@ -20,6 +20,7 @@ import type {
 } from "./compaction-policy";
 import { DEFAULT_GLOBAL_COMPACTION_POLICY } from "./compaction-policy";
 import type { ProviderTimeoutSettingsDto } from "../web/contracts";
+import { SHARED_AGENT_GUIDANCE } from "./system-prompt";
 
 const SAFE_APPLY_ERROR = "Agent runtime configuration could not be applied. Retry after fixing the configuration.";
 const SAFE_MISSING_AGENT = "The configured Agent is not available in the current valid configuration.";
@@ -568,7 +569,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       return options.compaction.current();
     },
     appendSystemPrompt(base) {
-      return [...base, requireApplied().definition.systemPrompt];
+      return [...base, SHARED_AGENT_GUIDANCE, requireApplied().definition.systemPrompt];
     },
     skillPaths() {
       return [...requireApplied().skillPaths];

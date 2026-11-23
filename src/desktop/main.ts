@@ -5,6 +5,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  net,
   shell,
   Tray,
   type IpcMainEvent,
@@ -61,7 +62,12 @@ import {
   type DesktopSidecarHandle,
   type DesktopSidecarProcessHandle,
 } from "./sidecar";
-import { checkDesktopUpdate, type DesktopReleaseUpdate } from "./update";
+import { createDesktopUpdateController } from "./update";
+import { desktopPackageKind } from "./update-download";
+import { installDesktopUpdate, type DesktopUpdateCustodian } from "./update-install";
+import { acceptDesktopUpdateSuccessor, consumeDesktopUpdateSuccessor, desktopUpdateRecovery, prepareDesktopUpdateCustodian } from "./update-custodian";
+import { isDesktopUpdateSender, registerDesktopUpdateIpc, type DesktopUpdateOwner } from "./update-ipc";
+import { LATEST_RELEASE_PAGE, type UpdateController, type UpdateSnapshot } from "../runtime/update-contract";
 import {
   desktopSmokeLinuxRendererSecurityEvent,
   desktopSmokeSidecarReadyEvent,
@@ -72,7 +78,7 @@ import {
   requestDesktopSmokeRestart,
   verifyDesktopSmokeSuccessor,
 } from "./smoke-host";
-import { DESKTOP_SMOKE_USER_DATA_ENV } from "./contracts";
+import { DESKTOP_SMOKE_USER_DATA_ENV, DESKTOP_UPDATE_EVENT_CHANNEL } from "./contracts";
 import { verifyDesktopSmokeWorkFiles } from "./smoke-work-files";
 import {
   clearDesktopSmokeSessionTabsStorage,
@@ -102,6 +108,17 @@ let smokeRestartContext: {
   sessionTabs: DesktopSmokeSessionTabsReceipt;
 } | undefined;
 let smokeSuccessorFailureInjected = false;
+let updater: UpdateController | undefined;
+let desktopEnvironment: NodeJS.ProcessEnv | undefined;
+const updateHelpers = new Set<DesktopUpdateCustodian>();
+const updateSuccessor = consumeDesktopUpdateSuccessor(process.env);
+let updateSuccessorReady = false;
+if (updateSuccessor) {
+  process.stdin.once("end", () => { if (!updateSuccessorReady) void terminalExit(); });
+  process.stdin.once("error", () => { if (!updateSuccessorReady) void terminalExit(); });
+  process.stdin.resume();
+  process.stdout.on("error", () => {});
+}
 
 if (!hasSingleInstanceLock) {
   emitSmokeEvent({
@@ -122,10 +139,35 @@ if (!hasSingleInstanceLock) {
   app.on("activate", () => restoreMainWindow());
   void app.whenReady().then(async () => {
     app.setAppUserModelId("ai.easyresearch.desktop");
+    if (process.platform === "win32" || process.platform === "linux") {
+      // Remove the window menu for this lifetime, including setup and recreated windows.
+      Menu.setApplicationMenu(null);
+    }
     installPreferenceIpc();
+    registerDesktopUpdateIpc(ipcMain, getUpdater, updateRendererOwner);
     createTray();
     showLoading("Preparing the local research workspace...");
-    await startApplicationWithRecovery();
+    if (updateSuccessor) {
+      const accepted = await acceptDesktopUpdateSuccessor(updateSuccessor, {
+        hostPath: process.execPath, userDataDir: app.getPath("userData"), version: app.getVersion(),
+      });
+      // The private successor carrier is already consumed; only the ordinary
+      // exact-root environment is passed through the existing sidecar startup.
+      process.env.EASYRESEARCH_CODING_AGENT_DIR = accepted.handoff.agentDir;
+      if (!await startApplication(accepted.handoff.route, accepted.lease) || !sidecar || lifecycle.exiting) throw new Error("Updated Desktop could not start.");
+      accepted.ready(sidecar.ready.bootId, sidecar.pid);
+      updateSuccessorReady = true;
+      process.stdin.pause();
+      void accepted.finish().catch((error) => writeDesktopLog(`Desktop update staging cleanup failed: ${errorMessage(error)}`));
+      if (accepted.recovery) await showUpdateFallback("Installation failed. Open latest Release.");
+    } else {
+      const recoveryFailed = await desktopUpdateRecovery(app.getPath("userData")).catch((error) => {
+        writeDesktopLog(`Desktop update recovery receipt failed: ${errorMessage(error)}`);
+        return true;
+      });
+      if (recoveryFailed) await showUpdateFallback("Installation failed. Open latest Release.");
+      await startApplicationWithRecovery();
+    }
   }).catch((error) => {
     writeDesktopLog(`Desktop host initialization failed: ${errorMessage(error)}`);
     emitSmokeEvent({
@@ -136,8 +178,7 @@ if (!hasSingleInstanceLock) {
       "EasyResearch could not start",
       `The desktop host could not initialize. Review ${desktopLogPath()}`,
     );
-    allowQuit = true;
-    app.quit();
+    void terminalExit();
   });
 }
 
@@ -180,6 +221,7 @@ async function startApplication(
   }
   const current = (async (): Promise<boolean> => {
     let launchedSidecar: DesktopSidecarProcessHandle | undefined;
+    let hostReady = false;
     try {
       try {
         if (!await prepareDesktopSidecarLaunch(sidecarOwnership)) return false;
@@ -194,12 +236,14 @@ async function startApplication(
         warn: writeDesktopLog,
       });
       environment.EASYRESEARCH_CODING_AGENT_DIR ||= defaultAgentDir();
+      desktopEnvironment = environment;
       if (lifecycle.exiting || !sidecarOwnership.acceptingLaunches) return false;
       const handle = await startDesktopSidecar({
         sidecarPath: resolvePackagedSidecar(process.resourcesPath, process.platform),
         baseEnv: environment,
         agentDir: environment.EASYRESEARCH_CODING_AGENT_DIR,
         transitionLease,
+        retainTransitionUntilHostReady: Boolean(updateSuccessor && !updateSuccessorReady),
         onSetup: (message) => {
           writeDesktopLog(`Desktop sidecar setup: ${message}`);
           showLoading(message);
@@ -219,7 +263,7 @@ async function startApplication(
         },
         log: writeDesktopLog,
       });
-      if (lifecycle.exiting) {
+      if (lifecycle.exiting || !sidecarOwnership.acceptingLaunches) {
         await handle.shutdown();
         return false;
       }
@@ -235,7 +279,8 @@ async function startApplication(
       } : undefined));
       monitorSidecar(handle);
       await createMainWindow(handle, hash);
-      void checkForUpdates(false);
+      hostReady = true;
+      if (!updateSuccessor && !updater) void checkForUpdates(false);
       return true;
     } catch (error) {
       writeDesktopLog(`Desktop startup failed: ${errorMessage(error)}`);
@@ -255,7 +300,7 @@ async function startApplication(
       }
       return false;
     } finally {
-      if (transitionLease?.held && !transitionLease.release()) {
+      if (transitionLease?.held && !(hostReady && updateSuccessor && !updateSuccessorReady) && !transitionLease.release()) {
         throw new Error("Desktop host could not release unused successor transition custody.");
       }
     }
@@ -426,7 +471,7 @@ function monitorSidecar(handle: DesktopSidecarHandle): void {
   }
   void monitorDesktopSidecarLifecycle(handle, {
     isCurrent: () => sidecar === handle,
-    isExiting: () => lifecycle.exiting,
+    isExiting: () => lifecycle.exiting || !sidecarOwnership.acceptingLaunches,
     captureRoute: () => captureDesktopRestartHash(
       mainWindow?.webContents.getURL() ?? "",
       handle.ready.origin,
@@ -519,40 +564,107 @@ async function showUnexpectedExit(sidecarLogPath: string): Promise<void> {
 
 async function checkForUpdates(manual: boolean): Promise<void> {
   try {
-    const update = await checkDesktopUpdate(app.getVersion());
-    if (update) {
-      await showUpdate(update);
-    } else if (manual) {
-      await showDesktopMessage(mainWindow, {
-        type: "info",
-        title: "EasyResearch is up to date",
-        message: `EasyResearch ${app.getVersion()} is the latest release.`,
-        buttons: ["OK"],
-      });
-    }
-  } catch (error) {
+    const result = await getUpdater().action({ action: "check" });
+    if (!manual || "code" in result || lifecycle.exiting) return;
+    await showTrayUpdate(result);
+  } catch {
     if (!manual) return;
-    await showDesktopMessage(mainWindow, {
-      type: "warning",
-      title: "Update check failed",
-      message: "EasyResearch could not check GitHub Releases.",
-      detail: errorMessage(error),
-      buttons: ["OK"],
-    });
+    await showUpdateFallback("Update check failed. Open latest Release.");
   }
 }
 
-async function showUpdate(update: DesktopReleaseUpdate): Promise<void> {
+async function showUpdateFallback(message: string): Promise<void> {
   const result = await showDesktopMessage(mainWindow, {
-    type: "info",
-    title: "EasyResearch update available",
-    message: `EasyResearch ${update.version} is available.`,
-    detail: "Download and install it manually from GitHub Releases.",
-    buttons: ["Open Release", "Later"],
-    defaultId: 0,
-    cancelId: 1,
+    type: "warning", title: "EasyResearch update", message,
+    buttons: ["Open latest Release", "Close"], defaultId: 0, cancelId: 1,
   });
-  if (result.response === 0) await shell.openExternal(update.url);
+  if (result.response === 0) openExternal(LATEST_RELEASE_PAGE);
+}
+
+async function showTrayUpdate(snapshot: UpdateSnapshot): Promise<void> {
+  if (snapshot.phase === "failed" || (snapshot.phase === "downloaded" && !snapshot.canInstall)) {
+    await showUpdateFallback(snapshot.message ?? "Automatic installation is unavailable. Open latest Release."); return;
+  }
+  const action = snapshot.canDownload ? "download" : snapshot.canInstall ? "install" : undefined;
+  const result = await showDesktopMessage(mainWindow, {
+    type: "info", title: "EasyResearch update",
+    message: snapshot.latestVersion ? `EasyResearch ${snapshot.latestVersion} is available.` : `EasyResearch ${app.getVersion()} is up to date.`,
+    ...(action === "install" ? { detail: "Installation stops all active Agents and commands, then restarts EasyResearch." } : {}),
+    buttons: action ? [action === "download" ? "Download" : "Install and restart", "Later"] : ["OK"], cancelId: action ? 1 : 0,
+  });
+  if (result.response === 0 && action && !lifecycle.exiting) {
+    const next = await getUpdater().action({ action, operationId: snapshot.operationId!, force: action === "install" });
+    if (!("code" in next) && next.phase !== "activating" && !lifecycle.exiting) await showTrayUpdate(next);
+  }
+}
+
+function updateRendererOwner(): DesktopUpdateOwner | undefined {
+  if (!mainWindow || mainWindow.isDestroyed() || !sidecar || lifecycle.exiting) return undefined;
+  return { contents: mainWindow.webContents, origin: sidecar.ready.origin };
+}
+
+function getUpdater(): UpdateController {
+  if (updater) return updater;
+  const kind = desktopPackageKind(process.platform, process.arch, process.env.APPIMAGE);
+  updater = createDesktopUpdateController({
+    currentVersion: app.getVersion(), kind, stagingRoot: join(app.getPath("userData"), "updates"),
+    fetch: (input, init) => net.fetch(input, init),
+    activity: (signal) => {
+      if (!sidecar || lifecycle.exiting) return Promise.reject(new Error("Desktop activity check is unavailable."));
+      return sidecar.updateActivity(signal);
+    },
+    onError: (error) => writeDesktopLog(`Desktop update failed: ${errorMessage(error)}`),
+    reveal: async (path) => { shell.showItemInFolder(path); },
+    ...(app.isPackaged && kind === "windows-x64.exe" ? {
+      install: async (update, signal, committed, controls) => {
+        const currentSidecar = sidecar;
+        if (!currentSidecar || !desktopEnvironment?.EASYRESEARCH_CODING_AGENT_DIR || lifecycle.exiting) throw new Error("Desktop runtime is not ready for installation.");
+        const hash = captureDesktopRestartHash(mainWindow?.webContents.getURL() ?? "", currentSidecar.ready.origin);
+        try {
+          return await installDesktopUpdate({ ownership: sidecarOwnership, signal, committed, force: controls.force,
+            admit: (force, signal) => currentSidecar.prepareUpdate(force, signal),
+            prepare: () => prepareDesktopUpdateCustodian({ update, signal,
+              accepted: controls.stagingAccepted, released: controls.stagingReleased,
+              sidecarPath: resolvePackagedSidecar(process.resourcesPath, process.platform), hostPath: process.execPath,
+              userDataDir: app.getPath("userData"), agentDir: desktopEnvironment!.EASYRESEARCH_CODING_AGENT_DIR!,
+              currentVersion: app.getVersion(), oldBootId: currentSidecar.ready.bootId, route: hash,
+              retain: (handle) => {
+                updateHelpers.add(handle);
+                void handle.exited?.then(() => { updateHelpers.delete(handle); });
+              },
+            }),
+            shutdown: async () => {
+              await sidecarOwnership.shutdownAll();
+              await startAttempt;
+              if (sidecarOwnership.size !== 0) throw new Error("Desktop still owns a sidecar.");
+              if (!(await currentSidecar.exited).cleanShutdown) throw new Error("Desktop did not acknowledge successful terminal cleanup.");
+              sidecar = undefined;
+            },
+            quit: () => { lifecycle = beginDesktopExit(lifecycle); finishHostExit(); },
+          });
+        } catch (error) {
+          // Failed precommit cleanup is a real failure, never permission to quit/install.
+          // If the old sidecar did stop, recover the unchanged installed application.
+          if (!lifecycle.exiting && sidecarOwnership.acceptingLaunches && sidecarOwnership.size === 0) {
+            sidecar = undefined;
+            await startApplication(hash);
+          }
+          if (!lifecycle.exiting && !sidecar) {
+            showLoading("Installation failed. Open latest Release.");
+            await showUpdateFallback("Installation failed. Open latest Release.");
+          }
+          throw error;
+        }
+      },
+    } : {}),
+  });
+  updater.subscribe((snapshot) => {
+    const owner = updateRendererOwner();
+    if (owner && isDesktopUpdateSender({ sender: owner.contents, senderFrame: owner.contents.mainFrame }, owner)) {
+      mainWindow!.webContents.send(DESKTOP_UPDATE_EVENT_CHANNEL, snapshot);
+    }
+  });
+  return updater;
 }
 
 function terminalExit(): Promise<void> {
@@ -564,7 +676,14 @@ function terminalExit(): Promise<void> {
     emitSmokeEvent({ type: "desktop-smoke.exit-started" });
     sidecar = undefined;
     try {
-      await sidecarOwnership.shutdownAll();
+      const cleanup = await Promise.allSettled([
+        updater?.close(),
+        ...[...updateHelpers].map((helper) => helper.abort()),
+        sidecarOwnership.shutdownAll(),
+      ]);
+      const errors = cleanup.filter((item): item is PromiseRejectedResult => item.status === "rejected");
+      if (errors.length > 0) throw new AggregateError(errors.map((item) => item.reason), "Desktop cleanup failed.");
+      await startAttempt;
     } catch (error) {
       writeDesktopLog(`Desktop sidecar shutdown failed: ${errorMessage(error)}`);
       dialog.showErrorBox(
@@ -575,15 +694,18 @@ function terminalExit(): Promise<void> {
       return;
     }
     emitSmokeEvent({ type: "desktop-smoke.sidecar-stopped" });
-    tray?.destroy();
-    tray = undefined;
-    mainWindow?.destroy();
-    loadingWindow?.destroy();
-    allowQuit = true;
-    app.quit();
+    finishHostExit();
   })();
   exitAttempt = current;
   return current;
+}
+
+function finishHostExit(): void {
+  if (smokeTimer) clearInterval(smokeTimer);
+  tray?.destroy(); tray = undefined;
+  mainWindow?.destroy(); loadingWindow?.destroy();
+  allowQuit = true;
+  app.quit();
 }
 
 async function installSmokeLifecycle(
@@ -611,6 +733,20 @@ async function installSmokeLifecycle(
         noSandbox: app.commandLine.hasSwitch("no-sandbox"),
         webPreferences,
       }));
+    }
+    if (process.platform === "win32" || process.platform === "linux") {
+      const assertMenuRemoved = () => {
+        if (Menu.getApplicationMenu() !== null || window.isMenuBarVisible()
+          || (loadingWindow && !loadingWindow.isDestroyed() && loadingWindow.isMenuBarVisible())) {
+          throw new Error("Desktop smoke found a native window menu before or after Alt.");
+        }
+      };
+      assertMenuRemoved();
+      for (const type of ["keyDown", "keyUp"] as const) {
+        window.webContents.sendInputEvent({ type, keyCode: "Alt" });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assertMenuRemoved();
+      }
     }
     if (!smokeRestartContext) {
       emitSmokeEvent({ type: "desktop-smoke.window-loaded" });

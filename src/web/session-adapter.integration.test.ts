@@ -66,6 +66,7 @@ async function harness(options: {
   schedule?: (run: () => void) => void;
   dispatch?: boolean;
   retry?: { enabled: boolean; maxRetries?: number; baseDelayMs?: number };
+  contextFiles?: boolean;
 } = {}) {
   const pi = await importPi();
   const ai = await import("@earendil-works/pi-ai");
@@ -128,7 +129,7 @@ async function harness(options: {
     createResourceLoader: (input: Parameters<PiRuntimeDependencies["createResourceLoader"]>[0]) =>
       new pi.DefaultResourceLoader({
         ...input as ConstructorParameters<typeof pi.DefaultResourceLoader>[0],
-        noExtensions: !options.filesystemExtensions, noContextFiles: true, noPromptTemplates: true, noThemes: true,
+        noExtensions: !options.filesystemExtensions, noContextFiles: !options.contextFiles, noPromptTemplates: true, noThemes: true,
       }),
     createAgentSession: async (input: Record<string, unknown>) => {
       const created = await pi.createAgentSession(input as Parameters<typeof pi.createAgentSession>[0]);
@@ -233,6 +234,166 @@ async function harness(options: {
 }
 
 describe("Pinned Pi lifecycle ownership", () => {
+  it("uses the EasyResearch identity in native root and specialist prompts, idle wakes and role refreshes", async () => {
+    const h = await harness();
+    const prompts: string[] = [];
+    h.provider.setResponses(Array.from({ length: 5 }, () => (context: Context) => {
+      prompts.push(getCurrentSystemPrompt(context.messages));
+      return h.ai.fauxAssistantMessage("complete");
+    }));
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    let stage: Awaited<ReturnType<typeof h.launch>> | undefined;
+    try {
+      await adapter.start();
+      const session = h.sessions[0]!;
+      expect.soft(session.systemPrompt).toMatch(/^You are EasyResearch\b/);
+      await adapter.prompt("Initial research task");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      h.publishConfiguration();
+      await vi.waitFor(() => expect(adapter.getRuntimeConfigurationGeneration()).toBe(2));
+      await session.sendCustomMessage({ customType: "fixture-resume", content: "Continue the accepted research task", display: false }, { deliverAs: "steer", triggerTurn: true });
+      stage = await h.launch();
+      await stage.handle.completion;
+      expect(prompts).toHaveLength(3);
+      for (const prompt of prompts) {
+        expect.soft(prompt).toMatch(/^You are EasyResearch\b/);
+        expect(prompt).not.toContain("You are a coding assistant running inside pi");
+        expect(prompt).not.toContain("Pi documentation (read only");
+        expect(prompt.match(/KaTeX-compatible LaTeX/g)).toHaveLength(1);
+      }
+      expect(prompts[0]).toContain("research-assistant test role");
+      expect(prompts[1]).toContain("research-assistant test role updated");
+      expect(prompts[2]).toContain("search test role updated");
+      for (const prompt of prompts.slice(0, 2)) expect(prompt.split("research-assistant test role")).toHaveLength(2);
+      expect(prompts[2]!.split("search test role")).toHaveLength(2);
+      expect(prompts[2]).not.toContain("research-assistant test role");
+      const view = await adapter.getContext!();
+      const system = view.items.find((item) => item.type === "system")!;
+      const current = await adapter.getContextItem!(view.revision, system.id, "current", 0);
+      expect(current.text).toContain("You are EasyResearch");
+      expect(current.text).toContain("research-assistant test role updated");
+    } finally { await stage?.handle.dispose(); await adapter.stop(); }
+  });
+
+  it.each(["", "   "])("uses the product default when an explicit system file is empty: %j", async (custom) => {
+    writeFileSync(join(root, "agent", "SYSTEM.md"), custom);
+    const h = await harness();
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    try {
+      await adapter.start();
+      expect(h.sessions[0]!.systemPrompt).toMatch(/^You are EasyResearch\b/);
+    } finally { await adapter.stop(); }
+  });
+
+  it("updates a reopened native coding-era prompt without rewriting its history", async () => {
+    const h = await harness();
+    const pi = await importPi();
+    const cwd = join(root, "project");
+    const manager = pi.SessionManager.create(cwd, join(root, "sessions"));
+    manager.appendMessage({ role: "system", content: "", sections: {
+      preamble: "You are a coding assistant running inside pi, a coding agent harness.",
+      addendum: "<addendum>LEGACY_ROLE_SENTINEL</addendum>",
+      docs: "<docs>LEGACY_DOCS_SENTINEL</docs>",
+    }, timestamp: 1 });
+    manager.appendMessage({ role: "user", content: "An earlier research task", timestamp: 2 });
+    manager.appendMessage(h.ai.fauxAssistantMessage("Earlier verified work"));
+    const sessionPath = manager.getSessionFile()!;
+    const original = readFileSync(sessionPath);
+    let prompt = "";
+    h.provider.setResponses([(context) => { prompt = getCurrentSystemPrompt(context.messages); return h.ai.fauxAssistantMessage("Current result"); }]);
+    const adapter = h.factory.create({ cwd, sessionPath });
+    try {
+      await adapter.start();
+      expect(h.sessions[0]!.sessionId).toBe(manager.getSessionId());
+      await adapter.prompt("Continue with current instructions");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(prompt).toMatch(/^You are EasyResearch\b/);
+      expect(prompt).toContain("research-assistant test role");
+      expect(prompt).not.toContain("LEGACY_ROLE_SENTINEL");
+      expect(prompt).not.toContain("LEGACY_DOCS_SENTINEL");
+      expect(readFileSync(sessionPath).subarray(0, original.length)).toEqual(original);
+    } finally { await adapter.stop(); }
+  });
+
+  it("preserves native custom-base precedence, append resources, context, Skills and tool declarations", async () => {
+    const project = join(root, "project");
+    const resources = join(project, ".easyresearch");
+    const skill = join(resources, "skills", "prompt-evidence");
+    mkdirSync(skill, { recursive: true });
+    writeFileSync(join(root, "agent", "SYSTEM.md"), "GLOBAL_BASE_SENTINEL");
+    writeFileSync(join(resources, "SYSTEM.md"), "PROJECT_BASE_SENTINEL");
+    writeFileSync(join(resources, "APPEND_SYSTEM.md"), "PROJECT_APPEND_SENTINEL");
+    writeFileSync(join(project, "AGENTS.md"), "PROJECT_CONTEXT_SENTINEL");
+    const descriptor = join(skill, "SKILL.md");
+    writeFileSync(descriptor, "---\nname: prompt-evidence\ndescription: PROMPT_SKILL_SENTINEL\n---\nUse the supplied evidence.\n");
+    const h = await harness({ contextFiles: true });
+    for (const row of h.rows) { row.tools = ["read"]; row.effectiveTools = ["read"]; row.effectiveSkillPaths = [descriptor]; }
+    const prompts: string[] = [];
+    const toolNames: string[][] = [];
+    h.provider.setResponses(Array.from({ length: 2 }, () => (context: Context) => {
+      prompts.push(getCurrentSystemPrompt(context.messages));
+      toolNames.push(h.ai.getCurrentTools(context.messages).map((tool) => tool.name));
+      return h.ai.fauxAssistantMessage("complete");
+    }));
+    const adapter = h.factory.create({ cwd: project });
+    let stage: Awaited<ReturnType<typeof h.launch>> | undefined;
+    try {
+      await adapter.start();
+      await adapter.prompt("Research with the configured resources");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      stage = await h.launch();
+      await stage.handle.completion;
+      expect(prompts).toHaveLength(2);
+      expect(toolNames).toEqual([["read"], ["read"]]);
+      for (const prompt of prompts) {
+        expect(prompt).toMatch(/^PROJECT_BASE_SENTINEL/);
+        expect(prompt).not.toContain("GLOBAL_BASE_SENTINEL");
+        for (const marker of ["PROJECT_APPEND_SENTINEL", "PROJECT_CONTEXT_SENTINEL", "PROMPT_SKILL_SENTINEL"]) expect(prompt).toContain(marker);
+        expect(prompt.match(/KaTeX-compatible LaTeX/g)).toHaveLength(1);
+      }
+    } finally { await stage?.handle.dispose(); await adapter.stop(); }
+  });
+
+  it.each([false, true])("delivers the shipped Web-tool policies to root and stage models with custom base=%s", async (customBase) => {
+    if (customBase) writeFileSync(join(root, "agent", "SYSTEM.md"), "USER_RESEARCH_BASE");
+    await importPi();
+    const { createWebSearchTool } = await import("../extensions/web-search");
+    const { createWebFetchTool } = await import("../extensions/webfetch");
+    const search = createWebSearchTool({ search: async () => { throw new Error("No network execution expected"); } });
+    const webfetch = createWebFetchTool();
+    const h = await harness({ extensions: [(api) => { api.registerTool(search); api.registerTool(webfetch); }] });
+    for (const row of h.rows) { row.tools = ["read", "edit", "write", "web-search", "webfetch"]; row.effectiveTools = [...row.tools]; }
+    const requests: Context[] = [];
+    h.provider.setResponses(Array.from({ length: 2 }, () => (context: Context) => { requests.push(context); return h.ai.fauxAssistantMessage("complete"); }));
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    let stage: Awaited<ReturnType<typeof h.launch>> | undefined;
+    try {
+      await adapter.start();
+      await adapter.prompt("Use the currently available research tools");
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      stage = await h.launch();
+      await stage.handle.completion;
+      expect(requests).toHaveLength(2);
+      for (const request of requests) {
+        const declarations = h.ai.getCurrentTools(request.messages);
+        const searchGuidance = declarations.find(tool => tool.name === "web-search")!.description;
+        const fetchGuidance = declarations.find(tool => tool.name === "webfetch")!.description;
+        expect.soft(searchGuidance).toMatch(/DuckDuckGo.*first/is);
+        expect.soft(searchGuidance).toMatch(/Bing.*Brave.*Startpage/is);
+        expect.soft(searchGuidance).toMatch(/Baidu.*Sogou.*fallback/is);
+        expect.soft(searchGuidance).toMatch(/channel.*not.*fact/is);
+        expect.soft(searchGuidance).toMatch(/webfetch/i);
+        expect.soft(searchGuidance).toMatch(/empty.*inconclusive/is);
+        expect.soft(searchGuidance).toMatch(/Google.*Playwright.*final fallback/is);
+        expect.soft(searchGuidance).toContain("Retry-After");
+        expect.soft(searchGuidance).toMatch(/(?:never|do not).*transport.*proxy/is);
+        expect.soft(fetchGuidance).toMatch(/untrusted data.*not.*instructions/is);
+        const prompt = getCurrentSystemPrompt(request.messages);
+        expect.soft(prompt).toMatch(/read.*inspect.*edit.*targeted.*write.*new files.*complete rewrites/is);
+      }
+    } finally { await stage?.handle.dispose(); await adapter.stop(); }
+  });
+
   it("resumes pending native user steers exactly once after root interrupt without leaking hidden wake controls", async () => {
     const toolEntered = deferred();
     const releaseTool = deferred();
@@ -1636,19 +1797,19 @@ describe("Pinned Pi lifecycle ownership", () => {
     if (!stage) { await adapter.start(); await adapter.prompt("seed"); }
     await seedEnding.promise;
     const { coordinator, supervisor, session } = stage ?? h.managed();
-    h.recordNotificationBatch(coordinator, {
+    const batches = [h.recordNotificationBatch(coordinator, {
       batchId: "A", ownerSessionId: session.sessionId, launchIds: ["launch-A"], content: "HANDOFF_A", triggerTurn: true,
       outcomes: [{ launchId: "launch-A", agentId: "search_0", status: "complete", text: "frozen A" }],
-    });
+    })];
     releaseSeed.resolve();
     await session.waitForIdle();
     const first = supervisor.flushNotifications();
     await ackEntered.promise;
     for (const batchId of ["B", "C"]) {
-      h.recordNotificationBatch(coordinator, {
+      batches.push(h.recordNotificationBatch(coordinator, {
         batchId, ownerSessionId: session.sessionId, launchIds: [`launch-${batchId}`], content: `HANDOFF_${batchId}`, triggerTurn: true,
         outcomes: [{ launchId: `launch-${batchId}`, agentId: "search_0", status: "complete", text: `frozen ${batchId}` }],
-      });
+      }));
     }
     const later = supervisor.flushNotifications();
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -1668,7 +1829,11 @@ describe("Pinned Pi lifecycle ownership", () => {
       expect(delivered).toEqual(history);
       expect(history.map((entry) => entry.batchId)).toEqual(["A", "B", "C"]);
       expect(new Set(history.map((entry) => entry.entryId)).size).toBe(3);
-      expect(requests[0]).not.toMatch(/frozen|outcomes|launch-A/);
+      expect(requests[0]).not.toMatch(/"outcomes"\s*:/);
+      for (const batch of batches) for (const outcome of batch.outcomes ?? []) {
+        expect(requests[0]).not.toContain(outcome.text);
+        expect(requests[0]).not.toContain(outcome.launchId);
+      }
     } finally {
       if (stage) { await stage.handle.completion; await stage.handle.dispose(); }
       else await adapter.stop();

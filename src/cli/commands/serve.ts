@@ -29,8 +29,14 @@ import { startCliDaemonSuccessor } from "../daemon-spawn";
 import { localHttpOrigin } from "../local-http";
 import type { RuntimeRestartReservation } from "../../web/runtime-restart";
 import type { Server } from "../../web/server";
+import { consumeNpmProvenance, NPM_PROVENANCE_ENV, type NpmProvenance } from "../../runtime/npm-update-provenance";
+import type { NpmUpdateCandidate } from "../../runtime/npm-update";
+import { prepareNpmUpdateBoot, type NpmUpdateServeRequest } from "../npm-update-entry";
+import { discardNpmUpdateCandidate, reclaimNpmUpdateArtifacts, registerNpmArtifactProcess } from "../npm-update-artifact";
 
 export interface ServeOptions {
+  npmProvenance?: NpmProvenance;
+  updateBoot?: NpmUpdateServeRequest;
   owner?: ServerOwner;
   token?: string;
   runtimeId?: string;
@@ -50,6 +56,8 @@ export async function runServe(
 ): Promise<number> {
   const environment = options.environment ?? process.env;
   restoreBunSandboxEnvironment(environment, options.environmentRestore);
+  const receivedProvenance = consumeNpmProvenance(environment);
+  const npmProvenance = options.npmProvenance ?? receivedProvenance;
   const token = options.token ?? environment[DAEMON_TOKEN_ENV] ?? randomUUID();
   const runtimeId = options.runtimeId ?? environment[DAEMON_RUNTIME_ID_ENV] ?? `direct:${process.pid}`;
   const owner = options.owner ?? daemonOwner(environment[DAEMON_OWNER_ENV]);
@@ -67,7 +75,14 @@ export async function runServe(
   let restartTransition: RuntimeLease | undefined;
   let restartTransitionReleaseAttempted = false;
   let restartReservationActive = false;
-  let shutdownMode: "stop" | "restart" = "stop";
+  let shutdownMode: "stop" | "restart" | "update" = "stop";
+  let updateTransition: RuntimeLease | undefined;
+  let updateCandidate: NpmUpdateCandidate | undefined;
+  let updateActivated = false;
+  let retainUpdateCustody = false;
+  let executableUse: ReturnType<typeof registerNpmArtifactProcess>;
+  let reclaimTimer: ReturnType<typeof setTimeout> | undefined;
+  let reclaimTask: Promise<void> | undefined;
   let terminalShutdownRequested = false;
   const successorReadiness = new AbortController();
   let resolveShutdown: (() => void) | undefined;
@@ -78,6 +93,7 @@ export async function runServe(
   const requestTerminalShutdown = () => {
     terminalShutdownRequested = true;
     shutdownMode = "stop";
+    server?.beginShutdown?.();
     if (!successorReadiness.signal.aborted) {
       successorReadiness.abort(new Error("EasyResearch terminal shutdown cancelled successor readiness."));
     }
@@ -103,7 +119,7 @@ export async function runServe(
   };
 
   const reserveRestart = async (): Promise<RuntimeRestartReservation> => {
-    if (terminalShutdownRequested || restartReservationActive || restartTransition) {
+    if (terminalShutdownRequested || restartReservationActive || restartTransition || updateTransition) {
       throw new Error("EasyResearch restart transition is unavailable.");
     }
     restartReservationActive = true;
@@ -149,6 +165,22 @@ export async function runServe(
     };
   };
   const restartWasCommitted = (): boolean => shutdownMode === "restart";
+  const updateWasCommitted = (): boolean => shutdownMode === "update";
+  const reserveUpdate = async (): Promise<RuntimeLease> => {
+    if (owner !== "cli" || terminalShutdownRequested || restartReservationActive || restartTransition || updateTransition) throw new Error("Update transition is unavailable.");
+    restartReservationActive = true;
+    try {
+      const lease = await acquireTransitionLease(agentDir, "cli", { timeoutMs: 0 });
+      if (terminalShutdownRequested) { lease.release(); throw new Error("Update was cancelled by terminal shutdown."); }
+      const handle: RuntimeLease = {
+        get path() { return lease.path; }, get token() { return lease.token; }, get held() { return lease.held; },
+        reserveHandoff: (childToken) => lease.reserveHandoff(childToken),
+        release: () => { const released = lease.release(); if (released && updateTransition === handle) updateTransition = undefined; return released; },
+      };
+      updateTransition = handle;
+      return handle;
+    } finally { restartReservationActive = false; }
+  };
 
   try {
     if (owner === "desktop" && !options.rendererToken) {
@@ -161,6 +193,8 @@ export async function runServe(
     );
     applyNetworkPolicyEnvironment(networkPolicy, startupBaseline, environment);
     serverLease = await acquireServerLease(agentDir, owner, token);
+    executableUse = registerNpmArtifactProcess(process.execPath);
+    if (options.updateBoot) await prepareNpmUpdateBoot(options.updateBoot, agentDir);
     await bootstrapBundledResources();
     const { startServer } = await import("../../web/server");
     server = await startServer({
@@ -169,6 +203,20 @@ export async function runServe(
       ownsExclusiveServerLease: serverLease.held,
       bootId,
       networkPolicy,
+      npmUpdate: {
+        provenance: npmProvenance,
+        reserve: reserveUpdate,
+        activate(candidate, lease) {
+          if (owner !== "cli" || terminalShutdownRequested || lease !== updateTransition || !lease.held) throw new Error("Update transition ownership changed.");
+          // This is terminal shutdown of old-version work, never a prepared background handover.
+          server?.beginShutdown?.();
+          restartTransition = lease;
+          updateTransition = undefined;
+          updateCandidate = candidate;
+          shutdownMode = "update";
+          wakeShutdown();
+        },
+      },
       daemonControl: {
         token,
         runtimeId,
@@ -194,6 +242,11 @@ export async function runServe(
     unregisterShutdownTrigger = options.registerShutdownTrigger?.(requestTerminalShutdown);
     const logPath = serverLogFile(agentDir);
     options.onReady?.({ port: server.port, logPath, bootId });
+    // One bounded boot-time retry lets the predecessor actually exit (and
+    // release Windows executable locks). Later explicit checks/startups retry
+    // any still-owned receipts; this is not a permanent polling service.
+    reclaimTimer = setTimeout(() => { reclaimTask = reclaimNpmUpdateArtifacts(agentDir).catch(() => {}); }, 1500);
+    reclaimTimer.unref?.();
     console.log(`EasyResearch server listening on ${localHttpOrigin(host, server.port)}`);
     console.log(`Logs: ${logPath}`);
     await shutdownRequested;
@@ -205,6 +258,7 @@ export async function runServe(
       await revokePreparedBackground();
     }
     serverStopped = true;
+    if (!backgroundHandoffPrepared) executableUse?.retire();
     if (!removeServerPid(agentDir, token, serverLease)) {
       throw new Error("EasyResearch server stopped but could not release its ownership record.");
     }
@@ -219,28 +273,30 @@ export async function runServe(
       }
       options.onExpectedRestart?.(bootId, restartTransition);
     }
-    if (restartWasCommitted() && owner === "cli" && !terminalShutdownRequested) {
+    if ((restartWasCommitted() || updateWasCommitted()) && owner === "cli" && !terminalShutdownRequested) {
       if (!restartTransition) {
         throw new Error("EasyResearch restart transition ownership was not committed.");
       }
       await startCliDaemonSuccessor({
         agentDir,
-        daemonExecutable: process.execPath,
+        daemonExecutable: updateCandidate?.executable ?? process.execPath,
         sourceExecutable: process.execPath,
         sourceEntry: fileURLToPath(new URL("../index.ts", import.meta.url)),
-        embedded: isEmbeddedBuild(),
+        embedded: updateCandidate !== undefined || isEmbeddedBuild(),
         platform: process.platform,
         host,
         port: server.port,
-        runtimeId,
+        runtimeId: updateCandidate?.runtimeId ?? runtimeId,
+        ...(updateCandidate ? { updateCandidate: { version: updateCandidate.version, sha256: updateCandidate.sha256 }, expectedVersion: updateCandidate.version, readyTimeoutMs: 10 * 60_000 } : {}),
         previousToken: token,
         oldBootId: bootId,
         oldPid: process.pid,
-        currentEnvironment: environment,
+        currentEnvironment: { ...environment, ...(npmProvenance ? { [NPM_PROVENANCE_ENV]: JSON.stringify({ ...npmProvenance, version: updateCandidate?.version ?? npmProvenance.version }) } : {}) },
         startupBaseline,
         signal: successorReadiness.signal,
         transitionLease: restartTransition,
       });
+      updateActivated = !successorReadiness.signal.aborted;
     }
     exitCode = 0;
   } catch (error) {
@@ -251,6 +307,7 @@ export async function runServe(
       if (server && !serverStopped) {
         await server.stop();
         serverStopped = true;
+        executableUse?.retire();
       }
     } catch (cleanupError) {
       createLogger("web-server").error(
@@ -276,6 +333,8 @@ export async function runServe(
       }
     }
   } finally {
+    clearTimeout(reclaimTimer);
+    await reclaimTask;
     if (terminalShutdownRequested && backgroundHandoffPrepared && server) {
       try { await revokePreparedBackground(); }
       catch (error) {
@@ -286,7 +345,17 @@ export async function runServe(
     unregisterShutdownTrigger?.();
     process.removeListener("SIGTERM", signalShutdown);
     process.removeListener("SIGINT", signalShutdown);
-    if (restartTransition?.held && !restartTransitionReleaseAttempted) {
+    if (!server) { try { executableUse?.retire(); } catch { exitCode = 1; } }
+    if (serverStopped || !server) executableUse?.close();
+    if (updateCandidate && !updateActivated && restartTransition?.held) {
+      try { await discardNpmUpdateCandidate(updateCandidate); }
+      catch {
+        retainUpdateCustody = true;
+        exitCode = 1;
+        createLogger("web-server").error("Update executable cleanup is pending; transition custody is retained.");
+      }
+    }
+    if (restartTransition?.held && !restartTransitionReleaseAttempted && !retainUpdateCustody) {
       restartTransitionReleaseAttempted = true;
       try {
         if (!restartTransition.release()) {

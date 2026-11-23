@@ -110,6 +110,47 @@ function fakeRuntimeLease(
 }
 
 describe("desktop sidecar client", () => {
+  it("reads real update confirmation counts through the authenticated control channel", async () => {
+    const child = fakeChild(); const calls: RequestInit[] = [];
+    const starting = startDesktopSidecar({ sidecarPath: "/app/sidecar/easyresearch", baseEnv: {},
+      spawn: (() => { queueMicrotask(() => child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"new-boot"}\n')); return child; }) as never,
+      fetch: async (url, init) => {
+        if (String(url).endsWith(DAEMON_CONTROL_PATH)) { calls.push(init!); return Response.json({ runtimeId: "desktop:1", busy: { code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: true } }); }
+        return Response.json({});
+      }, startupTimeoutMs: 1000,
+    });
+    const handle = await starting;
+    expect(await handle.updateActivity(new AbortController().signal)).toEqual({ code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: true });
+    expect(new Headers(calls[0]!.headers).get(DAEMON_TOKEN_HEADER)).toBeTruthy();
+    expect(new Headers(calls[0]!.headers).get(DESKTOP_ACCESS_HEADER)).toBeNull();
+    child.emitExit();
+  });
+  it("retains update transition custody beyond authenticated sidecar health for host verification", async () => {
+    const child = fakeChild(); const lease = fakeRuntimeLease();
+    const started = startDesktopSidecar({
+      sidecarPath: "/app/sidecar/easyresearch", baseEnv: {}, agentDir: "/tmp/update-agent",
+      transitionLease: lease, retainTransitionUntilHostReady: true,
+      spawn: (() => { queueMicrotask(() => child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"new-boot"}\n')); return child; }) as never,
+      fetch: async () => Response.json({}), startupTimeoutMs: 1000,
+    });
+    await started;
+    expect(lease.held).toBe(true); expect(lease.release).not.toHaveBeenCalled();
+    const handoff = lease.reserveHandoff("custodian-token"); handoff.commit(9999); handoff.relinquish();
+    expect(lease.held).toBe(false);
+    child.emitExit();
+  });
+
+  it.each([true, false])("marks only an acknowledged error-free terminal cleanup as clean: %s", async (clean) => {
+    const child = fakeChild();
+    const started = startDesktopSidecar({ sidecarPath: "/app/sidecar/easyresearch", baseEnv: {},
+      spawn: (() => { queueMicrotask(() => child.stdout.write('@easyresearch-desktop {"type":"desktop.ready","origin":"http://127.0.0.1:43123","owner":"desktop","pid":4242,"logPath":"/tmp/log","bootId":"new-boot"}\n')); return child; }) as never,
+      fetch: async () => Response.json({}), startupTimeoutMs: 1000,
+    });
+    const handle = await started;
+    if (!clean) child.stdout.write('@easyresearch-desktop {"type":"desktop.error","phase":"shutdown","code":"FAILED","message":"Owned cleanup failed.","logPath":"/tmp/log"}\n');
+    child.stdout.write('@easyresearch-desktop {"type":"desktop.stopped"}\n'); child.emitExit();
+    expect((await handle.exited).cleanShutdown === true).toBe(clean);
+  });
   it("holds replacement transition custody from before spawn through authenticated health", async () => {
     const child = fakeChild();
     const order: string[] = [];

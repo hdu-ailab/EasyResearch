@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -32,6 +34,7 @@ import {
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const ELECTRON_VERSION = "42.3.3";
+const WINDOWS_ELECTRON_LANGUAGES = ["en-US", "en-GB", "zh-CN", "zh-TW"] as const;
 export const DESKTOP_ICON_DIR = join(ROOT, "src", "desktop", "assets");
 export const DESKTOP_ICON_RESOURCE = {
   from: DESKTOP_ICON_DIR,
@@ -217,6 +220,28 @@ export function stageDesktopNotices(
   assertThirdPartyNoticesFile(destination, expectedContents);
 }
 
+export function assertWindowsElectronLocales(appDirectory: string): void {
+  const directory = join(appDirectory, "locales");
+  if (!lstatSync(directory).isDirectory()) {
+    throw new Error(`Windows Electron locales must be a physical directory: ${directory}`);
+  }
+  const expected = WINDOWS_ELECTRON_LANGUAGES.map(language => `${language}.pak`);
+  const actual = readdirSync(directory);
+  const missing = expected.filter(name => !actual.includes(name));
+  const unexpected = actual.filter(name => !expected.includes(name));
+  if (missing.length > 0 || unexpected.length > 0) {
+    throw new Error(
+      `Windows Electron locale packs mismatch (missing: ${missing.join(", ") || "none"}; unexpected: ${unexpected.join(", ") || "none"}).`,
+    );
+  }
+  for (const name of expected) {
+    const info = lstatSync(join(directory, name));
+    if (!info.isFile() || info.size === 0) {
+      throw new Error(`Windows Electron locale pack ${name} must be a nonempty regular file.`);
+    }
+  }
+}
+
 export function electronBuilderConfig(
   targetName: DesktopTargetName,
   version: string,
@@ -242,6 +267,7 @@ export function electronBuilderConfig(
       ...common,
       win: {
         icon: join(DESKTOP_ICON_DIR, "icon.ico"),
+        electronLanguages: [...WINDOWS_ELECTRON_LANGUAGES],
         signExecutable: false,
         target: [{ target: "nsis", arch: ["x64"] }],
         artifactName: `EasyResearch-${version}-windows-x64.\${ext}`,
@@ -255,6 +281,7 @@ export function electronBuilderConfig(
         allowElevation: false,
         differentialPackage: false,
       },
+      afterPack: async ({ appOutDir }) => assertWindowsElectronLocales(appOutDir),
     };
   }
   if (targetName === "linux-arm64") {

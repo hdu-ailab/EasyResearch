@@ -123,6 +123,52 @@ function runTestCli(argv: string[], deps: CliDependencies, options: Partial<CliO
 }
 
 describe("runCli argument parsing", () => {
+  it("waits for an admitted successor and stops it under transition custody before successful Exit", async () => {
+    let release!: () => void;
+    const transition = new Promise<void>((resolve) => { release = resolve; });
+    let owner: "none" | "current" = "none";
+    let settled = false;
+    const stopped: string[] = [];
+    const deps = makeDeps({
+      inspectBackground: async () => owner,
+      stopBackground: async () => { stopped.push(owner); const active = owner === "current"; owner = "none"; return active; },
+      withRuntimeTransition: async (_root, operation) => { await transition; owner = "current"; return operation(testTransitionLease()); },
+    });
+    const exiting = runTestCli(["exit"], deps).then((code) => { settled = true; return code; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    try {
+      expect(settled).toBe(false);
+      release();
+      expect(await exiting).toBe(0);
+      expect(owner).toBe("none");
+      expect(stopped.at(-1)).toBe("current");
+    } finally { release(); await exiting; }
+  });
+  it("does not report successful Exit when the in-progress transition cannot be reconciled", async () => {
+    const deps = makeDeps({ withRuntimeTransition: async () => { throw new Error("transition is still active"); } });
+    expect(await runTestCli(["exit"], deps)).toBe(1);
+  });
+  it("rechecks Desktop ownership after waiting for a transition", async () => {
+    let owner: "none" | "desktop" = "none";
+    const stopped: string[] = [];
+    const deps = makeDeps({
+      inspectBackground: async () => owner,
+      stopBackground: async () => { stopped.push(owner); return false; },
+      withRuntimeTransition: async (_root, operation) => { owner = "desktop"; return operation(testTransitionLease()); },
+    });
+    expect(await runTestCli(["exit"], deps)).toBe(1);
+    expect(stopped).not.toContain("desktop");
+  });
+  it("allows authenticated Exit to interrupt an update before acquiring the transition lease", async () => {
+    const order: string[] = [];
+    const deps = makeDeps({
+      inspectBackground: async () => "current",
+      stopBackground: async () => { order.push("stop"); return true; },
+      withRuntimeTransition: async (_root, operation) => { order.push("transition"); return operation(testTransitionLease()); },
+    });
+    expect(await runTestCli(["exit"], deps)).toBe(0);
+    expect(order[0]).toBe("stop");
+  });
   it("restores an empty Bun environment before resolving the agent directory and loads it only once", async () => {
     const environment: Record<string, string | undefined> = {};
     const readEnviron = vi.fn(() => [

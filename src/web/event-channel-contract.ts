@@ -17,7 +17,7 @@ export function isEventSubscriptionPath(path: unknown): path is string {
   return (
     typeof path === "string" &&
     path.length <= 1024 &&
-    (path === "/api/config/events" ||
+    (path === "/api/config/events" || path === "/api/update/events" ||
       /^\/api\/sessions\/[^/?#]+\/events$/.test(path) ||
       /^\/api\/auth\/flows\/[^/?#]+\/events$/.test(path))
   );

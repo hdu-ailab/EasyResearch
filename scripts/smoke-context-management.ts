@@ -55,6 +55,13 @@ export async function runContextManagementSmoke(options: {
   const created = await json<{ id: string }>("/api/sessions", { cwd: project });
   const path = `/api/sessions/${created.id}`;
   const context = () => json<ContextSnapshotDto>(`${path}/context`);
+  const verifySystem = async (snapshot: ContextSnapshotDto) => {
+    const system = snapshot.items.find(item => item.type === "system");
+    assert(system, "Current native system prompt is missing");
+    const page = await json<ContextItemTextDto>(`${path}/context/item?${new URLSearchParams({ revision: snapshot.revision, itemId: system.id, view: "current", offset: "0" })}`);
+    assert(page.text.includes("You are EasyResearch"), "Context inspection lost the current research identity");
+    assert(!page.text.includes("You are a coding assistant running inside pi"), "Context inspection retained the coding-only default");
+  };
   const idle = async (minimumRequests: number) => {
     for (;;) {
       assert(Date.now() < deadline, "Context fixture did not settle");
@@ -79,6 +86,7 @@ export async function runContextManagementSmoke(options: {
     assert(file);
     const original = readFileSync(file);
     const initial = await context();
+    await verifySystem(initial);
     assert(initial.items.some(item => item.type === "system"));
     assert.equal(initial.segments.find(segment => segment.type === "assistant")?.preview, `${fixture.marker}:answer`, "Overview must preview the last assistant reply, not its first tool-calling message");
     assert.equal(initial.items.reduce((sum, item) => sum + item.tokens, 0), initial.totalTokens);
@@ -147,6 +155,7 @@ export async function runContextManagementSmoke(options: {
     assert(summaryRequest.includes("已折叠的工具输出"), "Native compaction did not consume edited context");
     assert(!summaryRequest.includes(fixture.foldMarker) && !summaryRequest.includes(fixture.deleteMarker));
     const compacted = await context();
+    await verifySystem(compacted);
     assert(compacted.items.some(item => item.type === "summary" && item.preview.includes(`${fixture.marker}:summary`)));
     assert(!JSON.stringify(compacted).includes(fixture.foldMarker) && !JSON.stringify(compacted).includes(fixture.deleteMarker));
     assert.deepEqual(readFileSync(file).subarray(0, original.length), original);

@@ -34,6 +34,15 @@ afterEach(() => {
 });
 
 describe("runtime leases", () => {
+  it("retains unresolved descendant custody even after the successor root PID is dead", async () => {
+    const lease = await acquireTransitionLease(root, "cli");
+    const handoff = lease.reserveHandoff("child-token");
+    handoff.commit(424242);
+    handoff.relinquish({ unresolved: true });
+    expect(lease.held).toBe(false);
+    await expect(acquireTransitionLease(root, "cli", { isAlive: () => false, timeoutMs: 0 })).rejects.toThrow(/cannot verify/i);
+    expect(existsSync(transitionLeasePath(root))).toBe(true);
+  });
   it("atomically publishes a non-empty lease directory and releases only its token record", async () => {
     const first = await acquireServerLease(root, "cli", "token-a", {
       isAlive: () => true,

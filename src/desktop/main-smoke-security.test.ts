@@ -8,6 +8,7 @@ import * as mainSupport from "./main-support";
 import * as smokeHost from "./smoke-host";
 import { readDesktopPreferenceBlob, writeDesktopPreferenceBlob } from "./preferences-store";
 import { STORAGE_KEY } from "../webui/src/preferences";
+import { createDesktopUpdateController } from "./update";
 
 it.each([
   { scenario: "verified renderer", noSandbox: false, sandbox: true, noNewPrivs: 1, accepted: true },
@@ -34,7 +35,7 @@ it.each([
     sessionTabs: [descriptor],
   });
   writeDesktopPreferenceBlob(join(root, "user-data"), initialPreferences);
-  const ipcMain = new EventEmitter();
+  const ipcMain = Object.assign(new EventEmitter(), { handle: vi.fn() });
   const restartPolling = vi.spyOn(globalThis, "setInterval");
   const clearPolling = vi.spyOn(globalThis, "clearInterval");
   let resolveUi!: (value: [boolean, boolean]) => void;
@@ -56,6 +57,8 @@ it.each([
     },
     forceTerminate() { throw new Error("Unexpected process signal"); },
     takeRestartTransition() { throw new Error("Unexpected restart transition"); },
+    async updateActivity() { return { code: "RUNTIME_BUSY", activeSessions: 0, authFlowActive: false }; },
+    async prepareUpdate() { return { ok: true }; },
   };
   const app = Object.assign(new EventEmitter(), {
     requestSingleInstanceLock: () => true,
@@ -73,6 +76,7 @@ it.each([
     webContents: EventEmitter & {
       session: { webRequest: { onBeforeSendHeaders(): void }; setPermissionRequestHandler(): void; setPermissionCheckHandler(): void };
       setWindowOpenHandler(): void;
+      sendInputEvent(): void;
       isDestroyed(): boolean;
       getURL(): string;
       getOSProcessId(): number;
@@ -110,6 +114,7 @@ it.each([
       this.webContents = Object.assign(new EventEmitter(), {
         session: { webRequest: { onBeforeSendHeaders() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {} },
         setWindowOpenHandler() {},
+        sendInputEvent() {},
         isDestroyed: () => this.destroyed,
         getURL: () => this.url,
         getOSProcessId: () => rendererPid,
@@ -144,6 +149,7 @@ it.each([
     focus() {}
     destroy() { this.destroyed = true; }
     isDestroyed() { return this.destroyed; }
+    isMenuBarVisible() { return false; }
   }
   class Tray extends EventEmitter {
     setToolTip() {}
@@ -169,12 +175,19 @@ it.each([
   });
   vi.doMock("electron", () => ({
     app, BrowserWindow: Window, Tray, ipcMain,
-    Menu: { buildFromTemplate: (items: unknown) => items },
+    Menu: {
+      buildFromTemplate: (items: unknown) => items,
+      setApplicationMenu() {},
+      getApplicationMenu: () => null,
+    },
     nativeImage: { createFromPath: () => ({ isEmpty: () => false }) },
+    net: { fetch: vi.fn() },
     dialog: { showMessageBox: async () => ({ response: 1 }), showErrorBox() {} },
     shell: { openExternal: async () => {}, showItemInFolder() {} },
   }));
-  vi.doMock("./update", () => ({ checkDesktopUpdate: async () => undefined }));
+  vi.doMock("./update", async (original) => ({ ...await original<typeof import("./update")>(),
+    createDesktopUpdateController: (options: Parameters<typeof createDesktopUpdateController>[0]) => createDesktopUpdateController({ ...options, discover: async () => null }),
+  }));
   vi.doMock("./smoke-work-files", () => ({
     verifyDesktopSmokeWorkFiles: async () => ({ type: "desktop-smoke.work-files-verified" }),
   }));

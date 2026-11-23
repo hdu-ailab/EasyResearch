@@ -41,6 +41,27 @@ function binaryPath(name, platform) {
   return binary;
 }
 
+// Best-effort capability evidence, never a requirement for standalone startup.
+// The daemon revalidates this relationship before any package mutation.
+export function captureNpmProvenance(metaRoot, binary, name, runtime = { platform: process.platform, arch: process.arch, execPath: process.execPath }) {
+  try {
+    const root = realpathSync(metaRoot);
+    if (root !== resolve(metaRoot)) return undefined;
+    const launcher = join(root, "launcher.mjs");
+    if (realpathSync(launcher) !== launcher) return undefined;
+    const localRequire = createRequire(launcher);
+    const platformManifest = realpathSync(localRequire.resolve(`${name}/package.json`));
+    const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    const platform = JSON.parse(readFileSync(platformManifest, "utf8"));
+    const canonicalBinary = realpathSync(binary);
+    if (meta.name !== "easyresearch" || meta.version !== platform.version || platform.name !== name
+      || meta.optionalDependencies?.[name] !== meta.version
+      || canonicalBinary !== join(dirname(platformManifest), "bin", runtime.platform === "win32" ? "easyresearch.exe" : "easyresearch")) return undefined;
+    return { schema: 1, metaRoot: root, launcher, platformManifest, binary: canonicalBinary,
+      nodeExecutable: realpathSync(runtime.execPath), version: meta.version, platform: runtime.platform, arch: runtime.arch };
+  } catch { return undefined; }
+}
+
 export function runLauncher(argv = process.argv.slice(2)) {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "package.json"), "utf8"));
   const platform = platformMap[process.platform];
@@ -70,7 +91,11 @@ export function runLauncher(argv = process.argv.slice(2)) {
     return 1;
   }
 
-  const result = spawnSync(target, argv, { stdio: "inherit" });
+  const environment = { ...process.env };
+  delete environment.EASYRESEARCH_NPM_PROVENANCE;
+  const provenance = captureNpmProvenance(__dirname, target, name);
+  if (provenance) environment.EASYRESEARCH_NPM_PROVENANCE = JSON.stringify(provenance);
+  const result = spawnSync(target, argv, { stdio: "inherit", env: environment });
   if (result.error || result.signal || result.status !== 0) console.error(describeSpawnFailure(result, target));
   return result.status ?? 1;
 }

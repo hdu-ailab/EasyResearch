@@ -73,6 +73,9 @@ import { projectApiUsageRecord } from "./api-usage";
 import { projectSessionTimeline } from "./session-timeline";
 import { pageTranscript, readTranscriptEntry, TranscriptCursorError, windowTranscript } from "./transcript-history";
 import { EventChannels } from "./event-channel";
+import type { UpdateController } from "../runtime/update-contract";
+import { NpmUpdateError } from "../runtime/npm-update";
+import { parseUpdateAction, updateEvents } from "./update-events";
 import {
   ConfigurationProjectWatchRequestError,
   type ConfigurationProjectWatches,
@@ -113,6 +116,8 @@ export interface RouteServices {
   ) => Promise<NetworkProxyTestResultDto>;
   listModels: () => Promise<ModelOptionDto[]>;
   checkForUpdate: () => Promise<UpdateCheckDto>;
+  update?: UpdateController;
+  version?: string;
   renameSession: (sessionId: string, name: string) => Promise<void>;
   deleteSession: (sessionId: string, force: boolean, files?: DeletionFileGuard, expectedCwds?: readonly string[]) => Promise<void>;
   workspaces?: WorkspaceService;
@@ -135,6 +140,7 @@ export interface RouteServices {
 }
 
 export type RouteHandler = ((request: Request) => Promise<Response>) & {
+  beginShutdown?: () => void;
   close?: () => Promise<void>;
   /** Authenticated scoped GET/HEAD only; the server must still validate Host/authority. */
   allowsOpaquePreviewOrigin?: (request: Request) => boolean;
@@ -151,6 +157,7 @@ const SSE_HEADERS: Record<string, string> = {
  * through injected services so vitest can run every route against fakes.
  */
 export function createRouteHandler(services: RouteServices): RouteHandler {
+  let closing = false;
   const htmlPreviews = new HtmlPreviewService(services.directories);
   const files = new FileOperationService({ isKnownCwd: async (cwd) => {
     if (services.registry.list().some((session) => session.cwd === cwd)) return true;
@@ -158,6 +165,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
   } });
   const channels = new EventChannels({ bootId: services.bootId, open(path) {
     if (path === "/api/config/events") return configurationEvents(services.bootId, services.configuration, services.configurationProjectWatches);
+    if (path === "/api/update/events" && services.update) return updateEvents(services.update);
     const session = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
     if (session) return sessionEvents(services, decodeURIComponent(session[1]!));
     const auth = path.match(/^\/api\/auth\/flows\/([^/]+)\/events$/);
@@ -174,13 +182,28 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         if (!control || req.headers.get(DAEMON_TOKEN_HEADER) !== control.token) {
           return errorResponse(404, "Not found");
         }
-        if (req.method === "GET") return jsonResponse({ runtimeId: control.runtimeId });
+        if (req.method === "GET") return jsonResponse({ runtimeId: control.runtimeId, busy: {
+          code: "RUNTIME_BUSY", activeSessions: services.registry.activeWorkCount(),
+          authFlowActive: services.auth ? services.auth.activeFlow() !== null : false,
+        } });
+        if (req.body !== null) {
+          const value = await jsonBody<unknown>(req);
+          if (!value || typeof value !== "object" || Array.isArray(value)) return errorResponse(400, "Invalid update control.");
+          const body = value as Record<string, unknown>;
+          if (body.action !== "prepare-update" || typeof body.force !== "boolean"
+            || Object.keys(body).some(key => key !== "action" && key !== "force")) return errorResponse(400, "Invalid update control.");
+          const busy = { code: "RUNTIME_BUSY" as const, activeSessions: services.registry.activeWorkCount(),
+            authFlowActive: services.auth ? services.auth.activeFlow() !== null : false };
+          if (!body.force && (busy.activeSessions > 0 || busy.authFlowActive)) return jsonResponse(busy, 409);
+          // No yield between this final sample and the owner's synchronous admission fence.
+        }
         control.requestShutdown();
         return jsonResponse({ ok: true });
       }
 
       const unauthorized = rejectUnauthorizedDesktopRequest(req, services.desktopAccess);
       if (unauthorized) return unauthorized;
+      if (closing && !["GET", "HEAD"].includes(req.method)) return errorResponse(503, "The runtime is stopping.");
 
       if (path === "/api/events" && req.method === "GET") return channels.open();
       const channelMatch = path.match(/^\/api\/events\/([a-f0-9-]+)$/);
@@ -197,6 +220,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (req.method === "GET" && path === "/api/status") {
         return jsonResponse({
           bootId: services.bootId,
+          version: services.version,
           agentDir: services.config.globalRoot,
           homeDir: services.directories.homeDir,
           sessions: await services.listAllSessions(),
@@ -215,6 +239,15 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       if (req.method === "GET" && path === "/api/update-check") {
         return jsonResponse(await services.checkForUpdate());
+      }
+      if (path === "/api/update" && req.method === "GET" && services.update) return jsonResponse(services.update.snapshot());
+      if (path === "/api/update/events" && req.method === "GET" && services.update) return updateEvents(services.update);
+      if (path === "/api/update/action" && req.method === "POST" && services.update) {
+        const request = parseUpdateAction(await jsonBody<unknown>(req));
+        if (closing) return errorResponse(503, "The runtime is stopping.");
+        if (services.desktopAccess) return errorResponse(409, "Use the Desktop update controls.", { code: "UPDATE_UNAVAILABLE" });
+        const result = await services.update.action(request);
+        return jsonResponse(result, "code" in result ? 409 : 202);
       }
 
       if (req.method === "GET" && path === "/api/agents") {
@@ -852,6 +885,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       return new Response("Not found", { status: 404 });
     } catch (error) {
+      if (error instanceof NpmUpdateError) return errorResponse(error.status, error.message, { code: error.code });
       if (error instanceof BackgroundOutputError) return errorResponse(error.status, error.message, { code: error.code });
       if (error instanceof ContextManagementError) return errorResponse(error.status, error.message, { code: error.code });
       if (/^\/api\/sessions\/[^/]+\/context(?:\/|$)/.test(new URL(req.url).pathname)) {
@@ -921,12 +955,14 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
     && request.headers.get(DESKTOP_ACCESS_HEADER) === services.desktopAccess.token
     && htmlPreviews.isValidResourceRequest(request);
   handler.close = async () => {
+    closing = true;
     htmlPreviews.close();
     services.backgroundOutput?.close();
-    const results = await Promise.allSettled([files.close(), channels.close(), services.skillMarketplace?.close()]);
+    const results = await Promise.allSettled([files.close(), channels.close(), services.skillMarketplace?.close(), services.update?.close()]);
     const errors = results.filter((result): result is PromiseRejectedResult => result.status === "rejected").map((result) => result.reason);
     if (errors.length) throw new AggregateError(errors, "Route cleanup failed");
   };
+  handler.beginShutdown = () => { closing = true; };
   return handler;
 }
 

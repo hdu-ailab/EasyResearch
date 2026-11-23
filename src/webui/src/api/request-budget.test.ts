@@ -156,3 +156,29 @@ it("cancels queued requests before their operation can mutate state", async () =
   ).rejects.toThrow("failed");
   await expect(queue.run("/api/models", undefined, async () => "recovered")).resolves.toBe("recovered");
 });
+
+it("admits update cancellation while ordinary requests occupy their budget", async () => {
+  const queue = new RequestBudget();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const reads = Array.from({ length: 3 }, () => queue.run("/api/models", undefined, () => gate));
+  await Promise.resolve();
+  let admitted = false;
+  const cancel = queue.run(
+    "/api/update/action",
+    undefined,
+    async () => {
+      admitted = true;
+    },
+    "POST",
+  );
+  try {
+    await Promise.resolve();
+    expect(admitted).toBe(true);
+  } finally {
+    release();
+    await Promise.all([...reads, cancel]);
+  }
+});

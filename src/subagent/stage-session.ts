@@ -47,6 +47,7 @@ import { createSubagentNotificationExtension, type SubagentSupervisor, type Supe
 import { CHILD_SELECTION, createStageBackgroundController, type StageBackgroundController } from "./stage-background";
 import type { BackgroundPeriodResult } from "./background-periods";
 import { isThinkingLevel } from "../thinking-levels";
+import { resolveSystemPrompt } from "../runtime/system-prompt";
 
 const SAFE_STAGE_AUTHORIZATION_ERROR =
   "The selected Agent is not available to this caller in the current valid configuration.";
@@ -215,6 +216,7 @@ export interface StageSessionDependencies {
     noSkills: boolean;
     additionalSkillPaths: string[];
     skillsOverride: typeof applySkillSnapshotBaseDirs;
+    systemPromptOverride(base: string | undefined): string;
     appendSystemPromptOverride(base: string[]): string[];
   }): StageResourceLoader;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: StageAgentSession }>;
@@ -511,6 +513,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         noSkills: true,
         additionalSkillPaths: [],
         skillsOverride: applySkillSnapshotBaseDirs,
+        systemPromptOverride: resolveSystemPrompt,
         appendSystemPromptOverride: (base) => binding!.appendSystemPrompt(base),
       });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });

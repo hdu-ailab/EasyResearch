@@ -126,6 +126,7 @@ export interface AuthGateway {
    */
   markExternalControl(flowId: AuthFlowId, ctrl: AbortController): void;
   shutdown(): Promise<void>;
+  beginShutdown(): void;
 }
 
 export function createAuthGateway(
@@ -479,6 +480,7 @@ export function createAuthGateway(
       externalAbortMap.set(flowId, { controller: ctrl });
       guard.tryAcquire(flowId);
     },
+    beginShutdown() { shuttingDown = true; },
     shutdown() {
       if (shutdownPromise) return shutdownPromise;
       shuttingDown = true;

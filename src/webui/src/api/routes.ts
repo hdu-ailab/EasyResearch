@@ -9,6 +9,9 @@ export const routes = {
   workspaces: () => `${API_ROOT}/workspaces`,
   workspace: (action: "validate" | "rename" | "relocate") => `${API_ROOT}/workspaces/${action}`,
   updateCheck: () => `${API_ROOT}/update-check`,
+  update: () => `${API_ROOT}/update`,
+  updateAction: () => `${API_ROOT}/update/action`,
+  updateEvents: () => `${API_ROOT}/update/events`,
   agents: (cwd?: string) => {
     const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : "";
     return `${API_ROOT}/agents${query}`;

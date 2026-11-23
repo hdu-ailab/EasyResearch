@@ -19,6 +19,7 @@ import {
 } from "./server-process";
 import { directLocalHttpFetch, localHttpOrigin, type LocalHttpFetch } from "./local-http";
 import type { RuntimeLease, RuntimeLeaseHandoff } from "./runtime-lease";
+import { waitForOwnedProcessGroupExit } from "../runtime/owned-process-group";
 
 export const SUCCESSOR_READY_TIMEOUT_MS = 10_000;
 export const SUCCESSOR_CLEANUP_TIMEOUT_MS = 2_000;
@@ -42,6 +43,7 @@ export interface OwnedDaemonChild {
 }
 
 export interface SpawnCliDaemonOptions {
+  updateCandidate?: { version: string; sha256: string };
   agentDir: string;
   daemonExecutable: string;
   sourceExecutable: string;
@@ -62,6 +64,7 @@ export interface SpawnCliDaemonDependencies {
 }
 
 export interface CliDaemonSuccessorReadinessOptions {
+  expectedVersion?: string;
   agentDir: string;
   host: string;
   port: number;
@@ -90,12 +93,14 @@ export interface StartCliDaemonSuccessorOptions
   readyTimeoutMs?: number;
   cleanupTimeoutMs?: number;
   signal?: AbortSignal;
+  expectedVersion?: string;
 }
 
 export interface StartCliDaemonSuccessorDependencies
   extends SpawnCliDaemonDependencies, CliDaemonSuccessorReadinessDependencies {}
 
 export interface StartCliDaemonOptions extends SpawnCliDaemonOptions {
+  expectedVersion?: string;
   oldBootId?: string;
   oldPid?: number;
   readyTimeoutMs?: number;
@@ -145,7 +150,9 @@ function prepareCliDaemonLaunch(
   const compiled = options.embedded;
   const command = compiled ? options.daemonExecutable : options.sourceExecutable;
   const args = compiled
-    ? ["--serve", options.host, String(options.port)]
+    ? options.updateCandidate
+      ? ["--update-serve", options.host, String(options.port), options.updateCandidate.version, options.updateCandidate.sha256]
+      : ["--serve", options.host, String(options.port)]
     : [options.sourceEntry, "--serve", options.host, String(options.port)];
   const spec: DaemonLaunchSpec = {
     backend: compiled && options.platform === "win32" ? "bun" : "node",
@@ -212,6 +219,7 @@ export async function startCliDaemon(
         options.cleanupTimeoutMs ?? SUCCESSOR_CLEANUP_TIMEOUT_MS,
         dependencies,
         handoff,
+        options.platform,
       );
     } catch (error) {
       cleanupError = error;
@@ -243,6 +251,7 @@ export async function startCliDaemon(
       oldBootId: options.oldBootId,
       oldPid: options.oldPid,
       expectedPid: child.pid,
+      expectedVersion: options.expectedVersion,
       timeoutMs: options.readyTimeoutMs,
       signal: options.signal,
     }, {
@@ -266,6 +275,7 @@ export async function startCliDaemon(
       options.cleanupTimeoutMs ?? SUCCESSOR_CLEANUP_TIMEOUT_MS,
       dependencies,
       handoff,
+      options.platform,
     );
   } catch (cleanupError) {
     if (readinessError !== undefined) {
@@ -288,10 +298,12 @@ async function cleanupFailedSuccessor(
   timeoutMs: number,
   dependencies: CliDaemonSuccessorReadinessDependencies,
   handoff: RuntimeLeaseHandoff,
+  platform: NodeJS.Platform,
 ): Promise<void> {
   const cleanupErrors: unknown[] = [];
+  let authenticatedStopped = false;
   try {
-    await stopServerProcess(agentDir, {
+    authenticatedStopped = await stopServerProcess(agentDir, {
       expectedOwner: "cli",
       expectedToken: token,
       fetch: dependencies.fetch,
@@ -309,20 +321,20 @@ async function cleanupFailedSuccessor(
   } catch (error) {
     cleanupErrors.push(error);
   }
-  let exited = await waitForOwnedDaemonExit(child, timeoutMs, cleanupErrors);
+  let exited = await waitForOwnedDaemonExit(child, timeoutMs, cleanupErrors, platform, authenticatedStopped);
   if (!exited) {
     try {
       child.forceTerminate();
     } catch (error) {
       cleanupErrors.push(error);
     }
-    exited = await waitForOwnedDaemonExit(child, timeoutMs, cleanupErrors);
+    exited = await waitForOwnedDaemonExit(child, timeoutMs, cleanupErrors, platform, authenticatedStopped);
   }
   if (!exited) {
     const message = "EasyResearch daemon successor did not exit after forced termination.";
     try {
       if (!handoff.transferred) handoff.commit(child.pid);
-      handoff.relinquish();
+      handoff.relinquish({ unresolved: true });
     } catch (error) {
       cleanupErrors.push(error);
     }
@@ -335,9 +347,16 @@ async function waitForOwnedDaemonExit(
   child: OwnedDaemonChild,
   timeoutMs: number,
   errors: unknown[],
+  platform: NodeJS.Platform,
+  authenticatedStopped: boolean,
 ): Promise<boolean> {
   try {
-    return await child.waitForExit(timeoutMs);
+    if (!await child.waitForExit(timeoutMs)) return false;
+    // Windows setup has not yet exposed the authenticated all-work shutdown
+    // contract. Root exit/taskkill cannot prove its descendants stopped, so
+    // preserve an unresolved handoff rather than release its executable/lease.
+    if (platform === "win32") return authenticatedStopped;
+    return await waitForOwnedProcessGroupExit(child.pid, timeoutMs);
   } catch (error) {
     errors.push(error);
     return false;
@@ -371,11 +390,12 @@ async function probeCliDaemonSuccessor(
       signal: readinessRequestSignal(options.signal, remainingRequestTimeout(deadline, now)),
     });
     if (!status.ok) return false;
-    const statusBody = await status.json() as { bootId?: unknown };
+    const statusBody = await status.json() as { bootId?: unknown; version?: unknown };
     if (
       typeof statusBody.bootId !== "string"
       || statusBody.bootId.length === 0
       || (options.oldBootId !== undefined && statusBody.bootId === options.oldBootId)
+      || (options.expectedVersion !== undefined && statusBody.version !== options.expectedVersion)
     ) {
       return false;
     }

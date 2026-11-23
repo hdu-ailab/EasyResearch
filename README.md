@@ -79,8 +79,15 @@ Desktop and CLI share `~/.easyresearch/agent` state but cannot run at the same
 time. Starting Desktop stops a running CLI service; CLI start and exit commands
 are rejected while Desktop owns the state. Closing the window keeps Desktop
 active in the tray or menu bar; use **Exit** there to cancel active work and stop
-the backend. To update, choose **Exit**, download the newer package from GitHub
-Releases, then replace the AppImage or install the new installer/`.deb`.
+the backend.
+
+From 0.1.24, click the version number for update controls. Supported global npm
+installations can install and activate a verified update. Windows per-user Desktop
+installations can download, install and restart; macOS and Linux Desktop provide
+verified downloads for manual installation. Desktop failures offer the latest
+Release; a failed supported npm update provides the manual command for its original
+installation. Clients on 0.1.23 or earlier need one manual upgrade to enable these
+controls. Existing `~/.easyresearch/agent` state is preserved.
 
 ### npm CLI
 

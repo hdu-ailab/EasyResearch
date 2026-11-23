@@ -378,6 +378,7 @@ async function attachHarness(state: ReturnType<typeof createHarness>) {
     skills: state.binding.skillPaths(),
     subagents: state.binding.current().subagents,
   };
+  const promptPrefix = observed.prompt.slice(0, -1);
   session.onReload = () => {
     observed = {
       prompt: state.binding.appendSystemPrompt(["Pi base"]),
@@ -387,7 +388,7 @@ async function attachHarness(state: ReturnType<typeof createHarness>) {
     };
   };
   await state.binding.attach(session);
-  return { session, observed: () => observed };
+  return { session, promptPrefix, observed: () => observed };
 }
 
 function attachPiSession(
@@ -754,9 +755,9 @@ describe("AgentRuntimeBinding safe boundaries", () => {
 
     state.live.publish([definition("v2")]);
 
-    await vi.waitFor(() => expect(attached.observed().prompt).toEqual(["Pi base", "Prompt v2"]));
+    await vi.waitFor(() => expect(attached.observed().prompt).toEqual([...attached.promptPrefix, "Prompt v2"]));
     expect(attached.observed()).toEqual({
-      prompt: ["Pi base", "Prompt v2"],
+      prompt: [...attached.promptPrefix, "Prompt v2"],
       tools: ["tool-v2"],
       skills: ["/skills/skill-v2"],
       subagents: ["search-v2"],
@@ -781,7 +782,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
 
     await vi.waitFor(() => expect(attached.observed().skills).toEqual(["/agent/skills/shared"]));
     expect(attached.observed()).toMatchObject({
-      prompt: ["Pi base", "Prompt v1"],
+      prompt: [...attached.promptPrefix, "Prompt v1"],
       tools: ["tool-v1"],
       subagents: ["search-v1"],
     });
@@ -1153,7 +1154,7 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(state.models.refreshCalls).toHaveLength(refreshBaseline + 2);
     expect(attached.session.reloadCalls).toBe(1);
     expect(attached.observed()).toMatchObject({
-      prompt: ["Pi base", "Prompt v2"],
+      prompt: [...attached.promptPrefix, "Prompt v2"],
       tools: ["tool-v2"],
     });
     expect(attached.session.model?.name).toBe("metadata-v2");
@@ -1214,13 +1215,13 @@ describe("AgentRuntimeBinding safe boundaries", () => {
     expect(failure.message).not.toContain("SECRET");
     expect(failure.message).not.toContain("/private/reload-path");
     expect(state.binding.current().systemPrompt).toBe("Prompt v1");
-    expect(attached.observed().prompt).toEqual(["Pi base", "Prompt v1"]);
+    expect(attached.observed().prompt).toEqual([...attached.promptPrefix, "Prompt v1"]);
     expect(attached.session.reloadCalls).toBe(2);
 
     await state.binding.ensureCurrent({ activeBoundary: true });
 
     expect(state.binding.current().systemPrompt).toBe("Prompt v2");
-    expect(attached.observed().prompt).toEqual(["Pi base", "Prompt v2"]);
+    expect(attached.observed().prompt).toEqual([...attached.promptPrefix, "Prompt v2"]);
   });
 
   it.each(["preparation", "reload", "restoration", "compaction"] as const)(

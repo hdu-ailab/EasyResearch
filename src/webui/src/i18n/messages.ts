@@ -4,8 +4,10 @@ import { filePreviewEn, filePreviewZh } from "./file-preview-messages";
 import { fileReferenceEn, fileReferenceZh } from "./file-reference-messages";
 import { officePreviewEn, officePreviewZh } from "./office-preview-messages";
 import { skillMarketEn, skillMarketZh } from "./skill-marketplace-messages";
+import { updateEn, updateZh } from "./update-messages";
 
 export const en = {
+  ...updateEn,
   ...backgroundTaskEn,
   ...fileReferenceEn,
   ...filePreviewEn,
@@ -740,6 +742,7 @@ export const zhCN: Record<MessageKey, string> = {
   ...filePreviewZh,
   ...officePreviewZh,
   ...skillMarketZh,
+  ...updateZh,
   "context.title": "上下文管理",
   "context.compactAll": "压缩整个会话",
   "context.compactError": "无法请求会话压缩，请重试。",

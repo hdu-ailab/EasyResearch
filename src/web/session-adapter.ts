@@ -20,6 +20,7 @@ import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
+import { resolveSystemPrompt } from "../runtime/system-prompt";
 import {
   createAgentRuntimeBinding,
   type AgentRuntimeBinding,
@@ -412,6 +413,7 @@ export interface PiRuntimeDependencies {
     noSkills: boolean;
     additionalSkillPaths: string[];
     skillsOverride: typeof applySkillSnapshotBaseDirs;
+    systemPromptOverride(base: string | undefined): string;
     appendSystemPromptOverride(base: string[]): string[];
   }): ResourceLoaderLike;
   createAgentSession(options: Record<string, unknown>): Promise<{ session: BindableAgentSession }>;
@@ -510,6 +512,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         noSkills: true,
         additionalSkillPaths: [],
         skillsOverride: applySkillSnapshotBaseDirs,
+        systemPromptOverride: resolveSystemPrompt,
         appendSystemPromptOverride: (base) => binding.appendSystemPrompt(base),
       });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });

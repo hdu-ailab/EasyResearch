@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import {
 } from "./daemon-spawn";
 import {
   acquireServerLease,
+  acquireTransitionLease,
   type RuntimeLease,
 } from "./runtime-lease";
 import {
@@ -277,6 +278,7 @@ describe("waitForCliDaemonSuccessor", () => {
   function readinessFetch(options: {
     controlRuntimeId?: string;
     bootId?: string;
+    version?: string;
   } = {}): { fetch: typeof fetch; calls: Array<{ url: string; token: string | null }> } {
     const calls: Array<{ url: string; token: string | null }> = [];
     const fetchReady = Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
@@ -288,10 +290,18 @@ describe("waitForCliDaemonSuccessor", () => {
           runtimeId: options.controlRuntimeId ?? "runtime-current",
         }), { status: 200 });
       }
-      return new Response(JSON.stringify({ bootId: options.bootId ?? "boot-new" }), { status: 200 });
+      return new Response(JSON.stringify({ bootId: options.bootId ?? "boot-new", version: options.version }), { status: 200 });
     }, { preconnect: globalThis.fetch.preconnect }) as typeof fetch;
     return { fetch: fetchReady, calls };
   }
+
+  it("requires the exact selected runtime version in addition to fresh authenticated readiness", async () => {
+    writeServerProcess(root, expectedRecord());
+    for (const version of [undefined, "1.0.0", "2.0.0"]) {
+      const probe = readinessFetch({ version });
+      expect(await waitForCliDaemonSuccessor({ agentDir: root, host: "0.0.0.0", port: 3000, runtimeId: "runtime-current", token: "fresh-token", oldBootId: "boot-old", oldPid: 111, expectedPid: 222, expectedVersion: "2.0.0", timeoutMs: 0 }, { fetch: probe.fetch })).toBe(version === "2.0.0");
+    }
+  });
 
   it("uses direct local HTTP by default instead of the configured global fetch router", async () => {
     const requests: Array<{ path: string; token?: string }> = [];
@@ -458,6 +468,28 @@ async function close(server: ReturnType<typeof createServer>): Promise<void> {
 }
 
 describe("startCliDaemonSuccessor", () => {
+  it.skipIf(process.platform === "win32")("settles a real successor setup process group after the root exits before releasing custody", async () => {
+    const receipt = join(root, "descendant.json"); const entry = join(root, "successor.cjs");
+    const descendant = `process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(${JSON.stringify(receipt)},JSON.stringify({pid:process.pid,parent:process.ppid}));setInterval(()=>{},100)`;
+    writeFileSync(entry, `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'});setInterval(()=>{},100)`);
+    const lease = await acquireTransitionLease(root, "cli"); const abort = new AbortController();
+    const running = startCliDaemon({ agentDir: root, daemonExecutable: process.execPath, sourceExecutable: process.execPath, sourceEntry: entry, embedded: false, platform: process.platform, host: "127.0.0.1", port: 33333, runtimeId: "test", environment: {}, transitionLease: lease, readyTimeoutMs: 10000, cleanupTimeoutMs: 100, signal: abort.signal });
+    const outcome = running.catch((error: unknown) => error); let pid: number | undefined; let parent: number | undefined;
+    try {
+      await vi.waitFor(() => expect(existsSync(receipt)).toBe(true));
+      ({ pid, parent } = JSON.parse(readFileSync(receipt, "utf8")));
+      abort.abort(); await outcome;
+      let live = true;
+      try { if (process.platform === "linux") live = !["Z", "X"].includes(readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]!.split(" ")[0]!); else process.kill(pid!, 0); }
+      catch { live = false; }
+      expect(live).toBe(false);
+      expect(lease.release()).toBe(true);
+    } finally {
+      abort.abort(); await outcome;
+      if (parent) { try { process.kill(-parent, "SIGKILL"); } catch {} }
+      if (lease.held) lease.release();
+    }
+  });
   function successorOptions() {
     return {
       agentDir: root,

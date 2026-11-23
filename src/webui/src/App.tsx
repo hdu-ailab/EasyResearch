@@ -6,6 +6,7 @@ import { RuntimeRestartOverlay } from "./components/RuntimeRestartOverlay";
 import { SessionTabBar } from "./components/SessionTabBar";
 import { SettingsModal } from "./components/settings/SettingsModal";
 import { Topbar, TopbarIconButton } from "./components/Topbar";
+import { UpdateControl } from "./components/UpdateControl";
 import { WorkspaceDialog } from "./components/WorkspaceDialog";
 import { useConfigurationEvents } from "./hooks/useConfigurationEvents";
 import { useHashRoute } from "./hooks/useHashRoute";
@@ -181,6 +182,7 @@ export function App({
   >({});
   const [homeDir, setHomeDir] = useState("/");
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const [actionsTarget, setActionsTarget] = useState<HTMLDivElement | null>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const settingsOpen = isSettingsHostRoute(route);
@@ -429,7 +431,7 @@ export function App({
     </TopbarIconButton>
   );
 
-  const blocked = settingsOpen || configOpen || !!expectedRuntimeRestart;
+  const blocked = settingsOpen || configOpen || updateOpen || !!expectedRuntimeRestart;
   const creation = workCreation?.owns() ? workCreation : null;
   const workLoading = routeWorkId !== null && (!selectedView || selectedView.phase === "loading");
   const settingsMounted = useRef(false);
@@ -480,20 +482,11 @@ export function App({
         <Topbar
           home={{ active: routeWorkId === null, onClick: goHome }}
           leading={
-            <>
-              <span className="shrink-0 rounded-md border border-v2-grey-300 bg-v2-background-bg-base px-1 py-0.5 font-mono text-[10px] text-v2-text-text-faint min-[360px]:px-1.5 min-[360px]:text-[11px]">
-                v{packageJson.version}
-              </span>
-              {latestVersion && (
-                <span
-                  role="status"
-                  title={`${t("home.updateAvailable")} v${latestVersion}`}
-                  className="truncate text-[12px] font-medium text-v2-text-text-accent"
-                >
-                  {t("home.updateAvailable")} <span className="font-mono">v{latestVersion}</span>
-                </span>
-              )}
-            </>
+            <UpdateControl
+              currentVersion={packageJson.version}
+              latestVersion={latestVersion}
+              onOpenChange={setUpdateOpen}
+            />
           }
           center={
             <SessionTabBar

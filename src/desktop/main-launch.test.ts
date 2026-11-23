@@ -8,6 +8,7 @@ import { expect, it, vi } from "vitest";
 import { acquireTransitionLease, adoptTransitionLease, transitionLeasePath } from "../cli/runtime-lease";
 import { resolveDesktopEnvironment, resolvePackagedSidecar } from "./environment";
 import { startDesktopSidecar } from "./sidecar";
+import { createDesktopUpdateController } from "./update";
 
 it.each([200, 503])("uses the shell-resolved root for desktop custody and child environment when health returns %s", async (healthStatus) => {
   const root = mkdtempSync(join(tmpdir(), "desktop-main-launch-"));
@@ -82,9 +83,10 @@ it.each([200, 503])("uses the shell-resolved root for desktop custody and child 
     resourcesPath: join(root, "app"),
   });
   vi.doMock("electron", () => ({
-    app, BrowserWindow: Window, Tray, ipcMain: new EventEmitter(),
+    app, BrowserWindow: Window, Tray, ipcMain: Object.assign(new EventEmitter(), { handle: vi.fn() }),
     Menu: { buildFromTemplate: (items: unknown) => items },
     nativeImage: { createFromPath: () => ({ isEmpty: () => false, setTemplateImage() {} }) },
+    net: { fetch: vi.fn() },
     dialog: { showMessageBox: async () => ({ response: 1 }), showErrorBox() {} },
     shell: { openExternal: async () => {}, showItemInFolder() {} },
   }));
@@ -94,7 +96,9 @@ it.each([200, 503])("uses the shell-resolved root for desktop custody and child 
       runShell: () => ({ status: 0, stdout: `EASYRESEARCH_CODING_AGENT_DIR=${shellRoot}\0PATH=/login/bin:/usr/bin:/bin\0`, stderr: "" }),
     }),
   }));
-  vi.doMock("./update", () => ({ checkDesktopUpdate: async () => undefined }));
+  vi.doMock("./update", async (original) => ({ ...await original<typeof import("./update")>(),
+    createDesktopUpdateController: (options: Parameters<typeof createDesktopUpdateController>[0]) => createDesktopUpdateController({ ...options, discover: async () => null }),
+  }));
   vi.doMock("./sidecar", () => ({
     startDesktopSidecar: async (options: Parameters<typeof startDesktopSidecar>[0]) => {
       hostAgentDir = options.agentDir;

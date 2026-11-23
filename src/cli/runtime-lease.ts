@@ -36,7 +36,7 @@ export interface RuntimeLeaseHandoff {
   readonly transferred: boolean;
   commit(pid: number): void;
   cancel(): boolean;
-  relinquish(): void;
+  relinquish(options?: { unresolved?: boolean }): void;
 }
 
 export type RuntimeLeaseTokenState = "held" | "released" | "unverifiable";
@@ -338,10 +338,18 @@ function createLeaseHandle(path: string, record: RuntimeLeaseRecord): RuntimeLea
           state = "cancelled";
           return true;
         },
-        relinquish() {
+        relinquish(options) {
           if (state === "relinquished") return;
           if (state !== "transferred") {
             throw new Error("EasyResearch cannot relinquish an incomplete transition handoff.");
+          }
+          if (options?.unresolved) {
+            // A dead root PID is not proof that its setup descendants died.
+            // Keep an explicit guard so stale-PID recovery cannot erase this
+            // unresolved process-tree custody after the predecessor exits.
+            const unresolvedPath = join(path, `.unresolved-${createHash("sha256").update(token).digest("hex")}`);
+            activeHandoff = { token, guardPath: unresolvedPath };
+            writeExclusiveFile(unresolvedPath, "unresolved process tree\n");
           }
           held = false;
           state = "relinquished";

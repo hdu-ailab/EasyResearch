@@ -87,6 +87,14 @@ jobs:
           USERPROFILE: ${{ runner.temp }}/easyresearch-helper-tests/home
         run: bun run test src/runtime/adapted-skill-helpers.test.ts
 
+      - name: Verify native Windows updater process custody
+        if: runner.os == 'Windows'
+        env:
+          EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-update-tests/agent
+          HOME: ${{ runner.temp }}/easyresearch-update-tests/home
+          USERPROFILE: ${{ runner.temp }}/easyresearch-update-tests/home
+        run: bun run test src/runtime/windows-update-job.test.ts src/runtime/windows-update-job.protocol.test.ts src/runtime/windows-update-job.native.test.ts src/runtime/npm-update-process.test.ts src/runtime/npm-update-process-windows.test.ts src/runtime/npm-update-process-windows.native.test.ts src/desktop/update-process.test.ts src/desktop/update-worker.test.ts
+
       - name: Build native platform binary
         run: bun scripts/build.ts --only ${{ matrix.target }}
 
@@ -127,6 +135,22 @@ jobs:
           EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/${{ matrix.python-executable }}
         run: bun scripts/smoke-release.ts ${{ matrix.target }} ${{ runner.os == 'Windows' && '--version-verified-by-runner' || '' }}
 
+      - name: Verify native two-version npm update
+        if: runner.os == 'Linux'
+        run: bun scripts/smoke-npm-update-release.ts ${{ matrix.target }} 0.1.23
+
+      - name: Retain failed update acceptance diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: easyresearch-update-debug-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/easyresearch-update-fixture-*/*.log
+            ${{ runner.temp }}/easyresearch-npm-update-*/report.json
+            ${{ runner.temp }}/easyresearch-npm-update-*/*.log
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Upload verified native artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -158,7 +182,7 @@ jobs:
               release/desktop/EasyResearch-*-linux-arm64.deb
             python-executable: bin/python
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -223,6 +247,14 @@ jobs:
           EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/${{ matrix.python-executable }}
           PIP_RETRIES: "3"
           PIP_DEFAULT_TIMEOUT: "30"
+
+      - name: Verify installed Windows update and rollback
+        if: runner.os == 'Windows'
+        env:
+          EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/${{ matrix.python-executable }}
+          PIP_RETRIES: "3"
+          PIP_DEFAULT_TIMEOUT: "30"
+        run: bun scripts/smoke-desktop-update.ts windows-x64 --old-version 0.1.23 --receipt "${{ runner.temp }}/desktop-update.json"
 
       - name: Smoke both Linux desktop packages in a sandbox-capable tray session
         if: runner.os == 'Linux'
@@ -310,6 +342,18 @@ jobs:
             release/desktop-manifest-${{ matrix.target }}.json
           retention-days: 7
           if-no-files-found: error
+
+      - name: Retain failed Desktop update diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: easyresearch-desktop-update-debug-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/desktop-update.json
+            ${{ runner.temp }}/easyresearch-update-fixture-*/*.log
+            ${{ runner.temp }}/easyresearch-desktop-update-*/*/*.log
+          retention-days: 7
+          if-no-files-found: warn
 
   prepare-release:
     name: Prepare draft GitHub Release

@@ -44,9 +44,11 @@ import { createNetworkProxyProbe, type NetworkProxyProbe } from "./network-proxy
 import { RuntimeRestartCoordinator } from "./runtime-restart";
 import { localInterfaceIpAddresses, rejectDisallowedWebRequest } from "./request-admission";
 import { recoverBackgroundRoots } from "../background/root-recovery";
+import { createNpmUpdateController, type NpmUpdateOwner } from "../runtime/npm-update-host";
 
 export interface Server {
   port: number;
+  beginShutdown(): void;
   stop: (options?: { restart?: boolean }) => Promise<void>;
 }
 
@@ -60,6 +62,7 @@ export interface StartServerOptions {
   desktopAccess?: { token: string };
   networkPolicy: NetworkPolicy;
   networkProxyProbe?: NetworkProxyProbe;
+  npmUpdate?: NpmUpdateOwner;
 }
 
 const WEBUI_DIST = join(fileURLToPath(new URL("..", import.meta.url)), "webui", "dist");
@@ -277,8 +280,18 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
   let modelsDisposed = false;
   let serverStopped = false;
   let closeRoutes: (() => Promise<void>) | undefined;
+  let closeRouteAdmission: (() => void) | undefined;
+  let admissionClosed = false;
+  const beginShutdown = (): void => {
+    if (admissionClosed) return;
+    admissionClosed = true;
+    registry?.beginShutdown();
+    auth.beginShutdown?.();
+    closeRouteAdmission?.();
+  };
 
   const cleanup = async (restart = false): Promise<void> => {
+    beginShutdown();
     // Close transfer admission/cancel readers immediately, even if Agent teardown is slow.
     const routesClosed = closeRoutes?.();
     void routesClosed?.catch(() => {});
@@ -412,6 +425,13 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       : undefined;
     const services: RouteServices = {
       bootId,
+      version: packageVersion,
+      update: createNpmUpdateController({
+        owner: options.desktopAccess ? "desktop" : "cli", currentVersion: packageVersion,
+        agentDir, environment: process.env, fetch: networkRouter.fetch, lifecycle: options.npmUpdate,
+        busy: () => ({ code: "RUNTIME_BUSY", activeSessions: activeRegistry.activeWorkCount(), authFlowActive: auth.activeFlow() !== null }),
+        beginShutdown,
+      }),
       webuiDist: WEBUI_DIST,
       listAllSessions: async () => {
         const sessions = await SessionManager.listAll(undefined);
@@ -476,6 +496,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
     };
     const routeHandler = createRouteHandler(services);
     closeRoutes = routeHandler.close;
+    closeRouteAdmission = routeHandler.beginShutdown;
     const localInterfaceAddresses = options.desktopAccess ? localInterfaceIpAddresses() : undefined;
     const handler = (request: Request): Promise<Response> => {
       // CLI Web trusts the access path, including SSH-forwarded hosts and ports.
@@ -514,6 +535,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
 
   return {
     port: server.port ?? port,
+    beginShutdown,
     stop: (() => {
       let attempt: Promise<void> | undefined;
       return (options?: { restart?: boolean }) => {

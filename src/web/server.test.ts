@@ -1606,7 +1606,7 @@ describe("web routes", () => {
     const headers = { "x-easyresearch-daemon-token": "launch-token" };
     const probe = await handler(new Request("http://localhost/api/internal/daemon", { headers }));
     expect(probe.status).toBe(200);
-    expect(await probe.json()).toEqual({ runtimeId: "runtime-current" });
+    expect(await probe.json()).toEqual({ runtimeId: "runtime-current", busy: { code: "RUNTIME_BUSY", activeSessions: 0, authFlowActive: false } });
 
     const stop = await handler(new Request("http://localhost/api/internal/daemon", {
       method: "POST",
@@ -1620,6 +1620,46 @@ describe("web routes", () => {
       headers: { "x-easyresearch-desktop-token": "renderer-token" },
     }));
     expect(rendererOnly.status).toBe(404);
+  });
+
+  it("rechecks Desktop update activity after reading the request and fences work before accepting shutdown", async () => {
+    let busy = 0;
+    vi.spyOn(registry, "activeWorkCount").mockImplementation(() => busy);
+    const requestShutdown = vi.fn(() => registry.beginShutdown());
+    setup({ daemonControl: { token: "launch-token", runtimeId: "runtime-current", requestShutdown } });
+    let body!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { body = controller; } });
+    const pending = handler(new Request("http://localhost/api/internal/daemon", {
+      method: "POST", headers: { "x-easyresearch-daemon-token": "launch-token", "Content-Type": "application/json" },
+      body: stream, duplex: "half",
+    } as RequestInit));
+    busy = 2;
+    body.enqueue(new TextEncoder().encode(JSON.stringify({ action: "prepare-update", force: false })));
+    body.close();
+    const refused = await pending;
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ code: "RUNTIME_BUSY", activeSessions: 2, authFlowActive: false });
+    expect(requestShutdown).not.toHaveBeenCalled();
+    const accepted = await handler(new Request("http://localhost/api/internal/daemon", {
+      method: "POST", headers: { "x-easyresearch-daemon-token": "launch-token", "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "prepare-update", force: true }),
+    }));
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toEqual({ ok: true });
+    expect(requestShutdown).toHaveBeenCalledOnce();
+    await expect(registry.create({ cwd: projectDir })).rejects.toThrow(/shutting down|stopping/i);
+  });
+
+  it("rejects malformed authenticated update controls without shutting down", async () => {
+    const requestShutdown = vi.fn();
+    setup({ daemonControl: { token: "launch-token", runtimeId: "runtime-current", requestShutdown } });
+    for (const body of [[], { action: "install", force: true }, { action: "prepare-update", force: "true" }, { action: "prepare-update", force: true, command: "arbitrary" }]) {
+      const response = await handler(new Request("http://localhost/api/internal/daemon", {
+        method: "POST", headers: { "x-easyresearch-daemon-token": "launch-token", "Content-Type": "application/json" }, body: JSON.stringify(body),
+      }));
+      expect(response.status).toBe(400);
+    }
+    expect(requestShutdown).not.toHaveBeenCalled();
   });
 
   it("requires desktop renderer access across document, asset, API, SSE, and raw-file routes", async () => {
@@ -4825,7 +4865,7 @@ describe("web routes", () => {
         { headers: { "x-easyresearch-daemon-token": "daemon-token" } },
       ));
       expect(nativeControl.status).toBe(200);
-      await expect(nativeControl.json()).resolves.toEqual({ runtimeId: "runtime-current" });
+      await expect(nativeControl.json()).resolves.toEqual({ runtimeId: "runtime-current", busy: { code: "RUNTIME_BUSY", activeSessions: 0, authFlowActive: false } });
       expect(requestShutdown).not.toHaveBeenCalled();
     } finally {
       await server?.stop();

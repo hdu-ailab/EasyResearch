@@ -27,7 +27,8 @@ export class RequestBudget {
       : (method.toUpperCase() === "PUT" &&
           /^\/api\/sessions\/[^/]+\/background-output-watches\/[^/]+$/.test(pathname)) ||
         /\/(?:abort|stop|messages|retry|respond|cancel)$/.test(pathname) ||
-        pathname === "/api/runtime/restart";
+        pathname === "/api/runtime/restart" ||
+        (pathname === "/api/update/action" && method.toUpperCase() === "POST");
     const slow = /^\/api\/(?:entries|file|directories)(?:\/|$)/.test(pathname);
     return new Promise<T>((resolve, reject) => {
       const entry: Waiting = {

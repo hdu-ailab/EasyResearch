@@ -1,11 +1,10 @@
 #!/usr/bin/env bun
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../runtime/pi-import";
 import {
-  bundledSourceRoot,
   defaultAgentDir,
   embeddedPackageVersion,
   isEmbeddedBuild,
@@ -30,6 +29,11 @@ import {
 } from "../runtime/network-policy";
 import { startCliDaemon } from "./daemon-spawn";
 import { directLocalHttpFetch, localHttpOrigin } from "./local-http";
+import { copyPiRuntimeAssets } from "./runtime-assets";
+export { copyPiRuntimeAssets } from "./runtime-assets";
+import { consumeNpmProvenance, NPM_PROVENANCE_ENV, type NpmProvenance } from "../runtime/npm-update-provenance";
+import { parseNpmUpdateServeRequest } from "./npm-update-entry";
+import { reclaimNpmUpdateArtifacts, registerNpmArtifactProcess } from "./npm-update-artifact";
 
 export interface CliDependencies {
   serve: (host: string, port: number) => Promise<number>;
@@ -55,6 +59,7 @@ export interface CliDependencies {
 }
 
 export interface CliOptions {
+  npmProvenance?: NpmProvenance;
   agentDir?: string;
   /** Startup environment seam for compiled-sandbox tests. */
   environment?: EnvironmentMap;
@@ -141,18 +146,6 @@ export function daemonRuntimeId(
   return `${version}:${sourceStat.size}:${sourceStat.mtimeMs}`;
 }
 
-/** Pi's compiled asset getters resolve beside process.execPath. */
-export function copyPiRuntimeAssets(agentDir: string, source = join(bundledSourceRoot(), "pi")): void {
-  const binDir = join(agentDir, "bin");
-  mkdirSync(binDir, { recursive: true });
-  for (const entry of readdirSync(source, { withFileTypes: true })) {
-    cpSync(join(source, entry.name), join(binDir, entry.name), {
-      recursive: entry.isDirectory(),
-      force: true,
-    });
-  }
-}
-
 export function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
@@ -212,15 +205,25 @@ export async function runCli(
   }
   const environment = options.environment ?? process.env;
   restoreBunSandboxEnvironment(environment, options.environmentRestore);
+  const receivedProvenance = consumeNpmProvenance(environment);
+  const npmProvenance = options.npmProvenance ?? receivedProvenance;
   const agentDir = options.agentDir ?? getAgentDir();
 
   try {
     if (argv.length === 1 && argv[0] === "exit") {
+      // Authenticated self-stop must interrupt an installer holding the transition
+      // lease. Waiting for that lease first would make Exit wait for installation.
+      const background = await deps.inspectBackground(agentDir, DEFAULT_HOST, DEFAULT_PORT);
+      if (background === "desktop") throw new DesktopOwnsRuntimeError();
+      const stopped = await deps.stopBackground(agentDir);
+      // The old listener/record may disappear while its admitted successor is
+      // still in setup. Only the transition owner can establish final absence.
       return await deps.withRuntimeTransition(agentDir, async () => {
-        const background = await deps.inspectBackground(agentDir, DEFAULT_HOST, DEFAULT_PORT);
-        if (background === "desktop") throw new DesktopOwnsRuntimeError();
-        const stopped = await deps.stopBackground(agentDir);
-        console.log(stopped ? "EasyResearch service stopped." : "EasyResearch service is not running.");
+        const current = await deps.inspectBackground(agentDir, DEFAULT_HOST, DEFAULT_PORT);
+        if (current === "desktop") throw new DesktopOwnsRuntimeError();
+        const successorStopped = current === "none" ? false : await deps.stopBackground(agentDir);
+        await reclaimNpmUpdateArtifacts(agentDir);
+        console.log(stopped || successorStopped ? "EasyResearch service stopped." : "EasyResearch service is not running.");
         return 0;
       });
     }
@@ -258,6 +261,7 @@ export async function runCli(
     return await deps.withRuntimeTransition(agentDir, async (transitionLease) => {
       const background = await deps.inspectBackground(agentDir, host, port);
       if (background === "desktop") throw new DesktopOwnsRuntimeError();
+      await reclaimNpmUpdateArtifacts(agentDir);
       if (background === "none" && deps.archiveDeadLegacyCliOwner(agentDir)) {
         console.log("[easyresearch] Archived a dead legacy daemon owner before upgrade startup.");
       }
@@ -291,7 +295,7 @@ export async function runCli(
         await deps.spawnBackground(
           host,
           port,
-          reconstructChildEnvironment(environment, baseline),
+          { ...reconstructChildEnvironment(environment, baseline), ...(npmProvenance ? { [NPM_PROVENANCE_ENV]: JSON.stringify(npmProvenance) } : {}) },
           transitionLease,
         );
       } catch (error) {
@@ -329,9 +333,10 @@ class DesktopOwnsRuntimeError extends Error {
 }
 
 async function runRuntimeEntry(args: string[]): Promise<void> {
+  restoreBunSandboxEnvironment(process.env);
+  const npmProvenance = consumeNpmProvenance(process.env);
   const { consumeDesktopServeRequest, runDesktopServe } = await import("./desktop-entry");
   const { runServe } = await import("./commands/serve");
-  restoreBunSandboxEnvironment(process.env);
   let desktopRequest: ReturnType<typeof consumeDesktopServeRequest> | undefined;
   if (args[0] === "--desktop-serve") {
     try {
@@ -356,6 +361,16 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
     process.exitCode = await runDesktopServe(desktopRequest);
     return;
   }
+  if (args[0] === "--update-serve") {
+    try {
+      const updateBoot = parseNpmUpdateServeRequest(args);
+      process.exitCode = await runServe(updateBoot.host, updateBoot.port, { npmProvenance, updateBoot });
+    } catch {
+      console.error("Invalid EasyResearch npm update launch contract.");
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (args.length === 3 && args[0] === "--serve") {
     const host = args[1] as string;
     const port = parsePort(args[2] as string);
@@ -364,7 +379,7 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    process.exitCode = await runServe(host, port);
+    process.exitCode = await runServe(host, port, { npmProvenance });
     return;
   }
   const runtimeId = daemonRuntimeId();
@@ -404,14 +419,20 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
         transitionLease,
       });
     },
-  });
+  }, { npmProvenance });
 }
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  if (args.length === 1 && args[0] === "--shell-worker") {
-    const { runShellWorker } = await import("../background/shell/worker-entry");
-    await runShellWorker();
+  if (args.length === 1 && args[0] === "--desktop-update-worker") {
+    const { runDesktopUpdateWorker } = await import("../desktop/update-worker");
+    process.exitCode = await runDesktopUpdateWorker(args);
+  } else if (args.length === 1 && args[0] === "--shell-worker") {
+    const use = registerNpmArtifactProcess(process.execPath);
+    try {
+      const { runShellWorker } = await import("../background/shell/worker-entry");
+      await runShellWorker();
+    } finally { use?.close(); }
   } else if (hasHelpFlag(args)) {
     writeHelpOutput();
   } else if (args[0] === "--version" || args[0] === "-v") {

@@ -7,6 +7,9 @@ export const DESKTOP_TRANSITION_HANDOFF_ENV = "EASYRESEARCH_DESKTOP_TRANSITION_H
 export const DESKTOP_EVENT_PREFIX = "@easyresearch-desktop ";
 export const DESKTOP_ACCESS_HEADER = "x-easyresearch-desktop-token";
 export const DESKTOP_SMOKE_USER_DATA_ENV = "EASYRESEARCH_DESKTOP_SMOKE_USER_DATA";
+export const DESKTOP_UPDATE_SNAPSHOT_CHANNEL = "desktop:update:snapshot";
+export const DESKTOP_UPDATE_ACTION_CHANNEL = "desktop:update:action";
+export const DESKTOP_UPDATE_EVENT_CHANNEL = "desktop:update:event";
 
 export type DesktopSidecarEvent =
   | { type: "desktop.setup"; message: string }

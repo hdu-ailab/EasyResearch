@@ -2436,10 +2436,10 @@ describe("createPiAgentSessionCreator", () => {
       noSkills: true,
       additionalSkillPaths: [],
     });
-    expect(loaderOptions.appendSystemPromptOverride(["Pi base"])).toEqual([
-      "Pi base",
-      "Project Research Assistant body",
-    ]);
+    const prompt = loaderOptions.appendSystemPromptOverride(["Pi base"]);
+    expect(prompt[0]).toBe("Pi base");
+    expect(prompt.at(-1)).toBe("Project Research Assistant body");
+    expect(new Set(prompt).size).toBe(prompt.length);
     expect(loaderOptions.extensionFactories).toContainEqual(expect.objectContaining({ name: "research-assistant" }));
     expect(harness.calls.find(({ name }) => name === "model-refresh")?.value).toEqual({ allowNetwork: false });
     expect(managedRoot.binding.skillPaths()).toEqual(["/accepted/project/research-project-workflow"]);
@@ -2478,7 +2478,10 @@ describe("createPiAgentSessionCreator", () => {
       { customType: "easyresearch:agent_status", content: "done", display: false },
       { deliverAs: "steer", triggerTurn: true },
     );
-    expect((managedRoot.session as FakeAgentSession).wakeSystemPrompts).toEqual([["Project Research Assistant body"]]);
+    const wakePrompts = (managedRoot.session as FakeAgentSession).wakeSystemPrompts;
+    expect(wakePrompts).toHaveLength(1);
+    expect(wakePrompts[0]?.at(-1)).toBe("Project Research Assistant body");
+    expect(new Set(wakePrompts[0]).size).toBe(wakePrompts[0]?.length);
   });
 
   it("passes the exact session network router to the root extension runtime", async () => {

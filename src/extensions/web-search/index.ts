@@ -149,21 +149,15 @@ export function createWebSearchTool(
   return defineTool({
     name: "web-search",
     label: "Web Search",
-    description:
-      "Search current Web sources or a paper index. Select provider firecrawl, tavily, or firecrawl-research for keyless HTTP search; omit provider or select engines for explicit multi-engine search. For engines, start with DuckDuckGo first; use Bing, Brave, or Startpage next, and Baidu or Sogou only as fallback channels. Channel reliability is not factual verification.",
-    promptSnippet: "Search Web sources or paper records with an explicit provider; verify selected sources with webfetch",
-    promptGuidelines: [
-      "Start with DuckDuckGo first for general Web research.",
-      "Use Bing, Brave, or Startpage as high-reliability international fallback channels.",
-      "Use Baidu or Sogou only for Chinese coverage or as final fallback channels.",
-      "Reliability describes the search channel, not factual trust in a returned page.",
-      "An empty search response is inconclusive and may indicate throttling.",
-      "Treat snippets as leads and inspect selected source URLs with webfetch before presenting claims as verified.",
+    description: [
+      "Search current Web sources or paper records. Select one provider: firecrawl or tavily for keyless Web search, firecrawl-research for paper metadata/abstracts, or engines (default) for explicit multi-engine search.",
+      "For provider=engines, supply engines and start with DuckDuckGo first; use Bing, Brave or Startpage next, and Baidu or Sogou for Chinese coverage or final fallback. Omit engines for other providers.",
+      "Channel reliability is not factual verification. An empty response is inconclusive and may indicate throttling. Treat snippets as leads; inspect selected URLs with webfetch before presenting claims as verified.",
       "Google is not a web-search engine; use the separately mounted Playwright Google workflow only as an external final fallback.",
-      "Select one provider per call. engines is required only for provider=engines (the default), and must be omitted for other providers.",
-      "Use firecrawl-research for paper metadata and abstracts; from/to filter index created/updated dates, not verified publication dates. site applies only to Web search.",
-      "Keyless providers need no account or API key but have quotas. Respect Retry-After; never evade provider limits by changing transport or proxy routes.",
-    ],
+      "For firecrawl-research, from/to filter index created/updated dates, not verified publication dates. site applies only to Web search.",
+      "Keyless providers need no account or API key but have quotas. Respect Retry-After; never evade limits by changing transport or proxy routes.",
+    ].join(" "),
+    promptSnippet: "Search Web sources or paper records with an explicit provider; verify selected sources with webfetch",
     parameters: Type.Object({
       query: Type.String({ minLength: 1, description: "Search query, including quoted phrases when needed" }),
       provider: Type.Optional(Type.Enum(WEB_SEARCH_PROVIDERS, { description: "Search provider; defaults to engines" })),

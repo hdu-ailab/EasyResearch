@@ -360,6 +360,17 @@ describe("desktop sidecar lifecycle", () => {
 });
 
 describe("desktop spawned-child ownership", () => {
+  it("reverses only its own precommit launch pause and cannot undo terminal Exit", () => {
+    const ownership = createDesktopSidecarOwnership();
+    const resume = ownership.pauseLaunchAdmission();
+    expect(ownership.acceptingLaunches).toBe(false);
+    resume();
+    expect(ownership.acceptingLaunches).toBe(true);
+    const terminalResume = ownership.pauseLaunchAdmission();
+    ownership.closeLaunchAdmission();
+    terminalResume();
+    expect(ownership.acceptingLaunches).toBe(false);
+  });
   it("retains every old and launching child until exit and retries a failed force cleanup", async () => {
     const survivorExited = deferred<{ code: number | null; signal: NodeJS.Signals | null }>();
     const settledExited = deferred<{ code: number | null; signal: NodeJS.Signals | null }>();

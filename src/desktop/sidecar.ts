@@ -25,6 +25,9 @@ import {
 } from "./contracts";
 import { windowsTaskkillCommand } from "./environment";
 import { parseDesktopSidecarLine } from "./sidecar-events";
+import type { UpdateActionResult } from "../runtime/update-contract";
+import { parseDesktopUpdateAdmission, prepareDesktopDaemonUpdate } from "./update-control";
+import type { DesktopUpdateBusy } from "./update-install";
 
 interface SpawnOptions {
   env: NodeJS.ProcessEnv;
@@ -49,6 +52,8 @@ interface DesktopSidecarStartOptions {
   hostPid?: number;
   agentDir?: string;
   transitionLease?: RuntimeLease;
+  /** In-app installation retains custody until the installed host and renderer are verified. */
+  retainTransitionUntilHostReady?: boolean;
   adoptTransition?: typeof adoptTransitionLease;
   onSetup?: (message: string) => void;
   onSpawned?: (handle: DesktopSidecarProcessHandle) => void;
@@ -70,6 +75,8 @@ export interface DesktopSidecarExit {
   signal: NodeJS.Signals | null;
   expectedRestart?: DesktopRestartRequestedEvent;
   protocolError?: string;
+  /** Positive terminal-cleanup evidence, required before replacing installed files. */
+  cleanShutdown?: true;
 }
 
 export interface DesktopSidecarProcessHandle {
@@ -85,6 +92,8 @@ export interface DesktopSidecarHandle extends DesktopSidecarProcessHandle {
   readonly pid: number;
   readonly restartRequested: Promise<DesktopRestartRequestedEvent>;
   takeRestartTransition(): RuntimeLease;
+  updateActivity(signal: AbortSignal): Promise<Extract<UpdateActionResult, { code: "RUNTIME_BUSY" }>>;
+  prepareUpdate(force: boolean, signal: AbortSignal): Promise<DesktopUpdateBusy | { ok: true }>;
 }
 
 export async function startDesktopSidecar(
@@ -308,7 +317,7 @@ export async function startDesktopSidecar(
     if (!health.ok) {
       throw new Error(`Desktop sidecar health check returned HTTP ${health.status}.`);
     }
-    releaseStartupTransition();
+    if (!options.retainTransitionUntilHostReady) releaseStartupTransition();
 
     return {
       ready,
@@ -318,6 +327,26 @@ export async function startDesktopSidecar(
       exited: protocol.exited,
       shutdown,
       forceTerminate,
+      async prepareUpdate(force, signal) {
+        if (!options.fetch) return prepareDesktopDaemonUpdate(ready.origin, controlToken, force, signal);
+        const response = await options.fetch(`${ready.origin}${DAEMON_CONTROL_PATH}`, {
+          method: "POST", headers: { [DAEMON_TOKEN_HEADER]: controlToken, "content-type": "application/json" },
+          body: JSON.stringify({ action: "prepare-update", force }), redirect: "error", signal,
+        });
+        return parseDesktopUpdateAdmission(response.status, await response.json());
+      },
+      async updateActivity(signal) {
+        const response = await fetchImpl(`${ready.origin}${DAEMON_CONTROL_PATH}`, {
+          headers: { [DAEMON_TOKEN_HEADER]: controlToken }, redirect: "error",
+          signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
+        });
+        if (!response.ok) throw new Error("Desktop activity check failed.");
+        const body = await response.json() as { busy?: Record<string, unknown> };
+        const busy = body?.busy;
+        if (!busy || busy.code !== "RUNTIME_BUSY" || !Number.isSafeInteger(busy.activeSessions)
+          || (busy.activeSessions as number) < 0 || typeof busy.authFlowActive !== "boolean") throw new Error("Invalid Desktop activity check.");
+        return { code: "RUNTIME_BUSY", activeSessions: busy.activeSessions as number, authFlowActive: busy.authFlowActive };
+      },
       takeRestartTransition() {
         if (!restartTransition && !restartTransitionClaimed && options.agentDir) {
           restartTransition = (options.adoptTransition ?? adoptTransitionLease)(
@@ -550,6 +579,8 @@ function monitorSidecarProtocol(
       signal: exitSignal,
       ...(cleanExpectedRestart ? { expectedRestart: restartEvent } : {}),
       ...(protocolError ? { protocolError } : {}),
+      ...(exitCode === 0 && exitSignal === null && terminalEvent === "stopped" && !sidecarReportedError && !protocolError
+        ? { cleanShutdown: true as const } : {}),
     });
   };
   const timeout = setTimeout(() => {

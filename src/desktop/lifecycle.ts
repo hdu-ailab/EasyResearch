@@ -205,6 +205,7 @@ export interface DesktopSidecarOwnership {
   readonly size: number;
   readonly acceptingLaunches: boolean;
   closeLaunchAdmission(): void;
+  pauseLaunchAdmission(): () => void;
   retain(handle: DesktopSidecarProcessHandle): void;
   shutdownAll(): Promise<void>;
 }
@@ -212,6 +213,7 @@ export interface DesktopSidecarOwnership {
 export function createDesktopSidecarOwnership(): DesktopSidecarOwnership {
   const owned = new Set<DesktopSidecarProcessHandle>();
   let acceptingLaunches = true;
+  let launchPauses = 0;
   let shutdownAttempt: Promise<void> | undefined;
   const drainOwned = async (): Promise<void> => {
     while (owned.size > 0) {
@@ -237,10 +239,15 @@ export function createDesktopSidecarOwnership(): DesktopSidecarOwnership {
       return owned.size;
     },
     get acceptingLaunches() {
-      return acceptingLaunches;
+      return acceptingLaunches && launchPauses === 0;
     },
     closeLaunchAdmission() {
       acceptingLaunches = false;
+    },
+    pauseLaunchAdmission() {
+      launchPauses++;
+      let resumed = false;
+      return () => { if (!resumed) { resumed = true; launchPauses--; } };
     },
     retain(handle) {
       if (owned.has(handle)) return;

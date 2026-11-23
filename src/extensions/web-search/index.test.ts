@@ -116,19 +116,6 @@ describe("web-search tool contract", () => {
     expect(parameters.properties.site).toBeDefined();
   });
 
-  it("guides engine fallback and source verification without treating reliability as truth", () => {
-    const tool = createWebSearchTool(adapter(execution()));
-    const guidance = [tool.description, tool.promptSnippet, ...(tool.promptGuidelines ?? [])].join("\n");
-
-    expect(guidance).toMatch(/DuckDuckGo.*first/is);
-    expect(guidance).toMatch(/Bing.*Brave.*Startpage/is);
-    expect(guidance).toMatch(/Baidu.*Sogou.*fallback/is);
-    expect(guidance).toMatch(/channel.*not.*fact/is);
-    expect(guidance).toMatch(/webfetch/is);
-    expect(guidance).toMatch(/Google.*Playwright/is);
-    expect(guidance).toMatch(/empty.*inconclusive/is);
-  });
-
   it("uses the adapter's default limit when num is omitted from tool execution", async () => {
     const service: OpenWebSearchService = {
       execute: vi.fn(async (input) => ({
