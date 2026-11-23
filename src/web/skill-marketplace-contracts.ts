@@ -8,6 +8,7 @@ export interface MarketSkillDto {
   installs: number;
   description?: string;
   supported: boolean;
+  unsupportedReason?: "source" | "identity";
 }
 
 export interface SkillMarketCatalogDto {
@@ -23,6 +24,19 @@ export interface SkillMarketDetailDto {
   directory: string;
   files: string[];
   state: "available" | "installed" | "conflict";
+  sourceType?: "github" | "well-known";
+  sourceUrl?: string;
+}
+
+export interface SkillMarketDescriptionDto { content: string; url: string; summary?: string }
+
+export function skillMarketAuthorUrl(source: string): string {
+  const parts = source.split("/").map(encodeURIComponent);
+  return `https://skills.sh/${parts.length === 1 ? "site/" : ""}${parts.join("/")}`;
+}
+
+export function skillMarketPageUrl(source: string, slug: string): string {
+  return `${skillMarketAuthorUrl(source)}/${encodeURIComponent(slug)}`;
 }
 
 export interface SkillMarketInstallDto {

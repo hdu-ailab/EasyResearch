@@ -1,26 +1,45 @@
 import { createHash } from "node:crypto";
 import { load } from "cheerio";
+import TurndownService from "turndown";
 import { importPi } from "../runtime/pi-import";
 import { ConfigServiceError } from "./config-files";
 import type { MarketSkillDto, SkillMarketView } from "./skill-marketplace-contracts";
+import { skillMarketPageUrl } from "./skill-marketplace-contracts";
+import { websiteSnapshot } from "./skill-marketplace-website";
 
 export const MARKET_RECEIPT = ".easyresearch-marketplace.json";
 const SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/;
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const MAX_SKILL_BYTES = 16 * 1024 * 1024;
-const MAX_FILE_BYTES = 2 * 1024 * 1024;
+export const MAX_FILE_BYTES = 2 * 1024 * 1024;
+
+export function websiteDomain(value: string): boolean {
+  return value.length <= 253 && value.includes(".") && !/^[\d.]+$/.test(value)
+    && value.split(".").every((part) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(part));
+}
+
+export function validMarketRevision(value: unknown): value is string {
+  return typeof value === "string" && /^(?:[a-f0-9]{40}|sha256:[a-f0-9]{64})$/.test(value);
+}
+
+export function validSkillName(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 64 && value.split("::").every((part) => SKILL_NAME.test(part));
+}
+
+export function skillInstallDirectory(name: string): string { return name.replaceAll("::", "-"); }
 
 export function marketError(message: string, status = 502, code = "SKILL_MARKET_UNAVAILABLE"): never {
   throw new ConfigServiceError(status, message, code);
 }
 
-export function parseMarketId(value: unknown): { id: string; source: string; slug: string } {
+export function parseMarketId(value: unknown): { id: string; source: string; slug: string; kind: "github" | "well-known" } {
   if (typeof value !== "string") marketError("Invalid skill identity.", 400);
   const parts = value.split("/");
-  if (parts.length !== 3 || !parts.every((part) => SEGMENT.test(part))) {
-    marketError("Only GitHub skills with an owner/repository/skill identity are supported.", 400);
-  }
-  return { id: value, source: parts.slice(0, 2).join("/"), slug: parts[2]! };
+  const slug = parts.at(-1)!;
+  if (!slug || slug.length > 150 || !slug.split("::").every((part) => SEGMENT.test(part))) marketError("Unsupported skill identity.", 400);
+  if (parts.length === 2 && websiteDomain(parts[0]!)) return { id: value, source: parts[0]!, slug, kind: "well-known" };
+  if (parts.length === 3 && parts.slice(0, 2).every((part) => SEGMENT.test(part))) return { id: value, source: parts.slice(0, 2).join("/"), slug, kind: "github" };
+  return marketError("This skill source requires manual or Agent-assisted installation.", 400);
 }
 
 export function safeSkillPath(path: string): boolean {
@@ -47,9 +66,12 @@ export function parseMarketSkills(value: unknown): MarketSkillDto[] {
       marketError("Invalid skill catalog response.");
     }
     const id = `${row.source}/${slug}`;
-    const supported = SEGMENT.test(slug) && row.source.split("/").length === 2 && row.source.split("/").every((part) => SEGMENT.test(part));
+    let supported = true;
+    try { parseMarketId(id); } catch { supported = false; }
+    const unsupportedReason = slug.split("::").every((part) => SEGMENT.test(part)) ? "source" as const : "identity" as const;
     result.set(id, {
       id, source: row.source, slug, name: row.name, installs: row.installs, supported,
+      ...(!supported ? { unsupportedReason } : {}),
       ...(typeof row.description === "string" ? { description: row.description.slice(0, 600) } : {}),
     });
   }
@@ -91,7 +113,7 @@ export function parseMarketLeaderboard(html: string): MarketSkillDto[] {
   return marketError("Invalid skills.sh leaderboard.");
 }
 
-export interface SkillSourceFile { path: string; sha: string; size: number; executable: boolean }
+export interface SkillSourceFile { path: string; sha: string; size: number; executable: boolean; bytes?: Buffer }
 export interface SkillSourceSnapshot {
   id: string;
   source: string;
@@ -102,12 +124,26 @@ export interface SkillSourceSnapshot {
   content: string;
   descriptorBytes: Buffer;
   files: SkillSourceFile[];
+  sourceType?: "github" | "well-known";
+  sourceUrl?: string;
+}
+
+export async function skillDescriptor(descriptorBytes: Buffer): Promise<{ name: string; description: string; content: string }> {
+  const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(descriptorBytes);
+  const { parseFrontmatter } = await importPi();
+  let data: Record<string, unknown>;
+  try { data = parseFrontmatter<Record<string, unknown>>(content).frontmatter; }
+  catch { return marketError("Invalid SKILL.md frontmatter.", 422); }
+  if (!validSkillName(data.name) || typeof data.description !== "string" || !data.description.trim()) {
+    marketError("The skill must have a valid name and description in SKILL.md.", 422);
+  }
+  return { name: data.name, description: data.description.slice(0, 4000), content };
 }
 
 export class SkillMarketplaceSource {
   constructor(private readonly fetcher: (url: string, init: RequestInit) => Promise<Response>) {}
 
-  async bytes(url: string, limit: number, signal: AbortSignal): Promise<Buffer> {
+  async bytes(url: string, limit: number, signal: AbortSignal, website = false): Promise<Buffer> {
     signal.throwIfAborted();
     let response: Response;
     try {
@@ -121,7 +157,8 @@ export class SkillMarketplaceSource {
         await response.body?.cancel();
         if (!location || hop >= 3) throw new Error("redirect limit");
         target = new URL(location, target);
-        if (target.protocol !== "https:" || target.port || target.username || target.password || !allowedHosts.has(target.hostname)) throw new Error("unsupported redirect");
+        if (target.protocol !== "https:" || target.port || target.username || target.password
+          || !(website ? websiteDomain(target.hostname) : allowedHosts.has(target.hostname))) throw new Error("unsupported redirect");
       }
     } catch {
       signal.throwIfAborted();
@@ -134,7 +171,7 @@ export class SkillMarketplaceSource {
         const seconds = retry && /^\d{1,6}$/.test(retry) ? ` Retry after ${retry} seconds.` : " Retry later.";
         marketError(`The skill source rate-limited this request.${seconds}`, 429, "SKILL_MARKET_RATE_LIMIT");
       }
-      marketError(response.status === 404 ? "The skill source no longer exists." : "The skill source is unavailable.");
+      marketError(response.status === 404 ? "The skill source no longer exists." : "The skill source is unavailable.", response.status === 404 ? 404 : 502);
     }
     const reader = response.body?.getReader();
     if (!reader) marketError("Empty skill source response.");
@@ -176,7 +213,8 @@ export class SkillMarketplaceSource {
   }
 
   async snapshot(id: string, signal: AbortSignal, revision?: string): Promise<SkillSourceSnapshot> {
-    const { source, slug } = parseMarketId(id);
+    const { source, slug, kind } = parseMarketId(id);
+    if (kind === "well-known") return websiteSnapshot(this, id, signal, revision);
     const commit = revision ?? (await this.json(`https://api.github.com/repos/${source}/commits/HEAD`, signal)).sha;
     if (typeof commit !== "string" || !/^[a-f0-9]{40}$/.test(commit)) marketError("Invalid source revision.", 400);
     const tree = await this.json(`https://api.github.com/repos/${source}/git/trees/${commit}?recursive=1`, signal);
@@ -184,7 +222,7 @@ export class SkillMarketplaceSource {
     const entries = tree.tree.map(object);
     const descriptors = entries.filter((entry) => typeof entry.path === "string"
       && (entry.path === "SKILL.md" || entry.path.endsWith("/SKILL.md")));
-    const matches = descriptors.filter((entry) => (entry.path as string).split("/").at(-2)?.toLowerCase() === slug.toLowerCase());
+    const matches = descriptors.filter((entry) => (entry.path as string).split("/").at(-2)?.toLowerCase() === slug.split("::").at(-1)!.toLowerCase());
     const candidates = matches.length ? matches : descriptors.filter((entry) => entry.path === "SKILL.md");
     if (candidates.length !== 1) marketError("Could not locate an unambiguous SKILL.md for this skill.", 422);
     const descriptorPath = candidates[0]!.path as string;
@@ -218,19 +256,14 @@ export class SkillMarketplaceSource {
     if (!descriptor || descriptor.size > 256 * 1024) marketError("Invalid or oversized SKILL.md.", 422);
     const snapshot = { id, source, commit, directory, files };
     const descriptorBytes = await this.file(snapshot, descriptor, signal);
-    const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(descriptorBytes);
-    const { parseFrontmatter } = await importPi();
-    let data: Record<string, unknown>;
-    try { data = parseFrontmatter<Record<string, unknown>>(content).frontmatter; }
-    catch { return marketError("Invalid SKILL.md frontmatter.", 422); }
-    if (typeof data.name !== "string" || data.name.length > 64 || !SKILL_NAME.test(data.name)
-      || typeof data.description !== "string" || !data.description.trim()) {
-      marketError("The skill must have a valid name and description in SKILL.md.", 422);
-    }
-    return { ...snapshot, name: data.name, description: data.description.slice(0, 4000), content, descriptorBytes };
+    const metadata = await skillDescriptor(descriptorBytes);
+    if (slug.includes("::") && metadata.name !== slug) marketError("The skill namespace does not match its descriptor.", 422);
+    return { ...snapshot, ...metadata, descriptorBytes, sourceType: "github", sourceUrl: `https://github.com/${source}` };
   }
 
   async file(snapshot: Pick<SkillSourceSnapshot, "source" | "commit" | "directory">, file: SkillSourceFile, signal: AbortSignal): Promise<Buffer> {
+    signal.throwIfAborted();
+    if (file.bytes) return file.bytes;
     const path = `${snapshot.directory}${file.path}`.split("/").map(encodeURIComponent).join("/");
     const bytes = await this.bytes(`https://raw.githubusercontent.com/${snapshot.source}/${snapshot.commit}/${path}`, Math.min(file.size, MAX_FILE_BYTES), signal);
     const sha = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
@@ -239,5 +272,33 @@ export class SkillMarketplaceSource {
       marketError("Git LFS skill assets are not supported.", 422);
     }
     return bytes;
+  }
+
+  async description(id: string, signal: AbortSignal): Promise<{ content: string; url: string; summary: string }> {
+    const { source, slug } = parseMarketId(id);
+    const url = skillMarketPageUrl(source, slug);
+    const html = (await this.bytes(url, 4 * 1024 * 1024, signal)).toString("utf8");
+    const $ = load(html);
+    const prose = $(".prose").first();
+    if (!prose.length) marketError("The public skill explanation is unavailable.", 404);
+    prose.find("script,style,iframe,object,embed,form,input,button,img,svg,video,audio").remove();
+    const metadata = $("meta[name='description']").attr("content") ?? $("meta[property='og:description']").attr("content");
+    const body = prose.clone();
+    body.find("h1").remove();
+    body.find("p,li,h2,h3,h4,pre,blockquote,tr").append(" ");
+    const summary = Array.from((metadata && metadata !== "Discover and install skills for AI agents." ? metadata : body.text())
+      .replace(/\s+/g, " ").trim()).slice(0, 320).join("");
+    prose.find("a").each((_, element) => {
+      const link = $(element);
+      const href = link.attr("href");
+      try {
+        const resolved = new URL(href ?? "", url);
+        if (!href || !["https:", "http:"].includes(resolved.protocol)) link.removeAttr("href");
+        else link.attr("href", resolved.href);
+      } catch { link.removeAttr("href"); }
+    });
+    const content = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" }).turndown(prose.html() ?? "");
+    if (!content.trim() || Buffer.byteLength(content) > 256 * 1024) marketError("The public skill explanation is unavailable or too large.", 422);
+    return { content, url, summary };
   }
 }

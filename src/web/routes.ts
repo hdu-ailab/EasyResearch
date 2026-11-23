@@ -294,6 +294,10 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       if (req.method === "GET" && path === "/api/skill-marketplace/detail" && services.skillMarketplace) {
         return jsonResponse(await services.skillMarketplace.detail(requireQuery(url, "id"), req.signal));
       }
+      if (req.method === "GET" && path === "/api/skill-marketplace/description" && services.skillMarketplace) {
+        const description = await services.skillMarketplace.description(requireQuery(url, "id"), req.signal);
+        return jsonResponse(url.searchParams.get("summary") === "1" ? { summary: description.summary } : description);
+      }
       if (req.method === "POST" && path === "/api/skill-marketplace/install" && services.skillMarketplace) {
         return jsonResponse(await services.skillMarketplace.install(await jsonBody<unknown>(req), req.signal));
       }

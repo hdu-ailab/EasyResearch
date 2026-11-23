@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -20,28 +21,52 @@ const emptyPath = join(root, "empty-path");
 for (const path of [home, agent, project, emptyPath]) mkdirSync(path);
 const cert = join(root, "fixture.crt");
 const key = join(root, "fixture.key");
-const hosts = ["skills.sh", "www.skills.sh", "api.github.com", "raw.githubusercontent.com"];
+const hosts = ["skills.sh", "www.skills.sh", "api.github.com", "raw.githubusercontent.com", "open.feishu.cn"];
 const generated = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2",
   "-subj", "/CN=EasyResearch marketplace smoke only", "-addext", `subjectAltName=${hosts.map(host => `DNS:${host}`).join(",")}`,
   "-keyout", key, "-out", cert], { encoding: "utf8" });
 assert.equal(generated.status, 0, "Could not generate isolated fixture certificate");
 const fixture = marketFixture();
+const websiteId = "open.feishu.cn/lark-mail";
+const websiteFiles = new Map([
+  ["SKILL.md", Buffer.from("---\nname: lark-mail\ndescription: Website mail skill\n---\n# Website Mail\n")],
+  ["assets/binary.bin", Buffer.from([0, 255, 128])],
+  ["references/help.md", Buffer.from("# Website help\n")],
+]);
+const namespaced = marketFixture();
+const namespaceId = "example/namespaced/stitch::market-test";
+const namespaceContent = namespaced.content.replace("name: market-test", "name: stitch::market-test");
+namespaced.files.set("SKILL.md", Buffer.from(namespaceContent));
+namespaced.tree[0]!.size = Buffer.byteLength(namespaceContent);
+namespaced.tree[0]!.sha = createHash("sha1").update(`blob ${Buffer.byteLength(namespaceContent)}\0`).update(namespaceContent).digest("hex");
+const websiteSkill = { id: websiteId, source: "open.feishu.cn", skillId: "lark-mail", name: "lark-mail", installs: 1000 };
 const catalogRows = [fixture.skill, ...["literature-review", "scientific-writing", "data-analysis", "experiment-design", "paper-figures", "citation-check", "statistical-tests", "research-notes"].map((name, index) => ({
   id: `example/research/${name}`, source: "example/research", skillId: name, name, installs: 4200 - index * 310,
-}))];
+})), websiteSkill, { ...fixture.skill, id: "example/research/missing-skill", skillId: "missing-skill", name: "missing-skill" }];
 const origin = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: { key: readFileSync(key), cert: readFileSync(cert) },
   fetch(request) {
     const url = new URL(request.url);
     assert(hosts.includes(url.hostname));
+    if (url.hostname === "open.feishu.cn") {
+      fixture.requests.push(url.href);
+      if (url.pathname.includes("/agent-skills/")) return new Response("<html>Not an index</html>");
+      if (url.pathname.endsWith("/index.json")) return Response.json({ skills: [{ name: "lark-mail", description: "Mail", files: [...websiteFiles.keys()] }] });
+      const bytes = websiteFiles.get(url.pathname.split("/lark-mail/")[1]!);
+      return bytes ? new Response(new Uint8Array(bytes)) : new Response("Missing", { status: 404 });
+    }
     if (url.hostname === "skills.sh" || url.hostname === "www.skills.sh") {
       fixture.requests.push(url.href);
       if (url.searchParams.get("q") === "rate-limit") return Response.json({ error: "fixture" }, { status: 429, headers: { "Retry-After": "1" } });
+      if (url.pathname === "/example/research/market-test") return new Response('<main><div class="prose"><h1>Catalog explanation</h1><p>Read this public skill guide.</p></div></main>');
+      if (url.pathname === "/site/open.feishu.cn/lark-mail") return new Response('<div class="prose"><h1>Website catalog guide</h1></div>');
+      if (url.pathname === "/example/research/missing-skill") return new Response('<div class="prose"><h1>Available explanation despite download failure</h1></div>');
+      if (url.pathname.startsWith("/example/research/")) return new Response('<meta name="description" content="Research tools for collecting evidence, organizing references and building reproducible workflows."><div class="prose"><h1>Skill guide</h1><p>Detailed workflow instructions.</p></div>');
       const rows = url.searchParams.get("q") ? [fixture.skill] : catalogRows;
       if (url.pathname === "/api/search") return Response.json({ skills: rows });
       const payload = `1:["$","$L1",null,${JSON.stringify({ initialSkills: rows })}]`;
       return new Response(`<html><script>self.__next_f.push([1,${JSON.stringify(payload)}])</script></html>`);
     }
-    return fixture.response(url.href);
+    return url.pathname.includes("/example/namespaced/") ? namespaced.response(url.href) : fixture.response(url.href);
   },
 });
 const proxy = await startRecordingHttpProxy({ name: "market-search", fakeTargets: Object.fromEntries(hosts.map(host => [host, `https://127.0.0.1:${origin.port}`])) });
@@ -79,9 +104,19 @@ try {
   const session = await json("/api/sessions", { cwd: project });
   const commandsBefore = await json(`/api/sessions/${session.id}/commands`);
   assert(!commandsBefore.commands.some((entry: any) => entry.name === "market-test"));
+  for (const id of [websiteId, namespaceId]) {
+    const preview = await json(`/api/skill-marketplace/detail?id=${encodeURIComponent(id)}`);
+    await json("/api/skill-marketplace/install", { id, commit: preview.commit });
+    if (id === websiteId) {
+      assert.match(preview.commit, /^sha256:/);
+      for (const [path, bytes] of websiteFiles) assert.deepEqual(readFileSync(join(agent, "skills/lark-mail", path)), bytes);
+    } else assert.equal(readFileSync(join(agent, "skills/stitch-market-test/SKILL.md"), "utf8"), namespaceContent);
+  }
 
   browser = await chromium.launch({ executablePath: process.env.COMPARE_CHROMIUM_PATH ?? chromium.executablePath(), headless: true });
   const context = await browser.newContext({ viewport: { width: 1500, height: 1000 }, locale: "en-US" });
+  await context.route("https://skills.sh/**", route => route.fulfill({ contentType: "text/html", body: "<h1>External skills source page</h1>" }));
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
   const page = await context.newPage();
   const workerUrls: string[] = [];
   page.on("worker", worker => workerUrls.push(worker.url()));
@@ -96,16 +131,34 @@ try {
   const columns = await page.locator(".er-market-grid").last().evaluate(element => getComputedStyle(element).gridTemplateColumns.split(" ").length);
   assert.equal(columns, 3, "Desktop marketplace should use three columns");
   assert(await page.locator(".er-market-card").first().evaluate(element => getComputedStyle(element).backgroundColor !== "rgba(0, 0, 0, 0)"));
+  const firstCard = page.locator(".er-market-card").first();
+  const resourcePanel = page.locator("#settings-panel-resources");
+  assert.equal(await resourcePanel.getByRole("heading", { name: "Skills and tools", exact: true }).count(), 0);
+  assert.equal(await resourcePanel.locator(".er-market-toolbar").getByRole("link", { name: "skills.sh", exact: true }).count(), 0);
+  const searchBox = await resourcePanel.locator(".er-market-search").boundingBox();
+  const viewControls = await resourcePanel.locator(".er-market-toolbar > .er-market-switch").boundingBox();
+  assert(searchBox && viewControls && searchBox.x < viewControls.x && Math.abs(searchBox.y + searchBox.height / 2 - viewControls.y - viewControls.height / 2) < 2,
+    "Search must lead the first row, with view controls aligned on the right");
+  await firstCard.locator(".er-market-summary").filter({ hasText: "Read this public skill guide." }).waitFor();
+  await page.locator(".er-market-card").nth(1).locator(".er-market-summary").filter({ hasText: "Research tools" }).waitFor();
   await page.screenshot({ path: join(root, "desktop.png") });
+  assert.equal(await firstCard.locator(".er-market-avatar").count(), 0);
+  assert.equal(await firstCard.getByRole("link", { name: "example/research", exact: true }).getAttribute("href"), "https://skills.sh/example/research");
+  const [authorPage] = await Promise.all([page.waitForEvent("popup"), firstCard.getByRole("link", { name: "example/research", exact: true }).click()]);
+  await authorPage.waitForURL("https://skills.sh/example/research");
+  assert(authorPage.url().startsWith("https://skills.sh/example/research"));
+  await authorPage.close();
+  assert.equal(await page.locator(".er-market-detail").count(), 0, "Author link must not open the skill dialog");
   const sibling = await page.context().newPage();
   sibling.on("pageerror", error => errors.push(error.message));
   await sibling.goto(`${base}/#/?settings=1`);
   await sibling.getByRole("tab", { name: "Skills and tools", exact: true }).click();
   await sibling.getByRole("button", { name: "Marketplace", exact: true }).click();
   await sibling.getByRole("button", { name: "Add market-test", exact: true }).first().waitFor();
-  await page.getByRole("button", { name: "Add market-test", exact: true }).first().click();
+  await firstCard.click({ position: { x: 15, y: 15 } });
   const dialog = page.getByRole("dialog", { name: "market-test", exact: true });
   await dialog.getByText(fixture.commit, { exact: true }).waitFor();
+  await dialog.getByRole("heading", { name: "Catalog explanation", exact: true }).waitFor();
   await dialog.getByText("Files (4)", { exact: true }).click();
   await dialog.getByText("assets/sample.bin", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Install globally", exact: true }).click();
@@ -129,6 +182,8 @@ try {
     assert(Date.now() < deadline, "Idle native runtime did not discover the installed Skill");
     await Bun.sleep(100);
   }
+  const allCommands = await json(`/api/sessions/${session.id}/commands`);
+  for (const name of ["lark-mail", "stitch::market-test"]) assert(allCommands.commands.some((entry: any) => entry.name === name), `Native Skill missing: ${name}`);
   await page.getByRole("searchbox", { name: "Search skills" }).fill("rate-limit");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "rate-limited" }).waitFor();
@@ -138,8 +193,22 @@ try {
   await page.getByRole("button", { name: /^Installed \(/ }).click();
   await page.getByRole("button", { name: "Edit skill market-test", exact: true }).waitFor();
   await page.getByRole("button", { name: "Marketplace", exact: true }).click();
+  assert.equal(await page.getByRole("searchbox", { name: "Search skills" }).inputValue(), "research", "View switching must preserve the search draft");
   await page.getByRole("button", { name: "All", exact: true }).click();
   await page.getByRole("button", { name: "View literature-review", exact: true }).first().waitFor();
+  await page.getByRole("button", { name: "View missing-skill", exact: true }).click();
+  const failedPreview = page.getByRole("dialog", { name: "missing-skill", exact: true });
+  await failedPreview.getByRole("link", { name: "Manual download", exact: true }).waitFor();
+  await failedPreview.getByRole("heading", { name: "Available explanation despite download failure", exact: true }).waitFor();
+  await failedPreview.getByRole("button", { name: "Copy installation request", exact: true }).click();
+  await failedPreview.getByText("Copied. Paste it into the Research Assistant conversation to install.", { exact: true }).waitFor();
+  assert((await page.evaluate(() => navigator.clipboard.readText())).includes("example/research/missing-skill"));
+  await page.screenshot({ path: join(root, "recovery.png") });
+  await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error("fixture denial"); }; });
+  await failedPreview.getByRole("button", { name: "Copy installation request", exact: true }).click();
+  await failedPreview.getByText("Copy failed. The request is selected; copy it manually.", { exact: true }).waitFor();
+  assert(await failedPreview.getByRole("textbox").evaluate((element: HTMLTextAreaElement) => element.selectionEnd - element.selectionStart === element.value.length));
+  await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await page.goto(`${base}/#/work/${session.id}?cwd=${encodeURIComponent(project)}`);
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
@@ -168,12 +237,12 @@ try {
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.screenshot({ path: join(root, "mobile-dark-zh.png") });
   await page.getByRole("button", { name: "查看 market-test", exact: true }).first().click();
-  await page.getByRole("dialog", { name: "market-test", exact: true }).locator(".er-market-markdown").getByRole("heading", { name: "Research", exact: true }).waitFor();
+  await page.getByRole("dialog", { name: "market-test", exact: true }).locator(".er-market-markdown").getByRole("heading", { name: "Catalog explanation", exact: true }).waitFor();
   assert(!workerUrls.some(url => url.includes("markdown.worker-")), "Fallback must render without a dedicated Worker");
   await page.keyboard.press("Escape");
   assert.deepEqual(errors, []);
   assert(hosts.filter(host => host !== "www.skills.sh").every(host => proxy.records().some(record => record.host === host)), "Catalog and downloads must use Search routing");
-  writeFileSync(join(root, "report.json"), JSON.stringify({ binary, columns, catalogRenderMs, installed: fixture.id, nativeCommandAvailable: true, bytePreserved: true, crossTabRefresh: true, markdownWorkerAndFallback: true, browserErrors: errors, requests: fixture.requests, proxyRecords: proxy.records() }, null, 2));
+  writeFileSync(join(root, "report.json"), JSON.stringify({ binary, columns, catalogRenderMs, installed: fixture.id, websiteInstalled: websiteId, namespacedInstalled: namespaceId, cardSummaries: true, wholeCardPreview: true, authorPopup: true, copyAndManualSelection: true, nativeCommandAvailable: true, bytePreserved: true, crossTabRefresh: true, markdownWorkerAndFallback: true, browserErrors: errors, requests: fixture.requests, proxyRecords: proxy.records() }, null, 2));
   console.log(`Skill marketplace compiled/API/browser acceptance passed: ${root}`);
 } catch (error) {
   const page = browser?.contexts()[0]?.pages()[0];

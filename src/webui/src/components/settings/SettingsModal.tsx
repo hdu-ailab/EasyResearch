@@ -354,9 +354,16 @@ export function SettingsModal({
   );
 
   useLayoutEffect(() => {
+    const focusPanel = () =>
+      dialogRef.current
+        ?.querySelector<HTMLElement>(
+          `#settings-panel-${active} :is([data-settings-panel-heading], [data-settings-panel-focus])`,
+        )
+        ?.focus({ preventScroll: true });
     if (!initialFocusSet.current) {
       initialFocusSet.current = true;
-      if (isMobile) titleRef.current?.focus({ preventScroll: true });
+      if (isMobile && mobileDetailOpen) focusPanel();
+      else if (isMobile) titleRef.current?.focus({ preventScroll: true });
       else
         dialogRef.current
           ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
@@ -364,9 +371,7 @@ export function SettingsModal({
       return;
     }
     if (isMobile && mobileDetailOpen) {
-      dialogRef.current
-        ?.querySelector<HTMLElement>(`#settings-panel-${active} [data-settings-panel-heading]`)
-        ?.focus({ preventScroll: true });
+      focusPanel();
       return;
     }
     if (isMobile && restoreMobileCategory.current) {

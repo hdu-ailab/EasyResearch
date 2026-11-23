@@ -1,11 +1,17 @@
 import { Check, ExternalLink, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { MarketSkillDto, SkillMarketDetailDto } from "../../../../web/skill-marketplace-contracts";
-import { getSkillMarketDetail, installMarketSkill } from "../../api/skill-marketplace";
+import type {
+  MarketSkillDto,
+  SkillMarketDescriptionDto,
+  SkillMarketDetailDto,
+} from "../../../../web/skill-marketplace-contracts";
+import { skillMarketAuthorUrl } from "../../../../web/skill-marketplace-contracts";
+import { getSkillMarketDescription, getSkillMarketDetail, installMarketSkill } from "../../api/skill-marketplace";
 import { useModalLayer } from "../../hooks/useModalLayer";
 import { useI18n } from "../../i18n/useI18n";
 import { MarkdownBlock } from "../MarkdownBlock";
+import { SkillMarketRecovery } from "./SkillMarketRecovery";
 
 export function SkillMarketDetailDialog({
   skill,
@@ -21,6 +27,7 @@ export function SkillMarketDetailDialog({
   const busy = useRef(false);
   const mounted = useRef(true);
   const [detail, setDetail] = useState<SkillMarketDetailDto | null>(null);
+  const [explanation, setExplanation] = useState<SkillMarketDescriptionDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -38,7 +45,15 @@ export function SkillMarketDetailDialog({
     void attempt;
     const controller = new AbortController();
     setDetail(null);
+    setExplanation(null);
     setError(null);
+    void getSkillMarketDescription(skill.id, controller.signal)
+      .then((value) => {
+        if (!controller.signal.aborted) setExplanation(value);
+      })
+      .catch(() => {
+        /* The original SKILL.md remains the explanation fallback. */
+      });
     void getSkillMarketDetail(skill.id, controller.signal)
       .then((result) => {
         if (!controller.signal.aborted) setDetail(result);
@@ -90,18 +105,19 @@ export function SkillMarketDetailDialog({
             </div>
           )}
           {!detail && !error && <p role="status">{t("dialog.loading")}</p>}
+          {(error || detail?.state === "conflict") && <SkillMarketRecovery skill={skill} />}
           {detail && (
             <>
               <p>{detail.description}</p>
               <dl className="er-market-metadata">
                 <dt>{t("skillMarket.source")}</dt>
                 <dd>
-                  <a href={`https://github.com/${skill.source}`} target="_blank" rel="noreferrer">
+                  <a href={detail.sourceUrl ?? skillMarketAuthorUrl(skill.source)} target="_blank" rel="noreferrer">
                     {skill.source}
                     <ExternalLink size={12} aria-hidden />
                   </a>
                 </dd>
-                <dt>{t("skillMarket.commit")}</dt>
+                <dt>{t(detail.sourceType === "well-known" ? "skillMarket.snapshot" : "skillMarket.commit")}</dt>
                 <dd>
                   <code>{detail.commit}</code>
                 </dd>
@@ -120,15 +136,34 @@ export function SkillMarketDetailDialog({
                   ))}
                 </ul>
               </details>
-              <div className="er-market-markdown">
-                <MarkdownBlock
-                  text={detail.content}
-                  className="v2-md"
-                  scope={`market:${detail.id}`}
-                  cacheKey={detail.commit}
-                />
-              </div>
             </>
+          )}
+          {(explanation || detail) && (
+            <div className="er-market-markdown">
+              {explanation && (
+                <a href={explanation.url} target="_blank" rel="noreferrer">
+                  {t("skillMarket.explanationSource")}
+                  <ExternalLink size={12} aria-hidden />
+                </a>
+              )}
+              <MarkdownBlock
+                text={explanation?.content ?? detail?.content ?? ""}
+                className="v2-md"
+                scope={`market:${skill.id}`}
+                cacheKey={explanation?.url ?? detail?.commit ?? "description"}
+              />
+              {explanation && detail && (
+                <details className="er-market-full-source">
+                  <summary>{t("skillMarket.fullSource")}</summary>
+                  <MarkdownBlock
+                    text={detail.content}
+                    className="v2-md"
+                    scope={`market-source:${skill.id}`}
+                    cacheKey={detail.commit}
+                  />
+                </details>
+              )}
+            </div>
           )}
         </div>
         <footer>
