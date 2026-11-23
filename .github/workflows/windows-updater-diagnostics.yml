@@ -39,6 +39,8 @@ jobs:
       - name: Diagnose using Bun
         continue-on-error: true
         run: bun scripts/windows-update-assembly.ts bun scripts/diagnose-windows-update.ts
+      - name: Verify private Desktop certificate trust
+        run: bun scripts/diagnose-desktop-update-trust.ts
       - name: Retain bounded diagnostic receipts
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
@@ -46,6 +48,7 @@ jobs:
           name: windows-job-diagnostics
           path: |
             ${{ runner.temp }}/windows-job-diagnostic-*.json
+            ${{ runner.temp }}/windows-desktop-trust-diagnostic.json
           if-no-files-found: warn
           retention-days: 7
       - name: Verify native Windows updater tests

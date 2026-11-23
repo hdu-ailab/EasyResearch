@@ -69,7 +69,7 @@ export function assertOlderVersion(older: string, current: string): void {
   assert(difference !== undefined && difference < 0, "Fixture version must be older than the accepted candidate version");
 }
 
-export interface CommandOptions { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; logFile?: string; windowsVerbatimArguments?: boolean }
+export interface CommandOptions { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; logFile?: string; windowsVerbatimArguments?: boolean; label?: string }
 export async function runFixtureCommand(command: string, args: string[], options: CommandOptions = {}): Promise<string> {
   return new Promise((resolveCommand, reject) => {
     const child = spawn(command, args, { cwd: options.cwd, env: options.env, windowsHide: true,
@@ -81,7 +81,7 @@ export async function runFixtureCommand(command: string, args: string[], options
     child.stderr.on("data", chunk => { stderr = capture(stderr, chunk); });
     child.once("error", error => { failure = error; });
     const timer = setTimeout(() => {
-      failure = new Error(`Fixture command timed out: ${command}`);
+      failure = new Error(`Fixture command timed out: ${options.label ?? command}`);
       // Broken inherited pipes cannot hang the gate forever. Caller-owned native
       // fixture cleanup still rechecks/scans its private process tree on rejection.
       hardDeadline = setTimeout(() => finish(null, null), 15_000);
@@ -93,7 +93,7 @@ export async function runFixtureCommand(command: string, args: string[], options
       if (finished) return; finished = true;
       clearTimeout(timer); clearTimeout(hardDeadline);
       if (options.logFile) writeFileSync(options.logFile, `${stdout}\n${stderr}`, { mode: 0o600 });
-      if (failure || code !== 0 || signal) reject(new Error(`${failure?.message ?? `Fixture command exited ${code ?? signal}`}: ${command}\n${stdout.slice(-8192)}\n${stderr.slice(-8192)}`));
+      if (failure || code !== 0 || signal) reject(new Error(`${failure?.message ?? `Fixture command exited ${code ?? signal}`}: ${options.label ?? command}\n${stdout.slice(-8192)}\n${stderr.slice(-8192)}`));
       else resolveCommand(stdout);
     };
     child.once("close", finish);
@@ -121,26 +121,26 @@ export function powershellExecutable(): string {
   const path = win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   assert(statSync(path).isFile(), "Windows PowerShell is unavailable"); return path;
 }
-export async function powershell(script: string, env: NodeJS.ProcessEnv = process.env, timeoutMs = 30_000): Promise<string> {
+export async function powershell(script: string, env: NodeJS.ProcessEnv = process.env, timeoutMs = 30_000, label = "PowerShell fixture probe"): Promise<string> {
   return runFixtureCommand(powershellExecutable(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand",
-    Buffer.from(`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ${script}`, "utf16le").toString("base64")], { env, timeoutMs });
+    Buffer.from(`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ${script}`, "utf16le").toString("base64")], { env, timeoutMs, label });
 }
 
 export function windowsFixtureTrust(caPath: string): FixtureTrustStore {
-  const execute = (operation: string, thumbprint: string) => powershell(`
+  const execute = (label: string, operation: string, thumbprint: string) => powershell(`
     $store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser');
     $store.Open('ReadWrite');
     try {
       $matches=@($store.Certificates | Where-Object { $_.Thumbprint -ceq $env:ER_FIXTURE_THUMBPRINT });
       ${operation}
     } finally { $store.Close() }
-  `, { ...process.env, ER_FIXTURE_THUMBPRINT: thumbprint, ER_FIXTURE_CA: caPath });
+  `, { ...process.env, ER_FIXTURE_THUMBPRINT: thumbprint, ER_FIXTURE_CA: caPath }, 30_000, `certificate store ${label}`);
   return {
-    contains: async thumbprint => (await execute("[Console]::Write($matches.Count)", thumbprint)).trim() !== "0",
+    contains: async thumbprint => (await execute("contains", "[Console]::Write($matches.Count)", thumbprint)).trim() !== "0",
     async add(thumbprint) {
-      await execute("if($matches.Count -ne 0){throw 'Fixture certificate unexpectedly exists'}; $cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($env:ER_FIXTURE_CA); if($cert.Thumbprint -cne $env:ER_FIXTURE_THUMBPRINT){throw 'CA identity mismatch'}; $store.Add($cert)", thumbprint);
+      await execute("add", "if($matches.Count -ne 0){throw 'Fixture certificate unexpectedly exists'}; $cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($env:ER_FIXTURE_CA); if($cert.Thumbprint -cne $env:ER_FIXTURE_THUMBPRINT){throw 'CA identity mismatch'}; $store.Add($cert)", thumbprint);
     },
-    async remove(thumbprint) { await execute("foreach($cert in $matches){$store.Remove($cert)}", thumbprint); },
+    async remove(thumbprint) { await execute("remove", "foreach($cert in $matches){$store.Remove($cert)}", thumbprint); },
   };
 }
 

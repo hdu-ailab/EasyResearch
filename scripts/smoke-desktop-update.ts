@@ -465,21 +465,28 @@ export async function runDesktopUpdateSmoke(options: ReturnType<typeof parseDesk
   console.log(`[desktop-update] private diagnostics: ${root}`);
   let old: UpdateFixtureBuild | undefined; let builtHere = false; let failure: unknown;
   const receiptPath = options.receipt ? resolve(options.receipt) : join(root, "receipt.json");
+  let phase = "predecessor-build";
+  const progress = (value: string) => { phase = value; console.log(`[desktop-update] ${value}`); };
   try {
+    progress("predecessor-build");
     old = options.fixture ? JSON.parse(readFileSync(options.fixture, "utf8")) as UpdateFixtureBuild : await buildUpdateFixture({ target: "windows-x64", version: options.oldVersion, desktop: true, allWindowsLocales: true });
     builtHere = !options.fixture;
+    progress("predecessor-verification");
     assert(old.target === "windows-x64" && old.version === options.oldVersion && old.desktopManifest && old.installer && old.allWindowsLocales, "Expected updater-enabled all-locales private Windows fixture");
     assertFixtureChild(old.root, old.installer); assertFixtureChild(old.root, old.nativeBinary);
     const oldDesktop = JSON.parse(readFileSync(old.desktopManifest, "utf8")) as DesktopBuildManifest;
     verifyDesktopSmokePackages(oldDesktop, "windows-x64", old.version, dirname(old.installer));
     const oldNative = validateDesktopSidecar("windows-x64", JSON.parse(readFileSync(old.nativeManifest, "utf8")), old.nativeBinary, old.version);
     verifyDesktopSidecarIdentity(oldDesktop.sidecar, oldNative);
+    progress("certificate-generation");
     const certificate = await createDesktopFixtureCertificate(join(root, "tls"));
     writeFileSync(join(root, "fixture-ca-ownership.json"), JSON.stringify({ store: "CurrentUser/Root", thumbprint: certificate.thumbprint }), { mode: 0o600 });
+    progress("tls-fixture-start");
     const fixture = await startDesktopReleaseFixture(certificate, await createReleaseFixture(version, candidate.path));
     try {
       // Prove absent trust BEFORE importing it into the Windows user store.
       await assert.rejects(tlsHandshake(fixture.port));
+      progress("certificate-trust");
       await withFixtureTrust(certificate.thumbprint, windowsFixtureTrust(certificate.caPath), async () => {
         // Chromium independently uses the imported Windows root, without any
         // ignore-certificate flags or TLS-setting mutation.
@@ -487,6 +494,7 @@ export async function runDesktopUpdateSmoke(options: ReturnType<typeof parseDesk
         await tlsHandshake(fixture.port, certificate.ca, "api.github.com"); await tlsHandshake(fixture.port, certificate.ca, "github.com");
         const results: Record<string, unknown>[] = [];
         for (const mode of ["rollback", "upgrade"] as const) {
+          progress(`installed-${mode}`);
           const scenario = join(root, mode); mkdirSync(scenario);
           results.push(await driveScenario({ root: scenario, mode, old: old!, candidateManifest, candidateInstaller: candidate.path, candidateIdentity, release: fixture }));
         }
@@ -513,7 +521,11 @@ export async function runDesktopUpdateSmoke(options: ReturnType<typeof parseDesk
     try { if (old && builtHere && !failure) await removeUpdateFixture(old); } catch (error) { errors.push(error); }
     // Private keys have no diagnostic value and must not enter an uploaded receipt.
     try { rmSync(join(root, "tls"), { recursive: true, force: true }); } catch (error) { errors.push(error); }
-    if (failure || errors.length) throw new AggregateError([...(failure ? [failure] : []), ...errors], `Windows Desktop update gate failed; diagnostics: ${root}`);
+    if (failure || errors.length) {
+      writeFileSync(receiptPath, `${JSON.stringify({ acceptance: "native-windows-two-version-desktop-update", status: "failed", phase, version,
+        candidateInstallerSha256: candidate.sha256, candidateNativeSha256: native.sha256 })}\n`, { mode: 0o600 });
+      throw new AggregateError([...(failure ? [failure] : []), ...errors], `Windows Desktop update gate failed during ${phase}; diagnostics: ${root}`);
+    }
   }
   console.log(`[desktop-update] native Windows upgrade and rollback passed: ${receiptPath}`);
 }
