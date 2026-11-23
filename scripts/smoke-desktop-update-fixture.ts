@@ -135,10 +135,16 @@ export function windowsFixtureTrust(caPath: string): FixtureTrustStore {
       ${operation}
     } finally { $store.Close() }
   `, { ...process.env, ER_FIXTURE_THUMBPRINT: thumbprint, ER_FIXTURE_CA: caPath }, 30_000, `certificate store ${label}`);
+  const contains = async (thumbprint: string) => (await execute("contains", "[Console]::Write($matches.Count)", thumbprint)).trim() !== "0";
   return {
-    contains: async thumbprint => (await execute("contains", "[Console]::Write($matches.Count)", thumbprint)).trim() !== "0",
+    contains,
     async add(thumbprint) {
-      await execute("add", "if($matches.Count -ne 0){throw 'Fixture certificate unexpectedly exists'}; $cert=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new($env:ER_FIXTURE_CA); if($cert.Thumbprint -cne $env:ER_FIXTURE_THUMBPRINT){throw 'CA identity mismatch'}; $store.Add($cert)", thumbprint);
+      assert.equal(new X509Certificate(readFileSync(caPath)).fingerprint.replaceAll(":", ""), thumbprint, "Fixture CA identity mismatch");
+      assert(!await contains(thumbprint), "Fixture certificate unexpectedly exists");
+      // Use the non-interactive current-user import for this one owned test CA;
+      // the managed Root-store Add did not settle on the native runner.
+      await runFixtureCommand(win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "certutil.exe"),
+        ["-user", "-f", "-addstore", "Root", caPath], { timeoutMs: 30_000, label: "certificate store add" });
     },
     async remove(thumbprint) { await execute("remove", "foreach($cert in $matches){$store.Remove($cert)}", thumbprint); },
   };

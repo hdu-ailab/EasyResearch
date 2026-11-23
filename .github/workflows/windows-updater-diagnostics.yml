@@ -10,12 +10,17 @@ on:
         description: Also execute native Windows updater tests
         type: boolean
         default: false
+      desktop-native-run:
+        description: Optional run ID containing an accepted unchanged Windows sidecar for Desktop acceptance
+        type: string
+        default: ""
 permissions:
   contents: read
+  actions: read
 jobs:
   diagnose:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - name: Preserve diagnostic runner
@@ -58,3 +63,56 @@ jobs:
           HOME: ${{ runner.temp }}/easyresearch-update-tests/home
           USERPROFILE: ${{ runner.temp }}/easyresearch-update-tests/home
         run: bun scripts/windows-update-assembly.ts bun run test src/runtime/windows-update-job.test.ts src/runtime/windows-update-job.protocol.test.ts src/runtime/windows-update-job.native.test.ts src/runtime/npm-update-process.test.ts src/runtime/npm-update-process-windows.test.ts src/runtime/npm-update-process-windows.native.test.ts src/desktop/update-process.test.ts src/desktop/update-worker.test.ts
+      - name: Verify accepted sidecar source matches
+        if: ${{ inputs['desktop-native-run'] != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTED_RUN: ${{ inputs['desktop-native-run'] }}
+        run: |
+          if ($env:ACCEPTED_RUN -notmatch '^\d+$') { throw "Invalid accepted run ID" }
+          $accepted = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:ACCEPTED_RUN" --jq '.head_sha'
+          if ($LASTEXITCODE -ne 0 -or $accepted -notmatch '^[a-f0-9]{40}$') { throw "Accepted source revision unavailable" }
+          git fetch --no-tags --depth=1 origin $accepted
+          if ($LASTEXITCODE -ne 0) { throw "Cannot verify accepted source" }
+          git diff --exit-code $accepted HEAD -- src launcher.mjs package.json bun.lock scripts/build.ts scripts/windows-update-assembly.ts scripts/third-party-notices.ts scripts/licenses
+          if ($LASTEXITCODE -ne 0) { throw "Native inputs changed; a fresh accepted sidecar is required" }
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        if: ${{ inputs['desktop-native-run'] != '' }}
+        with:
+          python-version: "3.12"
+      - name: Download accepted Windows sidecar
+        if: ${{ inputs['desktop-native-run'] != '' }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: easyresearch-release-windows-x64
+          run-id: ${{ inputs['desktop-native-run'] }}
+          github-token: ${{ github.token }}
+          path: release
+      - name: Build Windows desktop package
+        if: ${{ inputs['desktop-native-run'] != '' }}
+        run: bun scripts/build-desktop.ts windows-x64
+      - name: Verify packaged Windows desktop
+        if: ${{ inputs['desktop-native-run'] != '' }}
+        env:
+          EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/python.exe
+          PIP_RETRIES: "3"
+          PIP_DEFAULT_TIMEOUT: "30"
+        run: bun scripts/smoke-desktop.ts windows-x64
+      - name: Verify installed Windows update and rollback
+        if: ${{ inputs['desktop-native-run'] != '' }}
+        env:
+          EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/python.exe
+          PIP_RETRIES: "3"
+          PIP_DEFAULT_TIMEOUT: "30"
+        run: bun scripts/smoke-desktop-update.ts windows-x64 --old-version 0.1.23 --receipt "${{ runner.temp }}/desktop-update.json"
+      - name: Retain Desktop acceptance diagnostics
+        if: ${{ always() && inputs['desktop-native-run'] != '' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: windows-desktop-update-diagnostics
+          path: |
+            ${{ runner.temp }}/desktop-update.json
+            ${{ runner.temp }}/easyresearch-update-fixture-*/*.log
+            ${{ runner.temp }}/easyresearch-desktop-update-*/*/*.log
+          if-no-files-found: warn
+          retention-days: 7
