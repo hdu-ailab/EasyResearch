@@ -5,8 +5,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
-import { assertFixtureChild, assertHostedWindowsFixture, createDesktopFixtureCertificate, fixtureDiagnosticError, powershell, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
+import { assertFixtureChild, assertHostedWindowsFixture, createDesktopFixtureCertificate, fixtureDiagnosticError, powershell, runFixtureCommand, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
 import { fixtureWindowsProcesses, stopFixtureWindowsProcesses, withWindowsFixtureRoamingAppData } from "./smoke-desktop-update-windows";
+import { createDesktopSmokeEnvironment } from "./smoke-desktop-support";
+import { selectShell } from "../src/background/shell/process";
 
 async function verifyWindowsFixtureProcessCleanup(root: string): Promise<Record<string, unknown>> {
   assertHostedWindowsFixture();
@@ -99,6 +101,15 @@ try {
     catch (error) { record.error = fixtureDiagnosticError(error); throw error; }
     finally { record.finishedMs = performance.now() - started; }
   };
+  await step("isolated-native-shell-environment", async () => {
+    const env = createDesktopSmokeEnvironment(root, process.env);
+    const prefix = join(root, "python-prefix"); mkdirSync(prefix);
+    env.PATH = `${prefix};${env.PATH ?? ""}`;
+    const selected = selectShell("win32", env);
+    assert.equal((await runFixtureCommand(selected.executable, selected.args("[Console]::Write('desktop-shell-ready')"),
+      { env, cwd: root, timeoutMs: 5000, label: "isolated native shell environment" })).trim(), "desktop-shell-ready");
+    return { executable: selected.executable, pathKeys: Object.keys(env).filter(key => key.toUpperCase() === "PATH") };
+  });
   await withFixtureTrust(certificate.thumbprint, {
     contains: id => step("contains", () => store.contains(id)),
     add: id => step("add", () => store.add(id)),

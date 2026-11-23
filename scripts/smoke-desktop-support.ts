@@ -80,8 +80,16 @@ export async function runDesktopPackageSmokes(
 export function createDesktopSmokeEnvironment(
   root: string,
   inherited: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   const env = { ...inherited };
+  if (platform === "win32") {
+    const keys = Object.keys(env).filter(key => key.toUpperCase() === "PATH").sort();
+    const effective = keys.find(key => env[key] !== undefined);
+    const value = effective === undefined ? undefined : env[effective];
+    for (const key of keys) delete env[key];
+    if (value !== undefined) env.PATH = value;
+  }
   const isolated: NodeJS.ProcessEnv = {
     HOME: join(root, "home"),
     USERPROFILE: join(root, "home"),

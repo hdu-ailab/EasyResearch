@@ -60,6 +60,18 @@ it("preserves the packaged host's physical archive digest and rejects conflictin
   expect(() => reduceDesktopSmokeEvents([event, { ...event, sha256: "b".repeat(64) }])).toThrow();
 });
 
+it("preserves the effective Windows Path when Python is prepended to an isolated environment", () => {
+  const inherited = { Path: "C:\\Windows\\System32;C:\\PowerShell", SystemRoot: "C:\\Windows" };
+  const env = createDesktopSmokeEnvironment(root, inherited, "win32");
+  env.PATH = `C:\\Python;${env.PATH ?? ""}`;
+  expect(env.PATH).toBe(`C:\\Python;${inherited.Path}`);
+  expect(Object.keys(env).filter(key => key.toUpperCase() === "PATH")).toEqual(["PATH"]);
+  expect(inherited.Path).toBe("C:\\Windows\\System32;C:\\PowerShell");
+  expect(createDesktopSmokeEnvironment(root, { PATH: "chosen", Path: "shadow" }, "win32").PATH).toBe("chosen");
+  expect(createDesktopSmokeEnvironment(root, { PATH: "", Path: "shadow" }, "win32").PATH).toBe("");
+  expect(createDesktopSmokeEnvironment(root, { Path: "ordinary variable", PATH: "/bin" }, "linux").Path).toBe("ordinary variable");
+});
+
 function artifact(bytes: string): BuildArtifact {
   return {
     version: "1.2.3",

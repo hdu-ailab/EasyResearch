@@ -31,7 +31,8 @@ import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, cr
   startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
 import { assertFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, installedHostHasNativeMenu, installedWindowEvidence, readBoundedFixtureJson,
   readFixtureServer, requestInstalledHostExit, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
-import { smokeAgentText } from "./smoke-agent-scenario";
+import { smokeAgentText, smokeBackgroundReports } from "./smoke-agent-scenario";
+import { selectShell } from "../src/background/shell/process";
 
 const USAGE = "bun scripts/smoke-desktop-update.ts windows-x64 --old-version <older-stable-version> [--fixture <private-fixture.json>] [--receipt <json>]";
 export function parseDesktopUpdateSmokeOptions(args: string[]): { oldVersion: string; fixture?: string; receipt?: string } {
@@ -140,6 +141,8 @@ function modelFixture(shellPidPath: string, marker: string, logPath: string) {
         assert.equal(calls, 3, "Unexpected shell follow-up inference");
         assert.equal(body.messages.filter(message => message.role === "tool" && message.tool_call_id === "update_owned_shell").length, 1,
           "Native shell follow-up did not retain its exact tool result");
+        const terminal = smokeBackgroundReports(body).find(report => report.kind === "shell" && report.state !== "running");
+        assert(!terminal, `Native shell ended before update commit: ${terminal ? fixtureDiagnosticError(terminal.text) : ""}`);
         held = true;
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
@@ -205,6 +208,8 @@ async function driveScenario(options: {
   for (const key of Object.keys(env)) if (/proxy|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED/iu.test(key)) delete env[key];
   const python = resolveSmokePython({ explicit: process.env.EASYRESEARCH_SMOKE_PYTHON });
   env.PATH = `${dirname(python)};${env.PATH ?? ""}`; env.PIP_RETRIES = "3"; env.PIP_DEFAULT_TIMEOUT = "30";
+  const selectedShell = selectShell("win32", env);
+  writeFileSync(join(root, "shell-environment.log"), `${JSON.stringify({ executable: selectedShell.executable, pathKeys: Object.keys(env).filter(key => key.toUpperCase() === "PATH") })}\n`);
   const marker = `desktop-update-${randomUUID()}`; const shellPidPath = join(project, "owned-shell.pid"); const model = modelFixture(shellPidPath, marker, join(root, "model-fixture.log"));
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { smoke: { baseUrl: `http://127.0.0.1:${model.port}/v1`, api: "openai-completions", apiKey: "isolated-fixture",
     compat: { supportsDeveloperRole: false, supportsReasoningEffort: false }, models: [{ id: "desktop-update", name: "Desktop update fixture", contextWindow: 256_000, maxTokens: 2048 }] } } }));
