@@ -23,18 +23,31 @@ import {
   type ServerProcessRecord,
 } from "./server-process";
 import { captureInheritedProxyEnvironment } from "../runtime/network-policy";
+import * as processGroups from "../runtime/owned-process-group";
 
 let root: string;
+const realGroupExit = processGroups.waitForOwnedProcessGroupExit;
+const syntheticGroups = new Set<number>();
+let restoreGroupProbe: (() => void) | undefined;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "easyresearch-daemon-spawn-"));
 });
 
 afterEach(() => {
+  restoreGroupProbe?.(); restoreGroupProbe = undefined; syntheticGroups.clear();
   rmSync(root, { recursive: true, force: true });
 });
 
 function child(pid = 4321): OwnedDaemonChild {
+  // A synthetic root's exit cannot authorize an OS query against a coincidentally
+  // live CI process group. Real-child cases never register a synthetic PID.
+  syntheticGroups.add(pid);
+  if (!restoreGroupProbe) {
+    const probe = vi.spyOn(processGroups, "waitForOwnedProcessGroupExit").mockImplementation((group, timeoutMs) =>
+      syntheticGroups.has(group) ? Promise.resolve(true) : realGroupExit(group, timeoutMs));
+    restoreGroupProbe = () => probe.mockRestore();
+  }
   return {
     pid,
     unref: vi.fn(),
