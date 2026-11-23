@@ -130,7 +130,7 @@ function nativeFixtureAssembly(): Promise<string> {
       const source = join(directory, "windows.cs"), output = join(directory, "windows.dll");
       writeFileSync(source, NATIVE_WINDOWS);
       await runFixtureCommand(win32.join(process.env.SystemRoot ?? "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe"),
-        ["/nologo", "/target:library", "/optimize+", "/reference:System.dll", "/reference:System.Core.dll", `/reference:${reference}`, `/out:${output}`, source],
+        ["/nologo", "/noconfig", "/target:library", "/optimize+", "/reference:System.dll", "/reference:System.Core.dll", `/reference:${reference}`, `/out:${output}`, source],
         { cwd: directory, timeoutMs: 30_000, label: "native Windows fixture compilation" });
       const encoded = readFileSync(output).toString("base64");
       assert(encoded.length <= 30_000, "Native fixture assembly exceeds its transport bound");
