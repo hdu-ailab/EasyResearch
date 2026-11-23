@@ -98,16 +98,20 @@ async function main(): Promise<void> {
     return { directory, canonical: await realpath(directory).catch(() => undefined), files, acl: acl.stdout?.slice(-4096), aclCode: acl.status };
   };
   try {
-    for (const mode of ["echo", "tree"] as const) {
+    for (const mode of ["echo", "tree", "empty-env", "system-env"] as const) {
       const area = join(root, mode); await mkdir(area);
       process.env.TEMP = area; process.env.TMP = area;
       const leaf = join(area, "leaf.json");
       const childSource = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(leaf)},JSON.stringify({pid:process.pid}));setInterval(()=>{},100);`;
-      const code = mode === "echo" ? "process.stdout.write(JSON.stringify({pid:process.pid,cwd:process.cwd(),node:process.versions.node,bun:process.versions.bun}));"
+      const outputProbe = mode === "empty-env" || mode === "system-env";
+      const code = outputProbe ? "process.stdout.write(process.argv[1]);process.stderr.write('x'.repeat(300000))"
+        : mode === "echo" ? "process.stdout.write(JSON.stringify({pid:process.pid,cwd:process.cwd(),node:process.versions.node,bun:process.versions.bun}));"
         : `const fs=require('node:fs'),cp=require('node:child_process');const c=cp.spawn(process.execPath,['-e',${JSON.stringify(childSource)}],{detached:true,stdio:'ignore'});c.once('error',e=>{fs.writeFileSync(${JSON.stringify(join(area, "spawn-error.json"))},JSON.stringify({code:e.code,message:e.message}));process.exit(2)});c.once('spawn',()=>{fs.writeFileSync(${JSON.stringify(join(area, "root.json"))},JSON.stringify({pid:process.pid,child:c.pid}));c.unref();const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(leaf)})){clearInterval(t);process.exit(23)}},20);setTimeout(()=>process.exit(3),5000).unref()});`;
       const record: Record<string, unknown> = { mode }; (result.cases as unknown[]).push(record);
       const start = performance.now(); record.startedAt = Date.now();
-      const job = await startWindowsUpdateJob(node, ["-e", code], { cwd: area, env: { ...process.env }, cleanupTimeoutMs: 5000 });
+      const job = await startWindowsUpdateJob(node, ["-e", code, ...(outputProbe ? ["literal ; $HOME"] : [])], {
+        cwd: area, env: mode === "empty-env" ? {} : mode === "system-env" ? { SystemRoot: systemRoot } : { ...process.env }, cleanupTimeoutMs: 5000,
+      });
       record.guardPid = job.child.pid; record.createdMs = performance.now() - start;
       record.stdinAtAdmission = { bytes: job.child.stdin.writableLength, needDrain: job.child.stdin.writableNeedDrain, corked: job.child.stdin.writableCorked };
       job.child.stdin.on("drain", () => { record.lastDrainMs = performance.now() - start; });

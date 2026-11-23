@@ -34,8 +34,8 @@ describe("owned updater processes", () => {
   });
   it("drains large output with a bounded capture and preserves argv literally", async () => {
     const result = await runNpmUpdateProcess(process.execPath, ["-e", "process.stdout.write(process.argv[1]);process.stderr.write('x'.repeat(300000))", "literal ; $HOME"], { environment: {}, timeoutMs: 5000 });
+    expect(result.code, JSON.stringify(result)).toBe(0);
     expect(result.stdout).toBe("literal ; $HOME");
-    expect(result.code).toBe(0);
     expect(result.stderr.length).toBeLessThanOrEqual(8192);
   });
   it("aborts and joins a process that ignores ordinary termination", async () => {
