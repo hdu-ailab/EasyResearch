@@ -1,9 +1,10 @@
 /** Native OS observations/cleanup for the private Windows updater gate. */
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { windowsInstallerRegistryId } from "../src/desktop/update-worker";
-import { powershell } from "./smoke-desktop-update-fixture";
+import { assertFixtureChild, assertHostedWindowsFixture, powershell, runFixtureCommand, withFixtureRoamingBinding } from "./smoke-desktop-update-fixture";
 
 export interface WindowsFixtureProcess { pid: number; parentPid: number; start: string; executable: string; worker: boolean; installer: boolean; job: boolean; requestedFrench?: boolean }
 export async function fixtureWindowsProcesses(root: string, previouslyOwned: readonly WindowsFixtureProcess[] = []): Promise<WindowsFixtureProcess[]> {
@@ -38,13 +39,13 @@ export async function stopFixtureWindowsProcesses(root: string, previouslyOwned:
   assert.equal((await fixtureWindowsProcesses(root, previouslyOwned)).length, 0, "Owned Windows fixture processes survived cleanup");
 }
 
-export interface InstallationRegistryEntry { hive: string; view: string; key: string; location: string; version: string }
+export interface InstallationRegistryEntry { hive: string; view: string; key: string; location: string; version: string; uninstall: string }
 export async function windowsInstallationRegistry(): Promise<InstallationRegistryEntry[]> {
   const result = await powershell(`
     $keys=@(('Software\\'+$env:ER_FIXTURE_APP_ID),('Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\'+$env:ER_FIXTURE_APP_ID));
     $rows=@(foreach($hive in @('CurrentUser','LocalMachine')){foreach($view in @('Registry64','Registry32')){
       $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::$hive,[Microsoft.Win32.RegistryView]::$view);
-      try{foreach($key in $keys){$item=$base.OpenSubKey($key);if($null -ne $item){try{@{hive=$hive;view=$view;key=$key;location=[string]$item.GetValue('InstallLocation');version=[string]$item.GetValue('DisplayVersion')}}finally{$item.Dispose()}}}}finally{$base.Dispose()}
+      try{foreach($key in $keys){$item=$base.OpenSubKey($key);if($null -ne $item){try{@{hive=$hive;view=$view;key=$key;location=[string]$item.GetValue('InstallLocation');version=[string]$item.GetValue('DisplayVersion');uninstall=[string]$item.GetValue('UninstallString')}}finally{$item.Dispose()}}}}finally{$base.Dispose()}
     }});ConvertTo-Json -InputObject $rows -Compress
   `, { ...process.env, ER_FIXTURE_APP_ID: windowsInstallerRegistryId() });
   return JSON.parse(result.trim() || "[]") as InstallationRegistryEntry[];
@@ -52,12 +53,31 @@ export async function windowsInstallationRegistry(): Promise<InstallationRegistr
 
 export async function assertFixtureInstallation(directory: string, version?: string): Promise<void> {
   const rows = await windowsInstallationRegistry();
-  assert(rows.length > 0, "NSIS did not publish the real installation registry");
-  assert(rows.every(row => row.hive === "CurrentUser" && row.location && win32.resolve(row.location).toLowerCase() === win32.resolve(directory).toLowerCase()), "NSIS registry points outside the owned current-user installation");
-  if (version) assert(rows.some(row => row.version === version), "Installed NSIS version does not match its registry");
+  assertWindowsFixtureInstallation(rows, directory, version);
 }
 
-// Read-only native accessibility, plus two explicitly requested OS actions. No
+export function assertWindowsFixtureInstallation(rows: readonly InstallationRegistryEntry[], directory: string, version?: string): void {
+  assert(rows.length > 0, "NSIS did not publish the real installation registry");
+  const id = windowsInstallerRegistryId();
+  const installationKey = `Software\\${id}`.toLowerCase();
+  const uninstallKey = `Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${id}`.toLowerCase();
+  const samePath = (a: string, b: string) => win32.resolve(a).toLowerCase() === win32.resolve(b).toLowerCase();
+  assert(rows.every(row => row.hive === "CurrentUser" && ["Registry32", "Registry64"].includes(row.view)
+    && [installationKey, uninstallKey].includes(row.key.toLowerCase())), "Unexpected NSIS registry owner or key");
+  for (const view of new Set(rows.map(row => row.view))) {
+    const installation = rows.filter(row => row.view === view && row.key.toLowerCase() === installationKey);
+    const uninstall = rows.filter(row => row.view === view && row.key.toLowerCase() === uninstallKey);
+    assert(installation.length === 1 && uninstall.length === 1, "Incomplete or duplicate NSIS registry pair");
+    assert(installation[0]!.location && samePath(installation[0]!.location, directory), "NSIS registry points outside the owned current-user installation");
+    const entry = uninstall[0]!;
+    const command = /^"([^"]+)"\s+\/currentuser$/iu.exec(entry.uninstall);
+    assert(command && samePath(command[1]!, win32.join(directory, "Uninstall EasyResearch.exe")), "NSIS uninstall command is outside the owned current-user installation");
+    assert(!entry.location || samePath(entry.location, directory), "Conflicting NSIS uninstall location");
+    assert(entry.version && (!version || entry.version === version), "Installed NSIS version does not match its registry");
+  }
+}
+
+// Read-only native accessibility, plus owned window/profile actions. No
 // injected JavaScript, product IPC hook, debugger propagation or unsigned patch.
 const NATIVE_WINDOWS = String.raw`
 using System;
@@ -66,6 +86,11 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Accessibility;
 public static class ErUpdateWindows {
+  static Guid roaming = new Guid("3EB685DB-65F9-4CF6-A03A-E3EF65729F3D");
+  [DllImport("shell32.dll")] static extern int SHGetKnownFolderPath(ref Guid id, uint flags, IntPtr token, out IntPtr path);
+  [DllImport("shell32.dll", CharSet=CharSet.Unicode)] static extern int SHSetKnownFolderPath(ref Guid id, uint flags, IntPtr token, string path);
+  public static string RoamingPath() { IntPtr path; Marshal.ThrowExceptionForHR(SHGetKnownFolderPath(ref roaming,0,IntPtr.Zero,out path)); try{return Marshal.PtrToStringUni(path);}finally{Marshal.FreeCoTaskMem(path);} }
+  public static void SetRoamingPath(string path) { Marshal.ThrowExceptionForHR(SHSetKnownFolderPath(ref roaming,0,IntPtr.Zero,path)); }
   public delegate bool EnumCallback(IntPtr hwnd, IntPtr state);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumCallback callback, IntPtr state);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr hwnd, EnumCallback callback, IntPtr state);
@@ -94,10 +119,46 @@ public static class ErUpdateWindows {
 }
 `;
 
+let nativeAssembly: Promise<string> | undefined;
+function nativeFixtureAssembly(): Promise<string> {
+  assertHostedWindowsFixture();
+  nativeAssembly ??= (async () => {
+    const directory = mkdtempSync(join(tmpdir(), "easyresearch-window-fixture-"));
+    try {
+      const reference = (await powershell("Add-Type -AssemblyName Accessibility; [Console]::Write([Accessibility.IAccessible].Assembly.Location)", process.env, 30_000, "Accessibility reference lookup")).trim();
+      assert(win32.isAbsolute(reference) && existsSync(reference), "Native Accessibility reference is unavailable");
+      const source = join(directory, "windows.cs"), output = join(directory, "windows.dll");
+      writeFileSync(source, NATIVE_WINDOWS);
+      await runFixtureCommand(win32.join(process.env.SystemRoot ?? "C:\\Windows", "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe"),
+        ["/nologo", "/target:library", "/optimize+", "/reference:System.dll", "/reference:System.Core.dll", `/reference:${reference}`, `/out:${output}`, source],
+        { cwd: directory, timeoutMs: 30_000, label: "native Windows fixture compilation" });
+      const encoded = readFileSync(output).toString("base64");
+      assert(encoded.length <= 30_000, "Native fixture assembly exceeds its transport bound");
+      return encoded;
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  })().catch(error => { nativeAssembly = undefined; throw error; });
+  return nativeAssembly;
+}
+
+async function nativeFixtureCall(expression: string, environment: NodeJS.ProcessEnv, label: string): Promise<string> {
+  const assembly = await nativeFixtureAssembly();
+  return powershell(`[System.Reflection.Assembly]::Load([Convert]::FromBase64String($env:ER_FIXTURE_WINDOW_ASSEMBLY)) | Out-Null; ${expression}`,
+    { ...process.env, ...environment, ER_FIXTURE_WINDOW_ASSEMBLY: assembly }, 30_000, label);
+}
+
+export async function withWindowsFixtureRoamingAppData<T>(root: string, run: () => Promise<T>): Promise<T> {
+  assertHostedWindowsFixture();
+  mkdirSync(join(root, "appdata"), { recursive: true });
+  const directory = assertFixtureChild(root, join(root, "appdata"));
+  return withFixtureRoamingBinding(directory, {
+    read: async () => (await nativeFixtureCall("[Console]::Write([ErUpdateWindows]::RoamingPath())", {}, "read fixture RoamingAppData")).trim(),
+    write: async path => { await nativeFixtureCall("[ErUpdateWindows]::SetRoamingPath($env:ER_FIXTURE_ROAMING)", { ER_FIXTURE_ROAMING: path }, "bind fixture RoamingAppData"); },
+  }, run);
+}
+
 async function nativeWindows(pid: number, expression: string): Promise<string> {
   assert(Number.isSafeInteger(pid) && pid > 0, "Invalid owned host PID");
-  return powershell(`Add-Type -AssemblyName Accessibility; Add-Type -TypeDefinition $env:ER_FIXTURE_WINDOW_SOURCE -ReferencedAssemblies @([Accessibility.IAccessible].Assembly.Location,'System.dll','System.Core.dll'); ${expression}`,
-    { ...process.env, ER_FIXTURE_WINDOW_SOURCE: NATIVE_WINDOWS, ER_FIXTURE_HOST_PID: String(pid) });
+  return nativeFixtureCall(expression, { ER_FIXTURE_HOST_PID: String(pid) }, "native window observation");
 }
 
 export async function installedWindowEvidence(pid: number): Promise<{ urls: string[]; names: string[]; texts: string[] }> {

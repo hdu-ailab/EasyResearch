@@ -30,7 +30,7 @@ import type { UpdateAction, UpdateActionResult, UpdateSnapshot } from "../src/ru
 import { assertFixtureChild, assertOlderVersion, createDesktopFixtureCertificate, createReleaseFixture, digestFile, findDesktopUpdateLineage, remainingDesktopRecoveryArtifacts, runFixtureCommand,
   startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
 import { assertFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, installedHostHasNativeMenu, installedWindowEvidence, readBoundedFixtureJson,
-  readFixtureServer, requestInstalledHostExit, stopFixtureWindowsProcesses, windowsInstallationRegistry, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
+  readFixtureServer, requestInstalledHostExit, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
 
 const USAGE = "bun scripts/smoke-desktop-update.ts windows-x64 --old-version <older-stable-version> [--fixture <private-fixture.json>] [--receipt <json>]";
 export function parseDesktopUpdateSmokeOptions(args: string[]): { oldVersion: string; fixture?: string; receipt?: string } {
@@ -181,9 +181,9 @@ async function driveScenario(options: {
   console.log(`[desktop-update] ${mode}: installing private ${old.version}`);
   assert.equal((await windowsInstallationRegistry()).length, 0, "Unexpected existing EasyResearch installation; preserve it and abort");
   const env = createDesktopSmokeEnvironment(root, process.env);
-  // Keep the isolated OS app-data root AND explicit existing smoke preference
-  // owner. The successor must honor the handoff's same userData directory.
-  const userData = join(env.APPDATA!, "EasyResearch"); env[DESKTOP_SMOKE_USER_DATA_ENV] = userData;
+  // Both hosts resolve this directory through the scenario's real Windows
+  // RoamingAppData binding, including the ordinary argument-free successor.
+  const userData = join(env.APPDATA!, "EasyResearch"); delete env[DESKTOP_SMOKE_USER_DATA_ENV];
   const agentDir = env.EASYRESEARCH_CODING_AGENT_DIR!; const project = join(root, "project");
   const install = join(root, "安装目录 with spaces", "EasyResearch"); const host = join(install, "EasyResearch.exe");
   const installedSidecar = join(install, "resources", "sidecar", "easyresearch.exe");
@@ -496,7 +496,8 @@ export async function runDesktopUpdateSmoke(options: ReturnType<typeof parseDesk
         for (const mode of ["rollback", "upgrade"] as const) {
           progress(`installed-${mode}`);
           const scenario = join(root, mode); mkdirSync(scenario);
-          results.push(await driveScenario({ root: scenario, mode, old: old!, candidateManifest, candidateInstaller: candidate.path, candidateIdentity, release: fixture }));
+          results.push(await withWindowsFixtureRoamingAppData(scenario,
+            () => driveScenario({ root: scenario, mode, old: old!, candidateManifest, candidateInstaller: candidate.path, candidateIdentity, release: fixture })));
         }
         assert(fixture.requests.some(request => request.host === "api.github.com" && request.status === 200), "Installed host did not use the closed official metadata fixture");
         assert(fixture.requests.some(request => request.host === "github.com" && request.path.endsWith(candidate.fileName)), "Installed host did not download the actual candidate NSIS bytes");

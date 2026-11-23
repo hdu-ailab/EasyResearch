@@ -101,6 +101,29 @@ export async function runFixtureCommand(command: string, args: string[], options
 }
 
 export interface FixtureTrustStore { contains(thumbprint: string): Promise<boolean>; add(thumbprint: string): Promise<void>; remove(thumbprint: string): Promise<void> }
+export interface FixtureRoamingBinding { read(): Promise<string>; write(path: string): Promise<void> }
+export async function withFixtureRoamingBinding<T>(directory: string, binding: FixtureRoamingBinding, run: () => Promise<T>): Promise<T> {
+  const original = await binding.read();
+  assert(win32.isAbsolute(original) && win32.isAbsolute(directory), "Invalid native profile binding");
+  const same = (a: string, b: string) => win32.resolve(a).toLowerCase() === win32.resolve(b).toLowerCase();
+  assert(!same(original, directory), "Fixture profile binding is already in use");
+  const errors: unknown[] = []; let result: T | undefined;
+  try {
+    await binding.write(directory);
+    assert(same(await binding.read(), directory), "Native profile binding did not apply");
+    result = await run();
+  } catch (error) { errors.push(error); }
+  try {
+    const current = await binding.read();
+    assert(same(current, directory) || same(current, original), "Native profile binding changed independently");
+    if (!same(current, original)) await binding.write(original);
+    assert(same(await binding.read(), original), "Native profile binding restoration failed");
+  } catch (error) { errors.push(error); }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length) throw new AggregateError(errors, "Fixture scenario and profile restoration failed");
+  return result as T;
+}
+
 export async function withFixtureTrust<T>(thumbprint: string, store: FixtureTrustStore, run: () => Promise<T>): Promise<T> {
   assert(/^[A-F0-9]{40}$/u.test(thumbprint), "Invalid fixture certificate thumbprint");
   assert(!await store.contains(thumbprint), "Fixture CA already exists; refuse to own another certificate");
@@ -126,9 +149,13 @@ export async function powershell(script: string, env: NodeJS.ProcessEnv = proces
     Buffer.from(`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ${script}`, "utf16le").toString("base64")], { env, timeoutMs, label });
 }
 
-export function windowsFixtureTrust(caPath: string): FixtureTrustStore {
+export function assertHostedWindowsFixture(): void {
   assert(process.platform === "win32" && process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted",
-    "Certificate trust acceptance requires a disposable GitHub-hosted Windows runner");
+    "Native fixture mutation requires a disposable GitHub-hosted Windows runner");
+}
+
+export function windowsFixtureTrust(caPath: string): FixtureTrustStore {
+  assertHostedWindowsFixture();
   const execute = (label: string, operation: string, thumbprint: string) => powershell(`
     $store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root','LocalMachine');
     $store.Open('ReadWrite');

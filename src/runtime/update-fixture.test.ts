@@ -6,8 +6,10 @@ import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertExternalFixtureReceipt, copyUpdateFixtureSource, parseUpdateFixtureOptions, removeUpdateFixture } from "../../scripts/build-update-fixture";
-import { assertFixtureChild, createDesktopFixtureCertificate, createReleaseFixture, findDesktopUpdateLineage, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "../../scripts/smoke-desktop-update-fixture";
+import { assertFixtureChild, createDesktopFixtureCertificate, createReleaseFixture, findDesktopUpdateLineage, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
 import { discoverDesktopRelease, downloadDesktopAsset } from "../desktop/update-download";
+import { windowsInstallerRegistryId } from "../desktop/update-worker";
+import { assertWindowsFixtureInstallation } from "../../scripts/smoke-desktop-update-windows";
 
 const roots: string[] = [];
 function temporary() { const path = realpathSync(mkdtempSync(join(tmpdir(), "er-update-fixture-test-"))); roots.push(path); return path; }
@@ -283,5 +285,43 @@ describe("fixture authority boundaries", () => {
       Object.defineProperty(process, "platform", { value: "linux" });
       expect(() => windowsFixtureTrust("unused fixture certificate")).toThrow(/GitHub-hosted Windows/);
     } finally { Object.defineProperty(process, "platform", platform); vi.unstubAllEnvs(); }
+  });
+
+  it("verifies NSIS install and uninstall keys by their separate ownership contracts", () => {
+    const directory = "C:\\安装目录 with spaces\\EasyResearch";
+    const id = windowsInstallerRegistryId();
+    const rows = [
+      { hive: "CurrentUser", view: "Registry64", key: `Software\\${id}`, location: directory, version: "", uninstall: "" },
+      { hive: "CurrentUser", view: "Registry64", key: `Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${id}`, location: "", version: "0.1.24", uninstall: `"${directory}\\Uninstall EasyResearch.exe" /currentuser` },
+    ];
+    expect(() => assertWindowsFixtureInstallation(rows, directory, "0.1.24")).not.toThrow();
+    for (const patch of [{ hive: "LocalMachine" }, { uninstall: '"C:\\foreign\\Uninstall EasyResearch.exe" /currentuser' },
+      { uninstall: `"${directory}\\Uninstall EasyResearch.exe" /allusers` }, { version: "0.1.23" }]) {
+      expect(() => assertWindowsFixtureInstallation([rows[0]!, { ...rows[1]!, ...patch }], directory, "0.1.24")).toThrow();
+    }
+    expect(() => assertWindowsFixtureInstallation(rows.slice(0, 1), directory, "0.1.24")).toThrow();
+    expect(() => assertWindowsFixtureInstallation(rows.slice(1), directory, "0.1.24")).toThrow();
+  });
+
+  it("restores the native profile binding after success, body failure or a partially applied setter", async () => {
+    const original = "C:\\runner\\AppData\\Roaming", isolated = "D:\\fixture\\appdata";
+    for (const failure of ["none", "body", "setter"]) {
+      let current = original;
+      const task = withFixtureRoamingBinding(isolated, {
+        async read() { return current; },
+        async write(path) { current = path; if (failure === "setter" && path === isolated) throw new Error("partial binding failure"); },
+      }, async () => { expect(current).toBe(isolated); if (failure === "body") throw new Error("scenario failed"); return "accepted"; });
+      if (failure === "none") await expect(task).resolves.toBe("accepted");
+      else await expect(task).rejects.toThrow();
+      expect(current).toBe(original);
+    }
+  });
+
+  it("does not overwrite an independently changed Windows profile binding during cleanup", async () => {
+    let current = "C:\\runner\\AppData\\Roaming";
+    await expect(withFixtureRoamingBinding("D:\\fixture\\appdata", {
+      async read() { return current; }, async write(path) { current = path; },
+    }, async () => { current = "C:\\foreign\\AppData"; })).rejects.toThrow(/changed|binding/);
+    expect(current).toBe("C:\\foreign\\AppData");
   });
 });
