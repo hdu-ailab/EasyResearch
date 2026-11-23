@@ -26,6 +26,10 @@ export async function physicalUpdateFilePath(path: string, reader: UpdateFileRea
       if (parent === current) break;
       current = parent;
     }
+    const confirmed = await reader.realpath(expected);
+    if (process.platform === "win32" ? confirmed.toLowerCase() !== physical.toLowerCase() : confirmed !== physical) {
+      throw new Error("Update file identity changed during path inspection.");
+    }
   }
   return physical;
 }

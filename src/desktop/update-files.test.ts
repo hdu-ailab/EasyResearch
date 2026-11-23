@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile, symlink, lstat, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile, symlink, lstat, realpath, unlink } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -43,6 +43,23 @@ it("normalizes filesystem aliases while rejecting symbolic links in any path com
       linked = path;
       await expect(physicalUpdateFilePath(alias, reader)).rejects.toThrow(/link/i);
     }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it.skipIf(process.platform === "win32")("rejects a stale canonical target when a link changes during path inspection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "desktop-update-mapping-"));
+  try {
+    const installed = join(root, "app.asar"), foreign = join(root, "foreign.asar");
+    await writeFile(foreign, "foreign archive"); await symlink(foreign, installed);
+    let replaced = false;
+    const reader = { lstat, read: (path: string) => createReadStream(path), realpath: async (path: string) => {
+      const physical = await realpath(path);
+      if (path === installed && !replaced) {
+        replaced = true; await unlink(installed); await writeFile(installed, "current installed archive");
+      }
+      return physical;
+    } };
+    await expect(physicalUpdateFilePath(installed, reader)).rejects.toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
