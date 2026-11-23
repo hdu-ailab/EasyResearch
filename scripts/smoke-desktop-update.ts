@@ -6,7 +6,7 @@
  *
  * Requires an ephemeral Windows x64 runner, the already accepted current native
  * and Desktop manifests/artifacts, OpenSSL (Git for Windows), and free loopback
- * port 443. Uses only the current user's temporary CA trust; no hosts/proxy edits,
+ * port 443. Uses temporary CA trust only on a disposable GitHub-hosted runner; no hosts/proxy edits,
  * certificate bypass, fake installer success, product hooks or publication.
  */
 import assert from "node:assert/strict";
@@ -480,11 +480,11 @@ export async function runDesktopUpdateSmoke(options: ReturnType<typeof parseDesk
     verifyDesktopSidecarIdentity(oldDesktop.sidecar, oldNative);
     progress("certificate-generation");
     const certificate = await createDesktopFixtureCertificate(join(root, "tls"));
-    writeFileSync(join(root, "fixture-ca-ownership.json"), JSON.stringify({ store: "CurrentUser/Root", thumbprint: certificate.thumbprint }), { mode: 0o600 });
+    writeFileSync(join(root, "fixture-ca-ownership.json"), JSON.stringify({ store: "LocalMachine/Root", thumbprint: certificate.thumbprint }), { mode: 0o600 });
     progress("tls-fixture-start");
     const fixture = await startDesktopReleaseFixture(certificate, await createReleaseFixture(version, candidate.path));
     try {
-      // Prove absent trust BEFORE importing it into the Windows user store.
+      // Prove absent trust BEFORE importing into the disposable runner's store.
       await assert.rejects(tlsHandshake(fixture.port));
       progress("certificate-trust");
       await withFixtureTrust(certificate.thumbprint, windowsFixtureTrust(certificate.caPath), async () => {

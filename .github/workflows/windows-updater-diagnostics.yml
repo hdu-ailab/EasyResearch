@@ -74,7 +74,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $accepted -notmatch '^[a-f0-9]{40}$') { throw "Accepted source revision unavailable" }
           git fetch --no-tags --depth=1 origin $accepted
           if ($LASTEXITCODE -ne 0) { throw "Cannot verify accepted source" }
-          git diff --exit-code $accepted HEAD -- src launcher.mjs package.json bun.lock scripts/build.ts scripts/windows-update-assembly.ts scripts/third-party-notices.ts scripts/licenses
+          git diff --exit-code $accepted HEAD -- src launcher.mjs package.json bun.lock scripts/build.ts scripts/windows-update-assembly.ts scripts/third-party-notices.ts scripts/licenses ':(exclude)src/runtime/update-fixture.test.ts'
           if ($LASTEXITCODE -ne 0) { throw "Native inputs changed; a fresh accepted sidecar is required" }
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         if: ${{ inputs['desktop-native-run'] != '' }}

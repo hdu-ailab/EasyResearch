@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertExternalFixtureReceipt, copyUpdateFixtureSource, parseUpdateFixtureOptions, removeUpdateFixture } from "../../scripts/build-update-fixture";
-import { assertFixtureChild, createDesktopFixtureCertificate, createReleaseFixture, findDesktopUpdateLineage, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, withFixtureTrust } from "../../scripts/smoke-desktop-update-fixture";
+import { assertFixtureChild, createDesktopFixtureCertificate, createReleaseFixture, findDesktopUpdateLineage, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "../../scripts/smoke-desktop-update-fixture";
 import { discoverDesktopRelease, downloadDesktopAsset } from "../desktop/update-download";
 
 const roots: string[] = [];
@@ -267,5 +267,21 @@ describe("fixture authority boundaries", () => {
     expect(certificates.has(thumbprint)).toBe(true);
     certificates.clear();
     await expect(withFixtureTrust(thumbprint, { ...store, async remove() { throw new Error("trust cleanup failed"); } }, async () => "done")).rejects.toThrow(/cleanup/);
+  });
+
+  it("admits machine trust only on a disposable GitHub-hosted Windows runner", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      for (const [actions, runner] of [[undefined, undefined], ["true", "self-hosted"], ["false", "github-hosted"]]) {
+        vi.stubEnv("GITHUB_ACTIONS", actions); vi.stubEnv("RUNNER_ENVIRONMENT", runner);
+        expect(() => windowsFixtureTrust("unused fixture certificate")).toThrow(/GitHub-hosted Windows/);
+      }
+      vi.stubEnv("GITHUB_ACTIONS", "true"); vi.stubEnv("RUNNER_ENVIRONMENT", "github-hosted");
+      // Construction alone does not read or mutate either certificate store.
+      expect(() => windowsFixtureTrust("unused fixture certificate")).not.toThrow();
+      Object.defineProperty(process, "platform", { value: "linux" });
+      expect(() => windowsFixtureTrust("unused fixture certificate")).toThrow(/GitHub-hosted Windows/);
+    } finally { Object.defineProperty(process, "platform", platform); vi.unstubAllEnvs(); }
   });
 });

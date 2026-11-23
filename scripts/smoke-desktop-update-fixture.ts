@@ -127,8 +127,10 @@ export async function powershell(script: string, env: NodeJS.ProcessEnv = proces
 }
 
 export function windowsFixtureTrust(caPath: string): FixtureTrustStore {
+  assert(process.platform === "win32" && process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted",
+    "Certificate trust acceptance requires a disposable GitHub-hosted Windows runner");
   const execute = (label: string, operation: string, thumbprint: string) => powershell(`
-    $store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser');
+    $store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root','LocalMachine');
     $store.Open('ReadWrite');
     try {
       $matches=@($store.Certificates | Where-Object { $_.Thumbprint -ceq $env:ER_FIXTURE_THUMBPRINT });
@@ -141,10 +143,10 @@ export function windowsFixtureTrust(caPath: string): FixtureTrustStore {
     async add(thumbprint) {
       assert.equal(new X509Certificate(readFileSync(caPath)).fingerprint.replaceAll(":", ""), thumbprint, "Fixture CA identity mismatch");
       assert(!await contains(thumbprint), "Fixture certificate unexpectedly exists");
-      // Use the non-interactive current-user import for this one owned test CA;
-      // the managed Root-store Add did not settle on the native runner.
+      // CurrentUser Root always requests interactive confirmation. This disposable
+      // hosted runner's machine store uses its existing administrator context.
       await runFixtureCommand(win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "certutil.exe"),
-        ["-user", "-f", "-addstore", "Root", caPath], { timeoutMs: 30_000, label: "certificate store add" });
+        ["-f", "-addstore", "Root", caPath], { timeoutMs: 30_000, label: "certificate store add" });
     },
     async remove(thumbprint) { await execute("remove", "foreach($cert in $matches){$store.Remove($cert)}", thumbprint); },
   };
