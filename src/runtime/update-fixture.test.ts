@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertExternalFixtureReceipt, copyUpdateFixtureSource, parseUpdateFixtureOptions, removeUpdateFixture } from "../../scripts/build-update-fixture";
-import { assertFixtureChild, createDesktopFixtureCertificate, createReleaseFixture, findDesktopUpdateLineage, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
+import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, findDesktopUpdateLineage, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
 import { discoverDesktopRelease, downloadDesktopAsset } from "../desktop/update-download";
 import { windowsInstallerRegistryId } from "../desktop/update-worker";
-import { assertWindowsFixtureInstallation } from "../../scripts/smoke-desktop-update-windows";
+import { assertWindowsFixtureInstallation, parseFixtureWindowsProcesses } from "../../scripts/smoke-desktop-update-windows";
+import { LATEST_RELEASE_PAGE, type UpdateSnapshot } from "./update-contract";
 
 const roots: string[] = [];
 function temporary() { const path = realpathSync(mkdtempSync(join(tmpdir(), "er-update-fixture-test-"))); roots.push(path); return path; }
@@ -103,6 +104,77 @@ describe("private older-version source fixture", () => {
     await expect(copyUpdateFixtureSource({ source, temporaryDirectory: source, version: "1.0.0" })).rejects.toThrow(/outside/);
     symlinkSync(outside, join(source, "src/escape"), process.platform === "win32" ? "junction" : "dir");
     await expect(copyUpdateFixtureSource({ source, temporaryDirectory: outside, version: "1.0.0" })).rejects.toThrow(/symbolic|link/);
+  });
+});
+
+describe("installed update admission diagnostics", () => {
+  const state = (phase: UpdateSnapshot["phase"]): UpdateSnapshot => ({ revision: 4, operationId: "fixture-operation", owner: "desktop", phase,
+    currentVersion: "0.1.23", latestVersion: "0.1.24", canDownload: false, canInstall: false, canActivate: false, canCancel: false,
+    message: "Installation failed. Open latest Release.", releaseUrl: LATEST_RELEASE_PAGE });
+
+  it.each([state("failed"), { code: "RUNTIME_BUSY" as const, activeSessions: 1, authFlowActive: false }])("fails handoff observation as soon as installation returns early: %j", async result => {
+    const action = observeFixtureUpdateAction(Promise.resolve(result));
+    await action.result;
+    expect(() => action.assertPending("before late work")).toThrow(/failed|RUNTIME_BUSY/);
+    expect(() => action.assertInstalling("before commit", true)).toThrow(/failed|RUNTIME_BUSY/);
+  });
+
+  it("reports rejected admission immediately and permits only the expected host disconnection", async () => {
+    const action = observeFixtureUpdateAction(Promise.reject(new Error("custodian preparation rejected")));
+    await expect(action.result).rejects.toThrow("custodian preparation rejected");
+    expect(() => action.assertPending("before late work")).toThrow(/custodian preparation rejected/);
+    expect(() => action.assertInstalling("before commit", false)).toThrow(/custodian preparation rejected/);
+    expect(() => action.assertInstalling("after host exit", true)).toThrow(/custodian preparation rejected/);
+    const disconnect = observeFixtureUpdateAction(Promise.reject(new Error("Target page, context or browser has been closed")));
+    await expect(disconnect.result).rejects.toThrow(/closed/);
+    expect(() => disconnect.assertInstalling("before handoff", false)).toThrow(/closed/);
+    expect(() => disconnect.assertInstalling("after observed handoff", true)).not.toThrow();
+  });
+
+  it("keeps pending admission observable and allows only activating as a completed install acknowledgement", async () => {
+    let resolve!: (value: UpdateSnapshot) => void;
+    const action = observeFixtureUpdateAction(new Promise<UpdateSnapshot>(done => { resolve = done; }));
+    expect(() => action.assertPending("preparing")).not.toThrow();
+    resolve(state("activating")); await action.result;
+    expect(() => action.assertInstalling("committing", false)).not.toThrow();
+    expect(() => action.assertPending("late work must still be late")).toThrow();
+  });
+
+  it("preserves the bounded owner-log tail and safe failure before view loss without copying credentials", async () => {
+    const root = temporary(); const userData = join(root, "appdata"); const logs = join(userData, "logs"); mkdirSync(logs, { recursive: true });
+    const ownerLog = join(logs, "desktop.log"); const token = "t".repeat(43); const credential = "private-fixture-key";
+    writeFileSync(ownerLog, "old log data\n".repeat(20_000) + `Desktop update failed: invalid app.asar file\nrendererToken=${token}\nAuthorization: Bearer ${credential}\n`);
+    await captureDesktopUpdateFailure({ root, userData, error: new Error(`preparation failed ${token}`, { cause: new Error("raw archive verification failed") }),
+      secrets: [token, credential], actions: [],
+      snapshot: async () => { unlinkSync(ownerLog); return { ...state("failed"), rendererToken: token, auth: { apiKey: credential } }; },
+    });
+    const log = readFileSync(join(root, "desktop-owner.log"), "utf8");
+    const report = readFileSync(join(root, "update-failure.json"), "utf8");
+    expect(Buffer.byteLength(log)).toBeLessThanOrEqual(64 * 1024);
+    expect(log).toContain("invalid app.asar file");
+    expect(report).toContain("raw archive verification failed");
+    expect(JSON.parse(report).snapshot).toMatchObject({ phase: "failed", currentVersion: "0.1.23" });
+    for (const text of [log, report]) { expect(text).not.toContain(token); expect(text).not.toContain(credential); }
+    expect(report).not.toContain("rendererToken"); expect(report).not.toContain('"auth"');
+  });
+
+  it("still records the primary failure when the diagnostic view never answers", async () => {
+    const root = temporary(); const userData = join(root, "appdata"); mkdirSync(userData);
+    await captureDesktopUpdateFailure({ root, userData, error: new Error("original preparation failure"), secrets: [], actions: [],
+      snapshot: () => new Promise(() => {}), snapshotTimeoutMs: 10 });
+    const report = JSON.parse(readFileSync(join(root, "update-failure.json"), "utf8"));
+    expect(report.error).toContain("original preparation failure");
+    expect(report.snapshotError).toMatch(/timed out/);
+  });
+
+  it("omits a cut credential line and unlabelled base64url credentials from the owner-log tail", async () => {
+    const root = temporary(); const userData = join(root, "appdata"); mkdirSync(join(userData, "logs"), { recursive: true });
+    const credential = `-${"b".repeat(41)}_`;
+    writeFileSync(join(userData, "logs", "desktop.log"), `Authorization: ${"a".repeat(70_000)}private-fragment\nDesktop update failed: archive read error\n${credential}\n`);
+    await captureDesktopUpdateFailure({ root, userData, error: new Error("failed"), secrets: [], actions: [] });
+    const log = readFileSync(join(root, "desktop-owner.log"), "utf8");
+    expect(log).toContain("archive read error");
+    expect(log).not.toContain("private-fragment"); expect(log).not.toContain(credential);
   });
 });
 
@@ -323,5 +395,21 @@ describe("fixture authority boundaries", () => {
       async read() { return current; }, async write(path) { current = path; },
     }, async () => { current = "C:\\foreign\\AppData"; })).rejects.toThrow(/changed|binding/);
     expect(current).toBe("C:\\foreign\\AppData");
+  });
+
+  it("admits only flat, positive-PID process observations with creation identities", () => {
+    const row = { pid: 123, parentPid: 122, start: "2026-11-24T00:00:00.0000000Z", executable: "C:\\fixture\\host.exe", worker: false, installer: false, job: false };
+    expect(parseFixtureWindowsProcesses(JSON.stringify([row, { ...row, pid: 124 }])).map(value => value.pid)).toEqual([123, 124]);
+    expect(parseFixtureWindowsProcesses("[]")).toEqual([]);
+    expect(parseFixtureWindowsProcesses(JSON.stringify([{ ...row, parentPid: 0, requestedFrench: true }]))[0]?.requestedFrench).toBe(true);
+    for (const rows of [null, {}, row, [[row]], [row, row], [{ ...row, pid: 0 }], [{ ...row, pid: "123" }],
+      [{ ...row, pid: 1.5 }], [{ ...row, pid: 2 ** 32 }], [{ ...row, parentPid: -1 }], [{ ...row, parentPid: [122] }],
+      [{ ...row, start: "" }], [{ ...row, start: "  " }], [{ ...row, start: "x".repeat(129) }],
+      [{ ...row, executable: null }], [{ ...row, worker: "false" }], [{ ...row, installer: undefined }],
+      [{ ...row, job: [] }], [{ ...row, requestedFrench: 1 }]]) {
+      expect(() => parseFixtureWindowsProcesses(JSON.stringify(rows))).toThrow();
+    }
+    expect(() => parseFixtureWindowsProcesses("")).toThrow();
+    expect(() => parseFixtureWindowsProcesses(" ".repeat(2 * 1024 * 1024) + "[]")).toThrow();
   });
 });

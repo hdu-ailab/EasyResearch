@@ -428,7 +428,7 @@ async function bundleDesktopHost(stageDir: string): Promise<void> {
     naming: "[name].cjs",
     target: "node",
     format: "cjs",
-    external: ["electron"],
+    external: ["electron", "original-fs"],
     minify: true,
     sourcemap: "none",
   });

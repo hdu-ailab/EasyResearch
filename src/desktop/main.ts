@@ -63,6 +63,7 @@ import {
   type DesktopSidecarProcessHandle,
 } from "./sidecar";
 import { createDesktopUpdateController } from "./update";
+import { hashDesktopUpdateFile } from "./update-host-files";
 import { desktopPackageKind } from "./update-download";
 import { installDesktopUpdate, type DesktopUpdateCustodian } from "./update-install";
 import { acceptDesktopUpdateSuccessor, consumeDesktopUpdateSuccessor, desktopUpdateRecovery, prepareDesktopUpdateCustodian } from "./update-custodian";
@@ -139,6 +140,9 @@ if (!hasSingleInstanceLock) {
   app.on("activate", () => restoreMainWindow());
   void app.whenReady().then(async () => {
     app.setAppUserModelId("ai.easyresearch.desktop");
+    if (smokeDirectory() && app.isPackaged) {
+      emitSmokeEvent({ type: "desktop-smoke.archive-integrity", sha256: await hashDesktopUpdateFile(app.getAppPath()) });
+    }
     if (process.platform === "win32" || process.platform === "linux") {
       // Remove the window menu for this lifetime, including setup and recreated windows.
       Menu.setApplicationMenu(null);
@@ -149,7 +153,7 @@ if (!hasSingleInstanceLock) {
     showLoading("Preparing the local research workspace...");
     if (updateSuccessor) {
       const accepted = await acceptDesktopUpdateSuccessor(updateSuccessor, {
-        hostPath: process.execPath, userDataDir: app.getPath("userData"), version: app.getVersion(),
+        hostPath: process.execPath, userDataDir: app.getPath("userData"), version: app.getVersion(), hashFile: hashDesktopUpdateFile,
       });
       // The private successor carrier is already consumed; only the ordinary
       // exact-root environment is passed through the existing sidecar startup.
@@ -623,7 +627,7 @@ function getUpdater(): UpdateController {
         try {
           return await installDesktopUpdate({ ownership: sidecarOwnership, signal, committed, force: controls.force,
             admit: (force, signal) => currentSidecar.prepareUpdate(force, signal),
-            prepare: () => prepareDesktopUpdateCustodian({ update, signal,
+            prepare: () => prepareDesktopUpdateCustodian({ update, signal, hashFile: hashDesktopUpdateFile,
               accepted: controls.stagingAccepted, released: controls.stagingReleased,
               sidecarPath: resolvePackagedSidecar(process.resourcesPath, process.platform), hostPath: process.execPath,
               userDataDir: app.getPath("userData"), agentDir: desktopEnvironment!.EASYRESEARCH_CODING_AGENT_DIR!,

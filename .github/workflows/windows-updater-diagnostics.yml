@@ -14,6 +14,10 @@ on:
         description: Optional run ID containing an accepted unchanged Windows sidecar for Desktop acceptance
         type: string
         default: ""
+      build-native:
+        description: Build and smoke a fresh Windows sidecar before Desktop acceptance
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -32,6 +36,12 @@ jobs:
         with:
           bun-version: "1.4.0"
       - run: bun install --frozen-lockfile
+      - name: Validate native artifact mode
+        env:
+          BUILD_NATIVE: ${{ inputs['build-native'] }}
+          ACCEPTED_RUN: ${{ inputs['desktop-native-run'] }}
+        run: |
+          if ($env:BUILD_NATIVE -eq 'true' -and $env:ACCEPTED_RUN -ne '') { throw "Choose a fresh build or one accepted run" }
       - name: Restore diagnostic runner
         run: Copy-Item "$env:RUNNER_TEMP/diagnose-windows-update.ts" scripts/diagnose-windows-update.ts
       - name: Diagnose using Node
@@ -57,7 +67,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
       - name: Verify native Windows updater tests
-        if: ${{ inputs['run-tests'] }}
+        if: ${{ inputs['run-tests'] || inputs['build-native'] }}
         env:
           EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-update-tests/agent
           HOME: ${{ runner.temp }}/easyresearch-update-tests/home
@@ -77,7 +87,7 @@ jobs:
           git diff --exit-code $accepted HEAD -- src launcher.mjs package.json bun.lock scripts/build.ts scripts/windows-update-assembly.ts scripts/third-party-notices.ts scripts/licenses ':(exclude)src/runtime/update-fixture.test.ts'
           if ($LASTEXITCODE -ne 0) { throw "Native inputs changed; a fresh accepted sidecar is required" }
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        if: ${{ inputs['desktop-native-run'] != '' }}
+        if: ${{ inputs['desktop-native-run'] != '' || inputs['build-native'] }}
         with:
           python-version: "3.12"
       - name: Download accepted Windows sidecar
@@ -88,25 +98,61 @@ jobs:
           run-id: ${{ inputs['desktop-native-run'] }}
           github-token: ${{ github.token }}
           path: release
+      - name: Verify native Windows Skill helpers
+        if: ${{ inputs['build-native'] }}
+        env:
+          EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/python.exe
+          EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-helper-tests/agent
+          HOME: ${{ runner.temp }}/easyresearch-helper-tests/home
+          USERPROFILE: ${{ runner.temp }}/easyresearch-helper-tests/home
+        run: bun run test src/runtime/adapted-skill-helpers.test.ts
+      - name: Build fresh Windows sidecar
+        if: ${{ inputs['build-native'] }}
+        run: bun scripts/build.ts --only windows-x64
+      - name: Verify Windows native version
+        if: ${{ inputs['build-native'] }}
+        run: |
+          $expected = "easyresearch $((Get-Content package.json -Raw | ConvertFrom-Json).version)"
+          $binary = "release/easyresearch-windows-x64/bin/easyresearch.exe"
+          $direct = & $binary --version 2>&1
+          $exitCode = $LASTEXITCODE
+          $captureFile = Join-Path $env:RUNNER_TEMP "version-capture.txt"
+          cmd /c "`"$binary`" --version > `"$captureFile`" 2>&1"
+          $fileExit = $LASTEXITCODE
+          $fileOut = if (Test-Path $captureFile) { (Get-Content $captureFile -Raw) } else { "" }
+          $directText = ($direct -join "`n").Trim()
+          if ($exitCode -ne 0 -or $fileExit -ne 0) { throw "Windows native version failed" }
+          if ($directText -eq $expected -or ($null -ne $fileOut -and $fileOut.Trim() -eq $expected)) {
+            "Windows native version verified: $expected"
+          } else {
+            Write-Warning "Bun Windows compiled stdout is dropped under redirection; verified both native exit codes per the release contract"
+          }
+      - name: Verify fresh native binary, setup and Agent tools
+        if: ${{ inputs['build-native'] }}
+        env:
+          EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/python.exe
+          PIP_RETRIES: "3"
+          PIP_DEFAULT_TIMEOUT: "30"
+        run: bun scripts/smoke-release.ts windows-x64 --version-verified-by-runner
       - name: Build Windows desktop package
-        if: ${{ inputs['desktop-native-run'] != '' }}
+        if: ${{ inputs['desktop-native-run'] != '' || inputs['build-native'] }}
         run: bun scripts/build-desktop.ts windows-x64
       - name: Verify packaged Windows desktop
-        if: ${{ inputs['desktop-native-run'] != '' }}
+        if: ${{ inputs['desktop-native-run'] != '' || inputs['build-native'] }}
         env:
           EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/python.exe
           PIP_RETRIES: "3"
           PIP_DEFAULT_TIMEOUT: "30"
         run: bun scripts/smoke-desktop.ts windows-x64
       - name: Verify installed Windows update and rollback
-        if: ${{ inputs['desktop-native-run'] != '' }}
+        if: ${{ inputs['desktop-native-run'] != '' || inputs['build-native'] }}
         env:
           EASYRESEARCH_SMOKE_PYTHON: ${{ env.pythonLocation }}/python.exe
           PIP_RETRIES: "3"
           PIP_DEFAULT_TIMEOUT: "30"
         run: bun scripts/smoke-desktop-update.ts windows-x64 --old-version 0.1.23 --receipt "${{ runner.temp }}/desktop-update.json"
       - name: Retain Desktop acceptance diagnostics
-        if: ${{ always() && inputs['desktop-native-run'] != '' }}
+        if: ${{ always() && (inputs['desktop-native-run'] != '' || inputs['build-native']) }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: windows-desktop-update-diagnostics

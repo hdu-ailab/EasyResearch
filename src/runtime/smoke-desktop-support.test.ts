@@ -53,6 +53,13 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+it("preserves the packaged host's physical archive digest and rejects conflicting evidence", () => {
+  const event = { type: "desktop-smoke.archive-integrity", sha256: "a".repeat(64) };
+  expect(reduceDesktopSmokeEvents([event]).archiveSha256).toBe(event.sha256);
+  expect(() => reduceDesktopSmokeEvents([{ ...event, sha256: "not a digest" }])).toThrow();
+  expect(() => reduceDesktopSmokeEvents([event, { ...event, sha256: "b".repeat(64) }])).toThrow();
+});
+
 function artifact(bytes: string): BuildArtifact {
   return {
     version: "1.2.3",

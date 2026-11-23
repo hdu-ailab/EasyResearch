@@ -169,6 +169,7 @@ export function verifyDesktopOwnershipSuccessor(
 }
 
 export interface DesktopSmokeState {
+  archiveSha256?: string;
   origin?: string;
   initialBootId?: string;
   initialSidecarPid?: number;
@@ -756,6 +757,12 @@ export function reduceDesktopSmokeEvents(
   };
   for (const event of events) {
     switch (event.type) {
+      case "desktop-smoke.archive-integrity": {
+        requireMilestone(typeof event.sha256 === "string" && /^[a-f0-9]{64}$/u.test(event.sha256), "Invalid packaged archive digest.");
+        requireMilestone(state.archiveSha256 === undefined || state.archiveSha256 === event.sha256, "Packaged archive digest changed within one host.");
+        state.archiveSha256 = event.sha256 as string;
+        break;
+      }
       case "desktop-smoke.sidecar-ready": {
         if (typeof event.origin !== "string") {
           throw new Error("Invalid desktop sidecar readiness milestone.");

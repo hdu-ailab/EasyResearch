@@ -2,12 +2,104 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
-import { createReadStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import type { Duplex } from "node:stream";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { WindowsFixtureProcess } from "./smoke-desktop-update-windows";
+import type { UpdateActionResult } from "../src/runtime/update-contract";
+
+function diagnosticText(text: string, secrets: readonly string[], limit: number): string {
+  for (const secret of secrets) if (secret) text = text.split(secret).join("[redacted]");
+  text = text.split(/\r?\n/u).map(line => {
+    // No raw protocol/auth objects or credential-bearing headers enter uploaded diagnostics.
+    if (/(?:authorization|cookie|auth|api[-_]?key|password|client[-_]?secret|(?:renderer|control|successor|worker|access|refresh)?[-_]?token|credentials?)\s*["']?\s*[:=]|\b(?:Bearer|Basic)\s+\S+/iu.test(line)) return "[redacted credential-bearing line]";
+    return line.replace(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/gu, "[redacted]");
+  }).join("\n");
+  const bytes = Buffer.from(text);
+  return bytes.length <= limit ? text : bytes.subarray(-(limit - 3)).toString("utf8");
+}
+
+export function fixtureDiagnosticError(error: unknown, secrets: readonly string[] = []): string {
+  const seen = new Set<unknown>();
+  const describe = (value: unknown, depth: number): string => {
+    if (depth > 3 || seen.has(value)) return "[additional error context omitted]";
+    seen.add(value);
+    if (!(value instanceof Error)) return typeof value === "string" ? value : "Non-Error fixture failure";
+    const causes = value instanceof AggregateError ? [...value.errors].slice(0, 4) : value.cause === undefined ? [] : [value.cause];
+    return [value.message, ...causes.map(cause => describe(cause, depth + 1))].join("\nCaused by: ");
+  };
+  return diagnosticText(describe(error, 0), secrets, 8192);
+}
+
+function updateDiagnostic(value: unknown, secrets: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { unavailable: true };
+  const source = value as Record<string, unknown>; const result: Record<string, unknown> = {};
+  for (const key of ["owner", "phase", "currentVersion", "latestVersion", "code"])
+    if (typeof source[key] === "string" && source[key].length <= 80) result[key] = diagnosticText(source[key], secrets, 256);
+  for (const key of ["revision", "bytesReceived", "bytesTotal", "activeSessions"])
+    if (Number.isSafeInteger(source[key]) && (source[key] as number) >= 0) result[key] = source[key];
+  for (const key of ["canDownload", "canInstall", "canActivate", "canCancel", "canReveal", "authFlowActive"])
+    if (typeof source[key] === "boolean") result[key] = source[key];
+  if (typeof source.message === "string") result.message = diagnosticText(source.message, secrets, 2048);
+  return result;
+}
+
+/** A rejected/early IPC result must fail the handoff wait, rather than disappear into its deadline. */
+export function observeFixtureUpdateAction(action: Promise<UpdateActionResult>, secrets: () => readonly string[] = () => []) {
+  let outcome: { kind: "pending" } | { kind: "result"; value: UpdateActionResult } | { kind: "error"; error: unknown } = { kind: "pending" };
+  void action.then(value => { outcome = { kind: "result", value }; }, error => { outcome = { kind: "error", error }; });
+  const diagnostic = (): Record<string, unknown> => outcome.kind === "error" ? { kind: "error", error: fixtureDiagnosticError(outcome.error, secrets()) }
+    : outcome.kind === "result" ? { kind: "result", result: updateDiagnostic(outcome.value, secrets()) } : { kind: "pending" };
+  const fail = (label: string) => { throw new Error(`${label}: install action settled before the expected handoff: ${JSON.stringify(diagnostic())}`); };
+  return { result: action, diagnostic,
+    assertPending(label: string) { if (outcome.kind !== "pending") fail(label); },
+    assertInstalling(label: string, allowHostDisconnect: boolean) {
+      if (outcome.kind === "error" && !(allowHostDisconnect && outcome.error instanceof Error
+        && /(?:page|context|browser|target|session|connection).*(?:closed|destroyed|disconnected)/iu.test(outcome.error.message))) fail(label);
+      if (outcome.kind === "result" && ("code" in outcome.value || outcome.value.phase !== "activating")) fail(label);
+    },
+  };
+}
+
+/** Snapshot and log capture happen before browser/process cleanup and expose only bounded safe projections. */
+export async function captureDesktopUpdateFailure(options: {
+  root: string; userData: string; error: unknown; secrets: readonly string[];
+  actions: readonly ReturnType<typeof observeFixtureUpdateAction>[];
+  snapshot?: () => Promise<unknown>; snapshotTimeoutMs?: number;
+}): Promise<void> {
+  const report: Record<string, unknown> = { error: fixtureDiagnosticError(options.error, options.secrets), actions: options.actions.map(action => action.diagnostic()) };
+  const reportPath = assertFixtureChild(options.root, join(options.root, "update-failure.json"));
+  const save = () => writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  save(); // Preserve the primary failure even if later diagnostics fail or the view never replies.
+  try {
+    const path = assertFixtureChild(options.userData, join(options.userData, "logs", "desktop.log"));
+    const file = openSync(path, "r");
+    try {
+      const info = fstatSync(file); assert(info.isFile(), "Desktop owner log is not a regular file");
+      const bytes = Buffer.alloc(Math.min(info.size, 64 * 1024));
+      const position = Math.max(0, info.size - bytes.length);
+      const read = readSync(file, bytes, 0, bytes.length, position);
+      let text = bytes.subarray(0, read).toString("utf8");
+      // A cut credential-bearing line may have lost its field name or full secret.
+      if (position > 0) text = text.includes("\n") ? text.slice(text.indexOf("\n") + 1) : "[incomplete log line omitted]";
+      writeFileSync(assertFixtureChild(options.root, join(options.root, "desktop-owner.log")), diagnosticText(text, options.secrets, 64 * 1024), { mode: 0o600 });
+      report.ownerLogCaptured = true;
+    } finally { closeSync(file); }
+  } catch (error) { report.ownerLogError = fixtureDiagnosticError(error, options.secrets); }
+  if (options.snapshot) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const value = await Promise.race([Promise.resolve().then(options.snapshot), new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Update diagnostic snapshot timed out")), options.snapshotTimeoutMs ?? 3000);
+      })]);
+      report.snapshot = updateDiagnostic(value, options.secrets);
+    } catch (error) { report.snapshotError = fixtureDiagnosticError(error, options.secrets); }
+    finally { clearTimeout(timer); }
+  }
+  save();
+}
 
 /** Observe only: a leftover recovery copy must fail acceptance, never be hidden by harness removal. */
 export function remainingDesktopRecoveryArtifacts(installation: string, operationId: string): string[] {

@@ -1,22 +1,30 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
-export async function regularUpdateFile(path: string, max = 2 * 1024 * 1024 * 1024): Promise<number> {
+export interface UpdateFileReader {
+  lstat(path: string): Promise<Stats>;
+  realpath(path: string): Promise<string>;
+  read(path: string): AsyncIterable<Uint8Array>;
+}
+export type UpdateFileHasher = (path: string) => Promise<string>;
+const nativeReader: UpdateFileReader = { lstat, realpath, read: path => createReadStream(path) };
+
+export async function regularUpdateFile(path: string, max = 2 * 1024 * 1024 * 1024, reader: UpdateFileReader = nativeReader): Promise<number> {
   if (!isAbsolute(path) || path.includes("\0")) throw new Error("Invalid update file path.");
-  const stat = await lstat(path);
-  const physical = await realpath(path);
+  const stat = await reader.lstat(path);
+  const physical = await reader.realpath(path);
   const expected = resolve(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > max
     || (process.platform === "win32" ? physical.toLowerCase() !== expected.toLowerCase() : physical !== expected)) throw new Error("Invalid update file.");
   return stat.size;
 }
 
-export async function updateFileHash(path: string): Promise<string> {
-  await regularUpdateFile(path);
+export async function updateFileHash(path: string, reader: UpdateFileReader = nativeReader): Promise<string> {
+  await regularUpdateFile(path, undefined, reader);
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  for await (const chunk of reader.read(path)) hash.update(chunk);
   return hash.digest("hex");
 }
 

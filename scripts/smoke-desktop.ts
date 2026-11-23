@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   TARGETS,
   type BuildManifest,
@@ -334,6 +335,8 @@ async function runPackagedSmoke(pkg: DesktopSmokePackage, root: string): Promise
     }, 120_000);
     const origin = runningState?.origin;
     if (!origin) throw new Error("Packaged desktop smoke did not report its origin.");
+    const archiveHash = createHash("sha256").update(readFileSync(join(dirname(dirname(appPaths.sidecar)), "app.asar"))).digest("hex");
+    if (runningState?.archiveSha256 !== archiveHash) throw new Error("Packaged host did not verify the physical application archive bytes.");
     if (isProcessAlive(originalRecord.pid as number)) {
       throw new Error("Desktop startup did not stop the previous CLI daemon.");
     }

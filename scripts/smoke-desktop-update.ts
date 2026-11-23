@@ -27,7 +27,7 @@ import { DESKTOP_ACCESS_HEADER, DESKTOP_SMOKE_USER_DATA_ENV } from "../src/deskt
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
 import type { DesktopUpdateHandoff, DesktopUpdateReceipt, InstalledDesktopIdentity } from "../src/desktop/update-protocol";
 import type { UpdateAction, UpdateActionResult, UpdateSnapshot } from "../src/runtime/update-contract";
-import { assertFixtureChild, assertOlderVersion, createDesktopFixtureCertificate, createReleaseFixture, digestFile, findDesktopUpdateLineage, remainingDesktopRecoveryArtifacts, runFixtureCommand,
+import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, digestFile, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand,
   startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
 import { assertFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, installedHostHasNativeMenu, installedWindowEvidence, readBoundedFixtureJson,
   readFixtureServer, requestInstalledHostExit, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
@@ -199,6 +199,11 @@ async function driveScenario(options: {
     easyresearch: { web: { autoSessionTitle: false }, agentDefaults: { "research-assistant": { model: "smoke/desktop-update", thinking: "off" } } } }));
   const observer = observeUpdateReceipts(userData);
   const seen = new Map<number, WindowsFixtureProcess>();
+  const credentials = new Set<string>(["isolated-fixture"]);
+  const diagnosticSecrets = () => [...credentials, ...[...observer.handoffs.values()].map(value => value.token),
+    ...[...observer.receipts.values()].flatMap(value => value.successorToken ? [value.successorToken] : [])];
+  const installActions: ReturnType<typeof observeFixtureUpdateAction>[] = [];
+  let diagnosticPage: Page | undefined;
   let oldHost: ChildProcess | undefined; let browser: Browser | undefined; let installed = false; let successorPid: number | undefined;
   let primary: unknown; let result: Record<string, unknown> | undefined; const cleanupErrors: unknown[] = [];
   try {
@@ -213,15 +218,16 @@ async function driveScenario(options: {
     const oldLocaleDigests = Object.fromEntries(await Promise.all(["en-US.pak", "en-GB.pak", "zh-CN.pak", "zh-TW.pak"].map(async name => [name, await digestFile(join(install, "locales", name))])));
     const initialLaunch = await launchInstalledFixtureHost({ host, env, project, logPath: join(root, "initial-host.log"),
       onSpawn: child => { oldHost = child; }, onBrowser: connected => { browser = connected; } });
-    oldHost = initialLaunch.child; browser = initialLaunch.browser; const page = initialLaunch.page;
+    oldHost = initialLaunch.child; browser = initialLaunch.browser; const page = initialLaunch.page; diagnosticPage = page;
     const initialStatus = await rendererJson<NativeStatus>(page, "/api/status");
     assert.equal(initialStatus.version, old.version); assert.equal(resolve(initialStatus.agentDir).toLowerCase(), resolve(agentDir).toLowerCase());
     const initialRecord = readFixtureServer(agentDir)!; assert(initialRecord && alive(initialRecord.pid));
+    credentials.add(initialRecord.token);
     assert.equal(new URL(page.url()).origin, `http://127.0.0.1:${initialRecord.port}`);
     assert.equal(await page.evaluate(() => window.easyresearchDesktop!.version), old.version);
     const cdp = await browser.contexts()[0]!.newCDPSession(page); await cdp.send("Network.enable");
     let oldRendererToken: string | undefined;
-    cdp.on("Network.requestWillBeSentExtraInfo", event => { for (const [key, value] of Object.entries(event.headers)) if (key.toLowerCase() === DESKTOP_ACCESS_HEADER) oldRendererToken = String(value); });
+    cdp.on("Network.requestWillBeSentExtraInfo", event => { for (const [key, value] of Object.entries(event.headers)) if (key.toLowerCase() === DESKTOP_ACCESS_HEADER) { oldRendererToken = String(value); credentials.add(oldRendererToken); } });
     await rendererJson(page, "/api/status");
     await waitFor("old renderer credential observation", () => oldRendererToken, 10_000);
     await page.evaluate(() => {
@@ -263,11 +269,22 @@ async function driveScenario(options: {
 
     // Start idle, then admit real model/shell work only AFTER preparation begins.
     // The final daemon prepare-update gate must return renewed busy confirmation.
-    const firstInstall = updateAction(page, { action: "install", operationId: downloaded.operationId!, force: false });
-    void firstInstall.catch(() => {});
-    await waitFor("real helper preparation before late work", () => { observer.assertHealthy(); return observer.handoffs.get(staging); }, 120_000, 25);
+    const activityResponse = await fetch(`http://127.0.0.1:${initialRecord.port}${DAEMON_CONTROL_PATH}`, {
+      headers: { [DAEMON_TOKEN_HEADER]: initialRecord.token }, signal: AbortSignal.timeout(5000), proxy: "",
+    });
+    assert(activityResponse.ok, "Initial authenticated update activity check failed");
+    const activity = await activityResponse.json() as { busy?: { code?: string; activeSessions?: number; authFlowActive?: boolean } };
+    assert(activity.busy?.code === "RUNTIME_BUSY" && activity.busy.activeSessions === 0 && activity.busy.authFlowActive === false,
+      "Late-busy fixture must begin with no active Agent work or authentication flow");
+    const firstInstall = observeFixtureUpdateAction(updateAction(page, { action: "install", operationId: downloaded.operationId!, force: false }), diagnosticSecrets);
+    installActions.push(firstInstall);
+    await waitFor("real helper preparation before late work", () => {
+      firstInstall.assertPending("Waiting for helper preparation before late work");
+      observer.assertHealthy(); return observer.handoffs.get(staging);
+    }, 120_000, 25);
+    firstInstall.assertPending("Admitting late work after helper preparation");
     await rendererJson(page, `/api/sessions/${encodeURIComponent(created.id)}/messages`, { message: `${marker}:active` });
-    const busy = await firstInstall;
+    const busy = await firstInstall.result;
     assert("code" in busy && busy.code === "RUNTIME_BUSY" && busy.activeSessions > 0, "Late admitted work did not trigger the final busy gate");
     await waitFor("managed shell and held native model", () => { model.assertHealthy(); return model.held && existsSync(shellPidPath) ? true : undefined; });
     const shellPid = Number(readFileSync(shellPidPath, "utf8").trim()); assert(Number.isSafeInteger(shellPid) && shellPid > 0 && alive(shellPid));
@@ -275,6 +292,7 @@ async function driveScenario(options: {
     await waitFor("precommit helper cleanup", async () => !(await fixtureWindowsProcesses(root)).some(process => process.worker) ? true : undefined, 30_000, 500);
     snapshot(await page.evaluate(() => window.easyresearchDesktop!.updateSnapshot!()), "downloaded");
     assert.equal(await digestFile(join(staging, installerName)), await digestFile(mode === "upgrade" ? options.candidateInstaller : old.installer!));
+    for (const secret of diagnosticSecrets()) credentials.add(secret);
     observer.handoffs.clear(); observer.receipts.clear();
     const events = await page.evaluate(() => (window as unknown as { fixtureUpdates: UpdateSnapshot[] }).fixtureUpdates);
     assert(events.some(event => event.phase === "downloading" && (event.bytesReceived ?? 0) > 0), "Actual preload update events lacked download progress");
@@ -282,8 +300,13 @@ async function driveScenario(options: {
     // Host exit disconnects CDP before IPC can resolve. Native installed state,
     // process lineage, authenticated ownership and rendered Work decide acceptance.
     // Terminal receipt files may already be collected before this process wakes.
-    void updateAction(page, { action: "install", operationId: downloaded.operationId!, force: true }).catch(() => {});
-    const committed = await waitFor("committed helper handoff", () => { observer.assertHealthy(); return observer.handoffs.get(staging); }, 120_000, 25);
+    const installing = observeFixtureUpdateAction(updateAction(page, { action: "install", operationId: downloaded.operationId!, force: true }), diagnosticSecrets);
+    installActions.push(installing);
+    const committed = await waitFor("committed helper handoff", () => {
+      observer.assertHealthy(); const handoff = observer.handoffs.get(staging);
+      installing.assertInstalling("Waiting for committed helper handoff", handoff !== undefined || !alive(oldHost!.pid!));
+      return handoff;
+    }, 120_000, 25);
     assert.equal(committed.hostPid, oldHost.pid); assert.equal(committed.hostPath.toLowerCase(), realpathSync(host).toLowerCase());
     assert.equal(committed.oldBootId, initialStatus.bootId); assert.equal(committed.route, route); assert.equal(committed.userDataDir.toLowerCase(), realpathSync(userData).toLowerCase());
     assert.equal(committed.operationId, downloaded.operationId); assert.equal(committed.currentVersion, old.version); assert.equal(committed.version, candidateManifest.version);
@@ -301,6 +324,7 @@ async function driveScenario(options: {
     let accepted: { record: NonNullable<ReturnType<typeof readFixtureServer>>; lineage: NonNullable<ReturnType<typeof findDesktopUpdateLineage>> };
     try {
       accepted = await waitFor("settled native installer and installed successor", () => {
+        installing.assertInstalling("Waiting for installed successor after handoff", true);
         observer.assertHealthy(); model.assertHealthy(); if (samplingFailure) throw samplingFailure;
         const record = readFixtureServer(agentDir); if (!record || record.pid === initialRecord.pid) return;
         const lineage = findDesktopUpdateLineage([...seen.values()], { oldHostPid: oldHost!.pid!, sidecarPid: record.pid, host,
@@ -324,6 +348,7 @@ async function driveScenario(options: {
     if (samplingFailure) throw samplingFailure;
     await waitFor("old host, sidecar, model and shell terminal cleanup", () => !alive(oldHost!.pid!) && !alive(initialRecord.pid) && !alive(shellPid) && model.cancelled ? true : undefined, 30_000);
     const { record: successor, lineage } = accepted;
+    credentials.add(successor.token);
     assert.equal(readFixtureServer(agentDir)?.token, successor.token, "Observed successor ownership changed before verification");
     assert.notEqual(successor.token, initialRecord.token); assert(alive(successor.pid));
     const successorOrigin = `http://127.0.0.1:${successor.port}`;
@@ -373,11 +398,13 @@ async function driveScenario(options: {
       assert(!existsSync(join(install, "locales", "fr.pak")) && existsSync(join(install, "locales", "en-US.pak")));
       const french = await launchInstalledFixtureHost({ host, env, project, language: "fr", logPath: join(root, "pruned-fr-host.log"),
         onSpawn: child => { successorPid = child.pid; }, onBrowser: connected => { browser = connected; } });
+      diagnosticPage = french.page;
       successorPid = french.child.pid!;
       const frenchStatus = await rendererJson<NativeStatus>(french.page, "/api/status");
       assert.equal(frenchStatus.version, candidateManifest.version); assert.notEqual(frenchStatus.bootId, initialStatus.bootId);
       assert.equal(resolve(frenchStatus.agentDir).toLowerCase(), resolve(agentDir).toLowerCase());
       const frenchRecord = readFixtureServer(agentDir)!; assert(frenchRecord && alive(frenchRecord.pid));
+      credentials.add(frenchRecord.token);
       assert.notEqual(frenchRecord.token, successor.token); assert.notEqual(frenchRecord.pid, successor.pid);
       const frenchProcesses = await fixtureWindowsProcesses(root, [...seen.values()]);
       for (const row of frenchProcesses) seen.set(row.pid, row);
@@ -421,7 +448,14 @@ async function driveScenario(options: {
       ...(observer.receipts.get(staging) ? { lastSampledReceiptPhase: observer.receipts.get(staging)!.phase } : {}),
       stagingReclaimed: true, recoveryCopiesReclaimed: true, ...(unsupportedLocale ? { unsupportedLocale } : {}),
       ...(mode === "rollback" ? { corruptDownloadRejected: true, recoveryReleaseDialogObserved: true } : {}) };
-  } catch (error) { primary = error; }
+  } catch (error) {
+    try { const current = readFixtureServer(agentDir); if (current) credentials.add(current.token); } catch { /* Diagnostics never require a valid current listener. */ }
+    primary = new Error(fixtureDiagnosticError(error, diagnosticSecrets()));
+    try {
+      await captureDesktopUpdateFailure({ root, userData, error, secrets: diagnosticSecrets(), actions: installActions,
+        ...(diagnosticPage ? { snapshot: () => diagnosticPage!.evaluate(() => window.easyresearchDesktop!.updateSnapshot!()) } : {}) });
+    } catch (diagnosticError) { cleanupErrors.push(new Error(`Update diagnostic capture failed: ${fixtureDiagnosticError(diagnosticError, diagnosticSecrets())}`)); }
+  }
   finally {
     observer.close();
     try { if (successorPid && alive(successorPid)) { await requestInstalledHostExit(successorPid); await waitFor("installed host terminal Exit", () => !alive(successorPid!) ? true : undefined, 30_000); } }
@@ -440,7 +474,13 @@ async function driveScenario(options: {
       }
     } catch (error) { cleanupErrors.push(error); }
   }
-  if (primary || cleanupErrors.length) throw new AggregateError([...(primary ? [primary] : []), ...cleanupErrors], `Windows ${mode} update acceptance failed; private diagnostics retained at ${root}`);
+  if (primary || cleanupErrors.length) {
+    if (!primary) {
+      try { await captureDesktopUpdateFailure({ root, userData, error: new AggregateError(cleanupErrors), secrets: diagnosticSecrets(), actions: installActions }); }
+      catch (error) { cleanupErrors.push(new Error(`Update diagnostic capture failed: ${fixtureDiagnosticError(error, diagnosticSecrets())}`)); }
+    }
+    throw new AggregateError([...(primary ? [primary] : []), ...cleanupErrors.map(error => new Error(fixtureDiagnosticError(error, diagnosticSecrets())))], `Windows ${mode} update acceptance failed; private diagnostics retained at ${root}`);
+  }
   return result!;
 }
 
@@ -524,6 +564,7 @@ export async function runDesktopUpdateSmoke(options: ReturnType<typeof parseDesk
     try { rmSync(join(root, "tls"), { recursive: true, force: true }); } catch (error) { errors.push(error); }
     if (failure || errors.length) {
       writeFileSync(receiptPath, `${JSON.stringify({ acceptance: "native-windows-two-version-desktop-update", status: "failed", phase, version,
+        error: fixtureDiagnosticError(new AggregateError([...(failure ? [failure] : []), ...errors])),
         candidateInstallerSha256: candidate.sha256, candidateNativeSha256: native.sha256 })}\n`, { mode: 0o600 });
       throw new AggregateError([...(failure ? [failure] : []), ...errors], `Windows Desktop update gate failed during ${phase}; diagnostics: ${root}`);
     }

@@ -5,7 +5,7 @@ import { join, dirname, isAbsolute } from "node:path";
 import { acquireTransitionLease, adoptTransitionLease, waitForTransitionLeaseOwnership, type RuntimeLease } from "../cli/runtime-lease";
 import type { DesktopDownloadedUpdate } from "./update";
 import { DesktopUpdateCleanupError, type DesktopUpdateCustodian } from "./update-install";
-import { regularUpdateFile, updateFileHash, writeUpdateJson } from "./update-files";
+import { regularUpdateFile, writeUpdateJson, type UpdateFileHasher } from "./update-files";
 import { spawnUpdateProcess, type OwnedUpdateProcess } from "./update-process";
 import { cleanupDesktopUpdateStaging } from "./update-staging";
 import {
@@ -24,6 +24,7 @@ export async function prepareDesktopUpdateCustodian(options: {
   oldBootId: string;
   route: string;
   signal: AbortSignal;
+  hashFile: UpdateFileHasher;
   /** The host retains every spawned helper until exit or explicit commitment. */
   retain(handle: DesktopUpdateCustodian): void;
   accepted(): void;
@@ -37,14 +38,14 @@ export async function prepareDesktopUpdateCustodian(options: {
   const hostPath = await realpath(options.hostPath);
   const userDataDir = await realpath(options.userDataDir);
   if ((await realpath(options.sidecarPath)).toLowerCase() !== join(dirname(hostPath), "resources", "sidecar", "easyresearch.exe").toLowerCase()) throw new Error("Unknown Desktop installation layout.");
-  const sourceHash = await updateFileHash(options.sidecarPath);
+  const sourceHash = await options.hashFile(options.sidecarPath);
   await copyFile(options.sidecarPath, helperPath, constants.COPYFILE_EXCL);
-  if (await updateFileHash(helperPath) !== sourceHash) throw new Error("Update helper copy verification failed.");
+  if (await options.hashFile(helperPath) !== sourceHash) throw new Error("Update helper copy verification failed.");
   const h: DesktopUpdateHandoff = validateUpdateHandoff({ schema: 1, token, operationId: update.operationId,
     hostPid: process.pid, hostPath, userDataDir, agentDir: options.agentDir, directory: update.directory,
     currentVersion: options.currentVersion, version: update.version, installerName: update.asset.name,
     installerSize: update.asset.size, installerSha256: update.asset.sha256, helperSha256: sourceHash,
-    oldHostSha256: await updateFileHash(hostPath), oldAppSha256: await updateFileHash(join(dirname(hostPath), "resources", "app.asar")), oldSidecarSha256: sourceHash,
+    oldHostSha256: await options.hashFile(hostPath), oldAppSha256: await options.hashFile(join(dirname(hostPath), "resources", "app.asar")), oldSidecarSha256: sourceHash,
     oldBootId: options.oldBootId, route: options.route, expiresAt: Date.now() + 20 * 60_000 });
   await writeUpdateJson(join(update.directory, "handoff.json"), h);
   options.signal.throwIfAborted();
@@ -121,7 +122,7 @@ export function consumeDesktopUpdateSuccessor(env: NodeJS.ProcessEnv): DesktopUp
   return value;
 }
 
-export async function acceptDesktopUpdateSuccessor(context: DesktopUpdateSuccessor, host: { hostPath: string; userDataDir: string; version: string }): Promise<{ lease: RuntimeLease; handoff: DesktopUpdateHandoff; recovery: boolean; finish(): Promise<void>; ready(bootId: string, sidecarPid: number): void }> {
+export async function acceptDesktopUpdateSuccessor(context: DesktopUpdateSuccessor, host: { hostPath: string; userDataDir: string; version: string; hashFile: UpdateFileHasher }): Promise<{ lease: RuntimeLease; handoff: DesktopUpdateHandoff; recovery: boolean; finish(): Promise<void>; ready(bootId: string, sidecarPid: number): void }> {
   await regularUpdateFile(join(context.directory, "handoff.json"), 32 * 1024);
   await regularUpdateFile(join(context.directory, "receipt.json"), 32 * 1024);
   const receipt = JSON.parse(await readFile(join(context.directory, "receipt.json"), "utf8")) as DesktopUpdateReceipt;
@@ -139,12 +140,12 @@ export async function acceptDesktopUpdateSuccessor(context: DesktopUpdateSuccess
   if (recovery) {
     if (!receipt.outcome?.hostExited || receipt.outcome.rollback !== (receipt.outcome.installerAdmitted ? "complete" : "not-required")) throw new Error("Recovery completion evidence is missing.");
     const path = join(context.directory, "recovery-handoff.json"); await regularUpdateFile(path, 16 * 1024);
-    validateDesktopRecoveryTicket(JSON.parse(await readFile(path, "utf8")), h, identity, context, await updateFileHash(join(context.directory, "handoff.json")));
+    validateDesktopRecoveryTicket(JSON.parse(await readFile(path, "utf8")), h, identity, context, await host.hashFile(join(context.directory, "handoff.json")));
   }
   const original = dirname(h.hostPath);
-  if (await updateFileHash(h.hostPath) !== identity.hostSha256
-    || await updateFileHash(join(original, "resources", "app.asar")) !== identity.appSha256
-    || await updateFileHash(join(original, "resources", "sidecar", "easyresearch.exe")) !== identity.sidecarSha256) throw new Error("Installed Desktop file verification failed.");
+  if (await host.hashFile(h.hostPath) !== identity.hostSha256
+    || await host.hashFile(join(original, "resources", "app.asar")) !== identity.appSha256
+    || await host.hashFile(join(original, "resources", "sidecar", "easyresearch.exe")) !== identity.sidecarSha256) throw new Error("Installed Desktop file verification failed.");
   await waitForTransitionLeaseOwnership(h.agentDir, "desktop", process.pid, context.token);
   const lease = adoptTransitionLease(h.agentDir, "desktop", process.pid, context.token);
   return { lease, handoff: h, recovery,
