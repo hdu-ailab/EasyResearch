@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { consumeNpmProvenance, inspectNpmInstallation, npmInstallArguments, npmManualCommand, NPM_PROVENANCE_ENV, type NpmProvenance } from "./npm-update-provenance";
+import { mainPackageManifest } from "../../scripts/release";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -27,6 +28,16 @@ function installationFixture(prefixPart = "user prefix's dir") {
 }
 
 describe("npm installation authority", () => {
+  it("accepts the shipped meta manifest's relative bin path without changing prefix authority", () => {
+    const f = installationFixture();
+    const shipped = mainPackageManifest("1.0.0");
+    writeFileSync(join(f.provenance.metaRoot, "package.json"), JSON.stringify(shipped));
+    expect(inspectNpmInstallation(f.provenance, "1.0.0").prefix).toBe(f.prefix);
+    for (const path of ["../launcher.mjs", f.provenance.launcher, "./different.mjs"]) {
+      writeFileSync(join(f.provenance.metaRoot, "package.json"), JSON.stringify({ ...shipped, bin: { easyresearch: path } }));
+      expect(() => inspectNpmInstallation(f.provenance, "1.0.0")).toThrow();
+    }
+  });
   it("preserves a verified non-default prefix and removes the private carrier even on invalid input", () => {
     const f = installationFixture();
     const env = { [NPM_PROVENANCE_ENV]: JSON.stringify(f.provenance) };

@@ -69,9 +69,10 @@ export function inspectNpmInstallation(provenance: NpmProvenance, expectedVersio
   const meta = manifest(join(root, "package.json"));
   const os = provenance.platform === "win32" ? "windows" : provenance.platform;
   const packageName = `easyresearch-${os}-${provenance.arch}`;
+  const launcherBin = (meta.bin as Record<string, unknown> | undefined)?.easyresearch ?? meta.bin;
   if (meta.name !== "easyresearch" || meta.version !== expectedVersion
     || (meta.optionalDependencies as Record<string, unknown> | undefined)?.[packageName] !== expectedVersion
-    || ((meta.bin as Record<string, unknown> | undefined)?.easyresearch ?? meta.bin) !== "launcher.mjs") {
+    || (launcherBin !== "launcher.mjs" && launcherBin !== "./launcher.mjs")) {
     throw new Error("Installed meta package does not match the selected version.");
   }
   const require = createRequire(provenance.launcher);
