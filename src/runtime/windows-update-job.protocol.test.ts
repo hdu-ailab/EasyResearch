@@ -126,6 +126,46 @@ async function fixture(options: Partial<Parameters<typeof startWindowsUpdateJob>
 }
 
 describe("Windows job settlement protocol", () => {
+  it.each(["request", "start"] as const)("enforces startup expiry while the %s frame acknowledgement is pending", async (hold) => {
+    const now = performance.now.bind(performance);
+    let offset = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now() + offset);
+    let held = false;
+    let acknowledge = () => {};
+    const f = await fixture({ cleanupTimeoutMs: 30 }, (stream, text) => {
+      const write = stream.write;
+      stream.write = function (this: PassThrough, bytes: Buffer, callback: (error?: Error | null) => void) {
+        if (hold === "start" && bytes.toString("utf8").startsWith("start:")) {
+          held = true; acknowledge = () => callback();
+          return true;
+        }
+        return write.call(this, bytes, undefined!, (error?: Error | null) => {
+          if (hold === "request" && !held && text().split("\n").length >= 3) {
+            held = true; acknowledge = () => callback(error);
+          } else callback(error);
+        });
+      } as typeof write;
+    });
+    try {
+      const outcome = f.job.completed.catch((error: unknown) => error);
+      await f.ready();
+      await expect.poll(() => held).toBe(true);
+      await delay(70); // Readiness queues admission behind the held request.
+      expect(f.launched()).toBe(false);
+      offset = 40_000;
+      if (hold === "request") acknowledge(); // Release before the overdue timer runs.
+      await delay(150);
+      expect(f.launched()).toBe(false);
+      expect(await Promise.race([outcome, delay(100, "still pending")])).toMatchObject({ custodyUnresolved: true });
+      acknowledge(); await delay(0);
+      expect(f.launched()).toBe(false);
+    } finally {
+      acknowledge();
+      await f.job.cancel().catch(() => {});
+      clock.mockRestore();
+    }
+  });
+
   it("sends large UTF-8 initialization through bounded byte writes without changing the two-frame payload", async () => {
     const lengths: number[] = []; const buffers: boolean[] = [];
     const value = "雪🙂".repeat(20_000);

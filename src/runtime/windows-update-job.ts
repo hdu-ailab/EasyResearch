@@ -206,7 +206,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
   let inspectionRevoked = false;
   let checking: Promise<void> | undefined;
   let inputTask = Promise.resolve();
-  let inputQueuedBytes = 0, inputAcknowledgedBytes = 0, inputWritePending = false, startQueued = false;
+  let inputQueuedBytes = 0, inputAcknowledgedBytes = 0, inputWritePending = false, startQueued = false, admissionAcknowledged = false;
   let inputPhase: "source" | "request" | "start" | "cancel" | undefined;
   const inputCompleted: Partial<Record<"source" | "request" | "start" | "cancel", number>> = {};
   let resolveCompletion!: (result: { code: number | null; signal: NodeJS.Signals | null }) => void;
@@ -224,7 +224,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
     timing: { readyMs: readyAt, receiptMs: receiptAt, exitedMs: exitedAt, closedMs: closedAt,
       forcedMs: forcedAt === undefined ? undefined : Math.round(forcedAt - startedAt) },
     input: { phase: inputPhase, queuedBytes: inputQueuedBytes, acknowledgedBytes: inputAcknowledgedBytes,
-      writePending: inputWritePending, startQueued, completedMs: { ...inputCompleted } },
+      writePending: inputWritePending, startQueued, admissionAcknowledged, completedMs: { ...inputCompleted } },
   });
   const custodyError = () => Object.assign(unresolved(), { diagnostics: diagnostics(inspectionRevoked ? "deadline" : "settlement") });
   // Ownership starts at spawn, even if the caller has not attached its consumer.
@@ -265,14 +265,22 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
     const bytes = Buffer.from(line, "utf8");
     inputQueuedBytes += bytes.length;
     inputTask = inputTask.then(async () => {
+      if (phase === "start") enforceDeadline();
       if (!inputWritable() || (phase === "start" && cancelled)) return;
       inputPhase = phase;
+      // A submitted grant may execute before its callback, so custody becomes
+      // conservative now while the startup deadline still covers delivery.
       if (phase === "start") { launched = true; armDeadline(); }
       // Keep each write within a Windows pipe page, and join BOTH callback and
       // backpressure before issuing the next chunk. The two initialization
       // frames and later control frames must never overtake one another.
       for (let offset = 0; offset < bytes.length; offset += 4096) {
         if (!inputWritable() || !await writeChunk(bytes.subarray(offset, offset + 4096))) return;
+      }
+      if (phase === "start") {
+        enforceDeadline();
+        if (!inputWritable() || cancelled) return;
+        admissionAcknowledged = true; armDeadline();
       }
       inputCompleted[phase] = Math.round(performance.now() - startedAt);
     }).catch(() => beginCancel(unavailable()));
@@ -301,7 +309,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
   const enforceDeadline = () => {
     if (finished) return;
     const now = performance.now();
-    if (!launched && !cancelled && now >= startupDeadline) beginCancel(unavailable());
+    if (!admissionAcknowledged && !cancelled && now >= startupDeadline) beginCancel(unavailable());
     if (cleanupDeadline !== undefined && now >= cleanupDeadline) {
       if (forcedAt === undefined) {
         inspectionRevoked = true;
@@ -325,7 +333,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
   const armDeadline = () => {
     clearTimeout(deadlineTimer);
     if (finished) return;
-    const deadline = forcedAt !== undefined ? forcedAt + 2000 : cleanupDeadline ?? (!launched ? startupDeadline : undefined);
+    const deadline = forcedAt !== undefined ? forcedAt + 2000 : cleanupDeadline ?? (!admissionAcknowledged ? startupDeadline : undefined);
     if (deadline !== undefined) deadlineTimer = setTimeout(enforceDeadline, Math.max(0, deadline - performance.now()));
   };
   const validIdentity = (record: Record<string, unknown>) => record.version === 1 && record.nonce === nonce && record.guardPid === child.pid;
