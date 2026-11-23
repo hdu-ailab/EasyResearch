@@ -1,10 +1,10 @@
 import { execFile, spawn } from "node:child_process";
-import { copyFile, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFailed } from "vitest";
 import { startWindowsUpdateJob, windowsUpdateCommandLine, type WindowsUpdateJob } from "./windows-update-job";
 import { WINDOWS_UPDATE_JOB_SOURCE } from "./windows-update-job/host-source";
 
@@ -14,17 +14,29 @@ describe.skipIf(process.platform !== "win32")("native Windows update Job Object 
   let directory: string;
   let fixture: string;
   const jobs: WindowsUpdateJob[] = [];
+  const evidence = new Map<WindowsUpdateJob, { stderr: Buffer; outcome?: unknown; cleanup?: unknown }>();
+  let failureEvidence: unknown;
   beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "easyresearch-job-test-"));
+    directory = await realpath(await mkdtemp(join(tmpdir(), "easyresearch-job-test-")));
+    evidence.clear(); failureEvidence = undefined;
+    onTestFailed(async () => {
+      console.error("Windows job fixture evidence:", JSON.stringify(failureEvidence ?? await diagnostics()));
+    });
     fixture = join(directory, "fixture with spaces.cjs");
     await writeFile(fixture, `
 const fs = require('node:fs');
 const cp = require('node:child_process');
 const path = require('node:path');
 const [mode, dir, ...args] = process.argv.slice(2);
+const publish = (name, value) => {
+  const target = path.join(dir, name);
+  fs.writeFileSync(target + '.pending', JSON.stringify(value)); fs.renameSync(target + '.pending', target);
+};
+publish(mode + '-birth.json', {pid: process.pid, ppid: process.ppid,
+  execPath: process.execPath, node: process.versions.node, bun: process.versions.bun, uv: process.versions.uv, cwd: process.cwd()});
 if (mode === 'leaf') {
   process.on('SIGTERM', () => {});
-  fs.writeFileSync(path.join(dir, 'leaf.json'), JSON.stringify({pid: process.pid}));
+  publish('leaf.json', {pid: process.pid});
   const timer = setInterval(() => fs.writeFileSync(path.join(dir, 'heartbeat'), String(Date.now())), 20);
   if (args[0] === 'finite') {
     const release = setInterval(() => {
@@ -33,10 +45,21 @@ if (mode === 'leaf') {
     }, 20);
   }
 } else if (mode === 'tree') {
-  const leaf = cp.spawn(process.execPath, [__filename, 'leaf', dir, args[0]], {detached: true, stdio: 'ignore'});
+  const errors = fs.openSync(path.join(dir, 'leaf-stderr.log'), 'a');
+  const leaf = cp.spawn(process.execPath, [__filename, 'leaf', dir, args[0]], {detached: true, stdio: ['ignore', 'ignore', errors]});
+  fs.closeSync(errors);
+  leaf.once('error', error => {
+    publish('spawn-error.json', {phase: 'leaf-spawn', code: error.code, errno: error.errno, syscall: error.syscall});
+    process.exit(87);
+  });
+  leaf.once('spawn', () => {
+    publish('root.json', {pid: process.pid, childPid: leaf.pid});
+    const born = setInterval(() => {
+      if (fs.existsSync(path.join(dir, 'leaf.json'))) { clearInterval(born); process.exit(23); }
+    }, 20);
+    setTimeout(() => { publish('spawn-error.json', {phase: 'leaf-birth', code: 'ETIMEDOUT', pid: leaf.pid}); process.exit(87); }, 5000).unref();
+  });
   leaf.unref();
-  fs.writeFileSync(path.join(dir, 'root.json'), JSON.stringify({pid: process.pid}));
-  process.exit(23);
 } else if (mode === 'argv') {
   process.stdout.write(JSON.stringify({args, cwd: process.cwd(), value: process.env.JOB_UNICODE}));
 } else if (mode === 'raw') {
@@ -52,16 +75,54 @@ if (mode === 'leaf') {
 `, "utf8");
   });
   afterEach(async () => {
-    for (const job of jobs.splice(0)) await job.dispose();
+    const errors: unknown[] = [];
+    for (const job of jobs.splice(0)) {
+      try { await job.dispose(); }
+      catch (error) { evidence.get(job)!.cleanup = diagnosticError(error); errors.push(error); }
+    }
+    failureEvidence = await diagnostics();
+    if (errors.length) throw errors.length === 1 ? errors[0] : new AggregateError(errors, "Native job fixture cleanup failed.");
     await rm(directory, { recursive: true, force: true });
   }, 20_000);
+
+  const diagnosticError = (error: unknown) => {
+    if (!error || typeof error !== "object") return { name: "UnknownError" };
+    const value = error as Error & { diagnostics?: unknown; custodyUnresolved?: boolean };
+    return { name: value.name, message: value.message, custodyUnresolved: value.custodyUnresolved, diagnostics: value.diagnostics };
+  };
+  const diagnostics = async () => {
+    const records: Record<string, string | undefined> = {};
+    for (const name of ["tree-birth.json", "leaf-birth.json", "root.json", "leaf.json", "spawn-error.json", "leaf-stderr.log"]) {
+      const file = await open(join(directory, name), "r").catch(() => undefined);
+      if (!file) continue;
+      try {
+        const info = await file.stat();
+        const tail = Buffer.alloc(8192);
+        const read = await file.read(tail, 0, tail.length, Math.max(0, info.size - tail.length));
+        records[name] = tail.subarray(0, read.bytesRead).toString("utf8");
+      } finally { await file.close(); }
+    }
+    return { runner: { execPath: process.execPath, node: process.versions.node, bun: process.versions.bun, uv: process.versions.uv }, directory, records,
+      jobs: [...evidence.entries()].map(([job, data]) => ({ guardPid: job.child.pid, guardExitCode: job.child.exitCode, guardSignal: job.child.signalCode,
+        outcome: data.outcome, cleanup: data.cleanup, stderr: data.stderr.toString("utf8") })) };
+  };
+  const observe = (job: WindowsUpdateJob) => {
+    jobs.push(job);
+    const data: { stderr: Buffer; outcome?: unknown; cleanup?: unknown } = { stderr: Buffer.alloc(0) };
+    evidence.set(job, data);
+    job.child.stderr.on("data", (chunk: Buffer | string) => {
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      data.stderr = Buffer.concat([data.stderr, bytes.subarray(-8192)]).subarray(-8192);
+    });
+    void job.completed.then((result) => { data.outcome = result; }, (error: unknown) => { data.outcome = diagnosticError(error); });
+    return job;
+  };
 
   const launch = async (mode: string, args: string[] = [], options: Partial<Parameters<typeof startWindowsUpdateJob>[2]> = {}) => {
     const job = await startWindowsUpdateJob(process.execPath, [fixture, mode, directory, ...args], {
       ...options, env: { ...process.env, ...options.env, HOME: directory, USERPROFILE: directory, EASYRESEARCH_CODING_AGENT_DIR: join(directory, "agent") },
     });
-    jobs.push(job);
-    return job;
+    return observe(job);
   };
   const exists = async (name: string) => readFile(join(directory, name), "utf8").catch(() => undefined);
   const waitFile = async (name: string) => {
@@ -154,6 +215,29 @@ if (mode === 'leaf') {
     expect(Buffer.concat(stderr)).toEqual(Buffer.from([254, 0, 10, 66]));
   }, 40_000);
 
+  it("fully removes its exact compiler/receipt directory after verified settlement, including under an administrator token", async () => {
+    const original = { TEMP: process.env.TEMP, TMP: process.env.TMP };
+    let job: WindowsUpdateJob;
+    try {
+      process.env.TEMP = directory; process.env.TMP = directory;
+      job = await launch("raw");
+    } finally {
+      for (const key of ["TEMP", "TMP"] as const) {
+        if (original[key] === undefined) delete process.env[key]; else process.env[key] = original[key];
+      }
+    }
+    job.child.stdout.resume();
+    const privateNames = (await readdir(directory)).filter((name) => name.startsWith("easyresearch-update-job-"));
+    expect(privateNames).toHaveLength(1);
+    const privateDirectory = await realpath(join(directory, privateNames[0]!));
+    expect(await job.completed).toEqual({ code: 41, signal: null });
+    const bootstrap = (await readFile(join(privateDirectory, "bootstrap.jsonl"), "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(bootstrap.length).toBeGreaterThan(0);
+    expect(bootstrap.every((entry) => entry.guardPid === job.child.pid && Number.isFinite(entry.utcMs))).toBe(true);
+    await job.dispose();
+    await expect(lstat(privateDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 40_000);
+
   it("preserves Unicode/space/quote argv, cwd and environment through explicit UTF-8 input", async () => {
     const args = ["", "space value", 'quote"value', "trailing space\\", "雪 😀", "\\\\server\\x"];
     const job = await launch("argv", args, { cwd: directory, env: { ...process.env, JOB_UNICODE: "凭证 λ 😀" } });
@@ -161,6 +245,16 @@ if (mode === 'leaf') {
     job.child.stdout.on("data", (chunk: string) => { output += chunk; }); job.child.stderr.resume();
     await job.completed;
     expect(JSON.parse(output)).toEqual({ args, cwd: directory, value: "凭证 λ 😀" });
+  }, 40_000);
+
+  it("admits a large two-frame initialization within the existing five-second probe budget", async () => {
+    const env: NodeJS.ProcessEnv = { JOB_UNICODE: "雪 🙂 λ" };
+    for (let index = 0; index < 16; index++) env[`JOB_PADDING_${index}`] = "x".repeat(8192);
+    const job = await launch("argv", ["literal argument"], { env, cwd: directory, signal: AbortSignal.timeout(5000) });
+    let output = ""; job.child.stdout.setEncoding("utf8");
+    job.child.stdout.on("data", (chunk: string) => { output += chunk; });
+    expect(await job.completed).toEqual({ code: 0, signal: null });
+    expect(JSON.parse(output)).toEqual({ args: ["literal argument"], cwd: directory, value: "雪 🙂 λ" });
   }, 40_000);
 
   it("does not wrap NSIS's raw final /D= directory in quotes", async () => {
@@ -171,7 +265,7 @@ if (mode === 'leaf') {
     const job = await startWindowsUpdateJob(win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", `"${script}"`, "/S", destination],
       { env: { ...process.env, HOME: directory, USERPROFILE: directory, EASYRESEARCH_CODING_AGENT_DIR: join(directory, "agent") }, windowsVerbatimArguments: true });
-    jobs.push(job);
+    observe(job);
     let output = ""; job.child.stdout.setEncoding("utf8");
     job.child.stdout.on("data", (chunk: string) => { output += chunk; }); job.child.stderr.resume();
     expect((await job.completed).code).toBe(0);
@@ -198,7 +292,7 @@ if (mode === 'leaf') {
     // already configured job. No script/command fallback may execute this file.
     await writeFile(invalid, "MZinvalid image");
     const job = await startWindowsUpdateJob(invalid, ["private-argument"], { env: { ...process.env } });
-    jobs.push(job); job.child.stdout.resume(); job.child.stderr.resume();
+    observe(job); job.child.stdout.resume(); job.child.stderr.resume();
     await expect(job.completed).rejects.toThrow();
     await expect(job.dispose()).resolves.toBeUndefined();
     expect(await exists("mutation")).toBeUndefined();
@@ -217,7 +311,8 @@ if (mode === 'leaf') {
     let offered!: () => void;
     const grant = new Promise<void>((resolve) => { offered = resolve; });
     job.child.stdin.write = function (this: typeof job.child.stdin, ...parameters: Parameters<typeof write>) {
-      if (typeof parameters[0] === "string" && parameters[0].startsWith("start:")) {
+      const text = Buffer.isBuffer(parameters[0]) ? parameters[0].toString("utf8") : parameters[0];
+      if (typeof text === "string" && text.startsWith("start:")) {
         release = () => { write.apply(this, parameters); }; offered(); return true;
       }
       return write.apply(this, parameters);

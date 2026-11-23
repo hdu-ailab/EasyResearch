@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import { readFile, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { PassThrough } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startWindowsUpdateJob, type WindowsUpdateJob } from "./windows-update-job";
@@ -15,6 +16,9 @@ const receiptRead = vi.hoisted(() => ({
     wait(): Promise<void>;
     opened(file: FileHandle): void;
   },
+  removeFailure: undefined as undefined | { directory: string; error: unknown },
+  aliasNextDirectory: false,
+  aliases: [] as string[],
 }));
 // Only OS process/source preflight is replaced. Custody, private-file receipts,
 // cancellation, deadlines and deletion are the real adapter on every host.
@@ -26,6 +30,19 @@ vi.mock("node:fs/promises", async (original) => {
   ].includes(path);
   return {
     ...fs,
+    mkdtemp: async (prefix: string) => {
+      const directory = await fs.mkdtemp(prefix);
+      if (!receiptRead.aliasNextDirectory) return directory;
+      receiptRead.aliasNextDirectory = false;
+      const alias = `${directory}-alias`;
+      await fs.symlink(directory, alias, "junction");
+      receiptRead.aliases.push(alias);
+      return alias;
+    },
+    rm: (path: string, options: Parameters<typeof fs.rm>[1]) => {
+      if (receiptRead.removeFailure?.directory === path) return Promise.reject(receiptRead.removeFailure.error);
+      return fs.rm(path, options);
+    },
     realpath: (path: string) => nativePath(path) ? Promise.resolve(path) : fs.realpath(path),
     lstat: (path: string) => nativePath(path) ? Promise.resolve({ isFile: () => true }) : fs.lstat(path),
     open: async (path: string, flags: string) => {
@@ -68,25 +85,31 @@ beforeEach(() => {
   vi.stubEnv("SystemRoot", "C:\\Windows");
 });
 afterEach(async () => {
+  receiptRead.removeFailure = undefined;
   for (const job of jobs.splice(0)) await job.dispose().catch(() => {});
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const alias of receiptRead.aliases.splice(0)) await rm(alias, { force: true });
   Object.defineProperty(process, "platform", platform);
   receiptRead.delayMissing = undefined;
   receiptRead.stalled = undefined;
+  receiptRead.aliasNextDirectory = false;
   vi.unstubAllEnvs(); vi.resetAllMocks();
 });
 
-async function fixture(options: Partial<Parameters<typeof startWindowsUpdateJob>[2]> = {}) {
+async function fixture(options: Partial<Parameters<typeof startWindowsUpdateJob>[2]> = {}, configureInput?: (stream: PassThrough, text: () => string) => void) {
   const child = Object.assign(new EventEmitter(), {
     pid: 51872, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
     stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
     kill: (_signal?: string): boolean => { child.signalCode = "SIGKILL"; child.emit("close", null, "SIGKILL"); return true; },
   });
   let input = "";
-  child.stdin.on("data", (chunk: Buffer) => { input += chunk.toString("utf8"); });
+  const decoder = new StringDecoder("utf8");
+  child.stdin.on("data", (chunk: Buffer) => { input += decoder.write(chunk); });
+  configureInput?.(child.stdin, () => input);
   vi.mocked(spawn).mockReturnValue(child as never);
   const job = await startWindowsUpdateJob("C:\\node.exe", ["private-argument"], { env: { SECRET: "private-value" }, cleanupTimeoutMs: 200, ...options });
   jobs.push(job);
+  await expect.poll(() => input.split("\n").length >= 3).toBe(true);
   const request = JSON.parse(input.split("\n")[1]!);
   roots.push(request.directory);
   const publish = async (name: string, value: unknown) => {
@@ -103,11 +126,126 @@ async function fixture(options: Partial<Parameters<typeof startWindowsUpdateJob>
 }
 
 describe("Windows job settlement protocol", () => {
+  it("sends large UTF-8 initialization through bounded byte writes without changing the two-frame payload", async () => {
+    const lengths: number[] = []; const buffers: boolean[] = [];
+    const value = "雪🙂".repeat(20_000);
+    const f = await fixture({ env: { VALUE: value } }, (stream) => {
+      const write = stream.write;
+      stream.write = function (this: PassThrough, ...parameters: Parameters<typeof write>) {
+        buffers.push(Buffer.isBuffer(parameters[0]));
+        lengths.push(Buffer.byteLength(parameters[0]));
+        return write.apply(this, parameters);
+      } as typeof write;
+    });
+    expect(buffers.every(Boolean)).toBe(true);
+    expect(Math.max(...lengths)).toBeLessThanOrEqual(4096);
+    expect(f.request.environment).toBe(`VALUE=${value}\0\0`);
+    await f.ready(); await expect.poll(f.launched).toBe(true);
+    await f.receipt(); f.close(); await f.job.dispose();
+  });
+
+  it("keeps start/cancel frames behind initialization acknowledgement and drops a queued start after cancellation", async () => {
+    let acknowledge!: () => void; let held = false;
+    const f = await fixture({}, (stream, text) => {
+      const write = stream.write;
+      stream.write = function (this: PassThrough, chunk: unknown, encoding: unknown, callback: unknown) {
+        return write.call(this, chunk as Buffer, typeof encoding === "string" ? encoding as BufferEncoding : undefined!, (error?: Error | null) => {
+          const done = typeof encoding === "function" ? encoding : callback;
+          if (!held && text().split("\n").length >= 3) {
+            held = true; acknowledge = () => { if (typeof done === "function") done(error); };
+          } else if (typeof done === "function") done(error);
+        });
+      } as typeof write;
+    });
+    let cancelled: Promise<void> | undefined;
+    try {
+      await expect.poll(() => held).toBe(true);
+      await f.ready(); await delay(70);
+      expect(f.launched()).toBe(false);
+      cancelled = f.job.cancel();
+      acknowledge();
+      await expect.poll(() => f.controls().some((line: string) => line.startsWith("cancel:"))).toBe(true);
+      expect(f.launched()).toBe(false);
+      await f.receipt({ rootPid: 0, code: null }); f.close();
+      await cancelled;
+    } finally { acknowledge?.(); await cancelled?.catch(() => {}); }
+  });
+
+  it("does not join a stalled input acknowledgement or send late controls after deadline rejection", async () => {
+    let acknowledge!: () => void; let held = false;
+    const f = await fixture({ cleanupTimeoutMs: 30 }, (stream, text) => {
+      const write = stream.write;
+      stream.write = function (this: PassThrough, chunk: unknown, encoding: unknown, callback: unknown) {
+        return write.call(this, chunk as Buffer, typeof encoding === "string" ? encoding as BufferEncoding : undefined!, (error?: Error | null) => {
+          const done = typeof encoding === "function" ? encoding : callback;
+          if (!held && text().split("\n").length >= 3) { held = true; acknowledge = () => { if (typeof done === "function") done(error); }; }
+          else if (typeof done === "function") done(error);
+        });
+      } as typeof write;
+    });
+    try {
+      await expect.poll(() => held).toBe(true);
+      await f.ready();
+      const outcome = f.job.cancel().catch((error: unknown) => error);
+      expect(await Promise.race([outcome, delay(250, "still waiting")])).toMatchObject({ custodyUnresolved: true });
+      acknowledge(); await delay(0);
+      expect(f.controls().filter(Boolean)).toEqual([]);
+      expect(f.launched()).toBe(false);
+    } finally { acknowledge?.(); }
+  });
+
+  it("honors backpressure even when the write callback has already acknowledged the final initialization chunk", async () => {
+    let blocked = false;
+    const f = await fixture({}, (stream, text) => {
+      const write = stream.write;
+      stream.write = function (this: PassThrough, ...parameters: Parameters<typeof write>) {
+        const result = write.apply(this, parameters);
+        if (!blocked && text().split("\n").length >= 3) { blocked = true; return false; }
+        return result;
+      } as typeof write;
+    });
+    try {
+      await f.ready(); await delay(70);
+      expect(f.launched()).toBe(false);
+      f.child.stdin.emit("drain");
+      await expect.poll(f.launched).toBe(true);
+      await f.receipt(); f.close(); await f.job.completed;
+    } finally { f.child.stdin.emit("drain"); }
+  });
+
   it("waits for positive empty-job evidence; root exit and output EOF do not complete custody", async () => {
     const f = await fixture(); await f.ready();
     await expect.poll(f.launched).toBe(true);
     f.child.stdout.end(); f.child.stderr.end();
     expect(await Promise.race([f.job.completed.then(() => "complete"), delay(80, "pending")])).toBe("pending");
+    await f.receipt(); f.close();
+    expect(await f.job.completed).toEqual({ code: 23, signal: null });
+    await f.job.dispose();
+    await expect(readFile(`${f.request.directory}/receipt.json`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("retains safe cleanup errno and exact private-directory identity without exposing raw error arguments", async () => {
+    const f = await fixture(); await f.ready(); await expect.poll(f.launched).toBe(true);
+    await f.receipt(); f.close(); await f.job.completed;
+    receiptRead.removeFailure = { directory: f.request.directory, error: Object.assign(new Error("private-value private-argument"), {
+      code: "EPERM", errno: -4048, syscall: "unlink", path: `${f.request.directory}/compiler.dll`,
+    }) };
+    const error = await f.job.dispose().catch((value: unknown) => value);
+    expect(error).toMatchObject({ custodyUnresolved: true, diagnostics: {
+      phase: "cleanup", directory: f.request.directory, guardPid: f.child.pid, rootPid: 51873,
+      receiptVerified: true, jobEmpty: true, code: "EPERM", errno: -4048, syscall: "unlink", entry: "compiler.dll",
+    } });
+    expect(JSON.stringify(error)).not.toMatch(/private-value|private-argument/);
+    expect((error as Error).message).not.toMatch(/private-value|private-argument/);
+    receiptRead.removeFailure = undefined;
+    await f.job.dispose();
+  });
+
+  it("uses one canonical private-directory identity across admission, receipt verification and deletion", async () => {
+    receiptRead.aliasNextDirectory = true;
+    const f = await fixture();
+    expect(f.request.directory).not.toBe(receiptRead.aliases[0]);
+    await f.ready(); await expect.poll(f.launched).toBe(true);
     await f.receipt(); f.close();
     expect(await f.job.completed).toEqual({ code: 23, signal: null });
     await f.job.dispose();
@@ -243,6 +381,18 @@ describe("Windows job settlement protocol", () => {
     await f.receipt({ rootPid: 0, code: null, failure: "native-job-failed" }); f.close(71);
     await expect(f.job.completed).rejects.toThrow(/unavailable/);
     await expect(f.job.dispose()).resolves.toBeUndefined();
+  });
+
+  it("reports bounded native failure phase and error numbers without copying receipt payloads", async () => {
+    const f = await fixture(); await f.ready(); await expect.poll(f.launched).toBe(true);
+    await f.receipt({ rootPid: 0, code: null, failure: "native-job-failed", diagnostics: {
+      phase: "create-process", win32Error: 193, hresult: -2146233088, args: ["private-argument"], environment: { SECRET: "private-value" },
+    } });
+    f.close(71);
+    const error = await f.job.completed.catch((value: unknown) => value);
+    expect(error).toMatchObject({ diagnostics: { native: { phase: "create-process", win32Error: 193, hresult: -2146233088 } } });
+    expect(JSON.stringify(error)).not.toMatch(/private-argument|private-value|SECRET/);
+    await f.job.dispose();
   });
 
   it("never treats guard exit zero without an empty-job receipt as success", async () => {

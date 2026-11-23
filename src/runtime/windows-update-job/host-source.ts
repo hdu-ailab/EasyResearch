@@ -5,12 +5,35 @@
 export const WINDOWS_UPDATE_JOB_BOOTSTRAP = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+function Record-BootstrapStage([string]$phase) {
+  try {
+    $line = '{"phase":"' + $phase + '","guardPid":' + $PID + ',"utcMs":' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + '}' + [Environment]::NewLine
+    [System.IO.File]::AppendAllText([System.IO.Path]::Combine($env:TEMP, 'bootstrap.jsonl'), $line, [System.Text.UTF8Encoding]::new($false))
+  } catch { }
+}
 try {
+  Record-BootstrapStage 'entry'
   $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false, $true), $false, 4096, $true)
   $line = $reader.ReadLine()
+  Record-BootstrapStage 'source-read'
   if ($null -eq $line -or $line.Length -gt 131072) { exit 70 }
   $source = [System.Text.UTF8Encoding]::new($false, $true).GetString([Convert]::FromBase64String($line))
-  Add-Type -TypeDefinition $source -Language CSharp -ReferencedAssemblies @('System.dll', 'System.Core.dll', 'System.Web.Extensions.dll') -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null
+  $compiler = [System.CodeDom.Compiler.CompilerParameters]::new()
+  $compiler.GenerateInMemory = $true
+  $compiler.ReferencedAssemblies.AddRange([string[]]@('System.dll', 'System.Core.dll', 'System.Web.Extensions.dll'))
+  $temporary = [System.CodeDom.Compiler.TempFileCollection]::new()
+  $compiler.TempFiles = $temporary
+  try {
+    Record-BootstrapStage 'compile-start'
+    Add-Type -TypeDefinition $source -Language CSharp -CompilerParameters $compiler -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null
+    Record-BootstrapStage 'compile-finish'
+  } finally {
+    # Default CodeDOM admin temp directories carry their own delete-deny/high-IL
+    # protection. Dispose the exact compiler owner before Run changes the parent
+    # DACL; Delete()/SafeDelete() alone do not remove that directory policy.
+    [System.IDisposable].GetMethod('Dispose').Invoke($temporary, @()) | Out-Null
+  }
+  Record-BootstrapStage 'compiler-disposed'
   exit ([EasyResearch.WindowsUpdateJobHost]::Run($reader))
 } catch { exit 70 }
 `;
@@ -48,6 +71,22 @@ namespace EasyResearch {
     const uint WAIT_OBJECT_0 = 0;
     const uint WAIT_TIMEOUT = 258;
     static readonly IntPtr InvalidHandle = new IntPtr(-1);
+
+    sealed class NativeFailure : Exception {
+      public readonly string Phase;
+      public readonly int Code;
+      public NativeFailure(string phase, int code) { Phase = phase; Code = code; }
+    }
+    static Exception Failed(string phase) { return new NativeFailure(phase, Marshal.GetLastWin32Error()); }
+    static void BootstrapStage(string phase) {
+      // Fixed, bounded initialization metadata only. It is never custody proof
+      // and never contains the request, command, environment or nonce.
+      try {
+        string line = new JavaScriptSerializer().Serialize(new { phase = phase,
+          guardPid = Process.GetCurrentProcess().Id, utcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+        File.AppendAllText(Path.Combine(Environment.GetEnvironmentVariable("TEMP"), "bootstrap.jsonl"), line + "\n", new UTF8Encoding(false));
+      } catch { }
+    }
 
     [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes {
       public int Length; public IntPtr Descriptor; [MarshalAs(UnmanagedType.Bool)] public bool Inherit;
@@ -159,14 +198,14 @@ namespace EasyResearch {
 
     static uint Active(IntPtr job) {
       Accounting info;
-      if (!QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero)) throw new IOException();
+      if (!QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero)) throw Failed("query-job");
       return info.ActiveProcesses;
     }
 
     static bool RootExited(ProcessInfo process) {
       if (process.Process == IntPtr.Zero) return true;
       uint result = WaitForSingleObject(process.Process, 0);
-      if (result != WAIT_OBJECT_0 && result != WAIT_TIMEOUT) throw new IOException();
+      if (result != WAIT_OBJECT_0 && result != WAIT_TIMEOUT) throw Failed("wait-root");
       return result == WAIT_OBJECT_0;
     }
 
@@ -176,23 +215,23 @@ namespace EasyResearch {
       bool initialized = false;
       try {
         IntPtr current = GetCurrentProcess();
-        if (!DuplicateHandle(current, GetStdHandle(-11), current, out output, 0, true, 2) ||
-            !DuplicateHandle(current, GetStdHandle(-12), current, out error, 0, true, 2)) throw new IOException();
+        if (!DuplicateHandle(current, GetStdHandle(-11), current, out output, 0, true, 2)) throw Failed("duplicate-stdout");
+        if (!DuplicateHandle(current, GetStdHandle(-12), current, out error, 0, true, 2)) throw Failed("duplicate-stderr");
         SecurityAttributes security = new SecurityAttributes();
         security.Length = Marshal.SizeOf(typeof(SecurityAttributes)); security.Inherit = true;
         input = CreateFileW("NUL", 0x80000000, 3, ref security, 3, 0x80, IntPtr.Zero);
-        if (input == InvalidHandle) throw new IOException();
+        if (input == InvalidHandle) throw Failed("open-null");
         IntPtr size = IntPtr.Zero;
         InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref size);
-        if (size == IntPtr.Zero) throw new IOException();
+        if (size == IntPtr.Zero) throw Failed("size-attributes");
         attributes = Marshal.AllocHGlobal(size);
-        if (!InitializeProcThreadAttributeList(attributes, 2, 0, ref size)) throw new IOException();
+        if (!InitializeProcThreadAttributeList(attributes, 2, 0, ref size)) throw Failed("initialize-attributes");
         initialized = true;
         handles = Marshal.AllocHGlobal(3 * IntPtr.Size);
         Marshal.WriteIntPtr(handles, 0, input); Marshal.WriteIntPtr(handles, IntPtr.Size, output); Marshal.WriteIntPtr(handles, 2 * IntPtr.Size, error);
         // Only target stdio is inherited. Neither the job nor the private control
         // pipe may be kept alive by descendants after their guard dies.
-        if (!UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x20002), handles, new IntPtr(3 * IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new IOException();
+        if (!UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x20002), handles, new IntPtr(3 * IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw Failed("set-handle-list");
         // Windows 10+ PROC_THREAD_ATTRIBUTE_JOB_LIST makes assignment part of
         // CreateProcess itself. Even a guard death before this call returns or
         // before ResumeThread cannot strand an unowned suspended executable.
@@ -200,7 +239,7 @@ namespace EasyResearch {
         // create-then-assign sequence or any unassigned process creation.
         jobs = Marshal.AllocHGlobal(IntPtr.Size);
         Marshal.WriteIntPtr(jobs, job);
-        if (!UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x2000D), jobs, new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new IOException();
+        if (!UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x2000D), jobs, new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw Failed("set-job-list");
         StartupInfoEx startup = new StartupInfoEx();
         startup.StartupInfo.Size = Marshal.SizeOf(typeof(StartupInfoEx));
         startup.StartupInfo.Flags = 0x100;
@@ -210,7 +249,7 @@ namespace EasyResearch {
         ProcessInfo process;
         if (!CreateProcessW(request.command, new StringBuilder(request.commandLine), IntPtr.Zero, IntPtr.Zero, true,
             CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
-            environment, request.cwd, ref startup, out process)) throw new IOException();
+            environment, request.cwd, ref startup, out process)) throw Failed("create-process");
         return process;
       } finally {
         if (initialized) DeleteProcThreadAttributeList(attributes);
@@ -230,45 +269,59 @@ namespace EasyResearch {
       ProcessInfo process = new ProcessInfo();
       bool empty = false;
       string failure = null;
+      string phase = "request", failurePhase = null, errorType = null;
+      int? nativeError = null, hresult = null;
       Control control = new Control();
       try {
         JavaScriptSerializer serializer = new JavaScriptSerializer(); serializer.MaxJsonLength = 1048576;
+        BootstrapStage("request-read-start");
         request = serializer.Deserialize<JobRequest>(ReadLine(reader, 1048576));
+        BootstrapStage("request-read-complete");
         if (request == null || request.version != 1 || request.nonce == null || request.nonce.Length != 64 ||
             request.cleanupTimeoutMs < 1 || request.cleanupTimeoutMs > 60000 ||
             request.commandLine == null || request.commandLine.Length > 32766 ||
             request.environment == null || !request.environment.EndsWith("\0\0", StringComparison.Ordinal)) throw new InvalidDataException();
-        PrivateDirectory(request.directory);
+        phase = "private-directory"; PrivateDirectory(request.directory);
+        phase = "create-job";
         job = CreateJobObjectW(IntPtr.Zero, null);
-        if (job == IntPtr.Zero) throw new IOException();
+        if (job == IntPtr.Zero) throw Failed(phase);
         ExtendedLimit limit = new ExtendedLimit(); limit.Basic.Flags = KILL_ON_JOB_CLOSE;
-        if (!SetInformationJobObject(job, 9, ref limit, (uint)Marshal.SizeOf(typeof(ExtendedLimit)))) throw new IOException();
+        phase = "set-job-limits";
+        if (!SetInformationJobObject(job, 9, ref limit, (uint)Marshal.SizeOf(typeof(ExtendedLimit)))) throw Failed(phase);
         if (Active(job) != 0) throw new IOException();
         Thread input = new Thread(delegate() { control.Read(reader, request.nonce); });
         input.IsBackground = true; input.Start();
-        Publish(request, "ready.json", new { version = 1, nonce = request.nonce, guardPid = Process.GetCurrentProcess().Id });
+        phase = "publish-ready"; Publish(request, "ready.json", new { version = 1, nonce = request.nonce, guardPid = Process.GetCurrentProcess().Id });
+        BootstrapStage("ready-published");
+        phase = "wait-admission";
         Stopwatch admission = Stopwatch.StartNew();
         while (!control.Start && !control.Cancel) {
           if (admission.ElapsedMilliseconds > 30000) { control.Cancel = true; break; }
           Thread.Sleep(10);
         }
         if (!control.Cancel) {
-          process = CreateSuspended(request, job);
+          phase = "create-process"; process = CreateSuspended(request, job);
           // Successful creation already established kernel job custody atomically.
-          if (!control.Cancel && ResumeThread(process.Thread) == UInt32.MaxValue) throw new IOException();
+          phase = "resume-thread";
+          if (!control.Cancel && ResumeThread(process.Thread) == UInt32.MaxValue) throw Failed(phase);
         }
+        phase = "wait-job";
         Stopwatch cancellation = null;
         while (true) {
           if (control.Cancel && cancellation == null) {
             cancellation = Stopwatch.StartNew();
-            if (!TerminateJobObject(job, CANCEL_EXIT)) throw new IOException();
+            if (!TerminateJobObject(job, CANCEL_EXIT)) throw Failed("terminate-job");
           }
           if (Active(job) == 0 && RootExited(process)) { empty = true; break; }
           if (cancellation != null && cancellation.ElapsedMilliseconds >= request.cleanupTimeoutMs) throw new IOException();
           Thread.Sleep(10);
         }
-      } catch {
+      } catch (Exception error) {
         failure = "native-job-failed";
+        NativeFailure native = error as NativeFailure;
+        failurePhase = native == null ? phase : native.Phase;
+        if (native != null) nativeError = native.Code;
+        hresult = error.HResult; errorType = error.GetType().Name;
         // Every created process, including a suspended one whose creation has
         // not yet returned, is already owned by this job. Never signal a PID.
         Stopwatch cleanup = Stopwatch.StartNew();
@@ -285,12 +338,13 @@ namespace EasyResearch {
         uint? code = null;
         if (empty && process.Process != IntPtr.Zero) {
           uint exitCode;
-          if (!GetExitCodeProcess(process.Process, out exitCode)) { empty = false; failure = "native-job-failed"; }
+          if (!GetExitCodeProcess(process.Process, out exitCode)) { empty = false; failure = "native-job-failed"; failurePhase = "get-exit-code"; nativeError = Marshal.GetLastWin32Error(); }
           else code = exitCode;
         }
         if (request != null) Publish(request, "receipt.json", new {
           version = 1, nonce = request.nonce, guardPid = Process.GetCurrentProcess().Id,
-          jobEmpty = empty, rootPid = process.ProcessId, code = code, failure = failure
+          jobEmpty = empty, rootPid = process.ProcessId, code = code, failure = failure,
+          diagnostics = new { phase = failurePhase, win32Error = nativeError, hresult = hresult, errorType = errorType }
         });
       } catch { failure = "receipt-failed"; }
       finally {

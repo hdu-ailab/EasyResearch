@@ -17,7 +17,13 @@ const [mode,dir,...args]=process.argv.slice(2);
 if(mode==='argv')process.stdout.write(JSON.stringify({args,cwd:process.cwd(),proxy:process.env.HTTPS_PROXY,carrier:process.env.EASYRESEARCH_NPM_PROVENANCE,nodeOptions:process.env.NODE_OPTIONS}));
 if(mode==='flood'){fs.writeSync(1,Buffer.alloc(300000,97));fs.writeSync(1,Buffer.from([0,13,10,90]));fs.writeSync(2,Buffer.alloc(300000,98));fs.writeSync(2,'tail');process.exit(41);}
 if(mode==='leaf'){process.on('SIGTERM',()=>{});fs.writeFileSync(path.join(dir,'leaf'),String(process.pid));setInterval(()=>{},100);}
-if(mode==='tree'){const child=cp.spawn(process.execPath,[__filename,'leaf',dir],{stdio:'ignore',detached:true});child.unref();fs.writeFileSync(path.join(dir,'root'),String(process.pid));process.exit(0);}
+if(mode==='tree'){
+  const child=cp.spawn(process.execPath,[__filename,'leaf',dir],{stdio:'ignore',detached:true});
+  child.once('error',()=>process.exit(71));child.unref();
+  fs.writeFileSync(path.join(dir,'root'),String(process.pid));
+  const ready=setInterval(()=>{if(fs.existsSync(path.join(dir,'leaf'))){clearInterval(ready);process.exit(0);}},10);
+  setTimeout(()=>process.exit(72),5000).unref();
+}
 `);
   });
   afterEach(async () => {

@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, win32 } from "node:path";
+import { isAbsolute, join, relative, win32 } from "node:path";
 import { WINDOWS_UPDATE_JOB_BOOTSTRAP, WINDOWS_UPDATE_JOB_SOURCE } from "./windows-update-job/host-source";
 
 export interface WindowsUpdateJobOptions {
@@ -27,6 +27,29 @@ export interface WindowsUpdateJob {
 
 const unavailable = () => new Error("Windows update process custody is unavailable. Use the manual update action.");
 const unresolved = () => Object.assign(new Error("Windows update process-tree settlement could not be verified."), { custodyUnresolved: true as const });
+
+function filesystemDiagnostic(error: unknown, directory: string): Record<string, unknown> {
+  if (!error || typeof error !== "object") return {};
+  const value = error as NodeJS.ErrnoException;
+  const entry = typeof value.path === "string" ? relative(directory, value.path) : undefined;
+  return {
+    code: typeof value.code === "string" && /^[A-Z][A-Z0-9_]{0,39}$/.test(value.code) ? value.code : undefined,
+    errno: typeof value.errno === "number" && Number.isSafeInteger(value.errno) ? value.errno : undefined,
+    syscall: typeof value.syscall === "string" && /^[a-zA-Z_][a-zA-Z0-9_]{0,39}$/.test(value.syscall) ? value.syscall : undefined,
+    entry: entry && entry.length <= 256 && !isAbsolute(entry) && !/^\.\.(?:[/\\]|$)/.test(entry) && !/[\x00-\x1f\x7f]/.test(entry) ? entry : undefined,
+  };
+}
+
+function nativeDiagnostic(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const phases = ["request", "private-directory", "create-job", "set-job-limits", "query-job", "publish-ready", "wait-admission",
+    "duplicate-stdout", "duplicate-stderr", "open-null", "size-attributes", "initialize-attributes", "set-handle-list", "set-job-list",
+    "create-process", "resume-thread", "wait-job", "wait-root", "terminate-job", "get-exit-code"];
+  if (typeof record.phase !== "string" || !phases.includes(record.phase)) return undefined;
+  const number = (field: unknown) => typeof field === "number" && Number.isSafeInteger(field) && field >= -2147483648 && field <= 0xffffffff ? field : undefined;
+  return { phase: record.phase, win32Error: number(record.win32Error), hresult: number(record.hresult) };
+}
 
 /** Windows CRT argv quoting; verbatim is intentionally only for the owned NSIS call. */
 export function windowsUpdateCommandLine(command: string, args: readonly string[], verbatim = false): string {
@@ -91,6 +114,7 @@ interface Receipt {
   rootPid: number;
   code: number | null;
   failure: null | "native-job-failed";
+  diagnostics?: unknown;
 }
 
 async function readRecord(path: string, current: () => boolean): Promise<Record<string, unknown> | undefined> {
@@ -140,6 +164,9 @@ export async function startWindowsUpdateJob(command: string, args: readonly stri
     if (!(await lstat(cwd)).isDirectory()) throw unavailable();
     options.signal?.throwIfAborted();
     directory = await mkdtemp(join(tmpdir(), "easyresearch-update-job-"));
+    // Windows TEMP can use an 8.3 alias. Retain the actual created directory's
+    // canonical identity for native ACLs, compiler files, receipts and cleanup.
+    directory = await realpath(directory);
     request = JSON.stringify({ version: 1, nonce, directory, command: target,
       commandLine: windowsUpdateCommandLine(target, args, options.windowsVerbatimArguments), cwd, environment, cleanupTimeoutMs });
     if (Buffer.byteLength(request, "utf8") > 1024 * 1024) throw unavailable();
@@ -171,14 +198,35 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
   let failure: Error | undefined;
   let cleanupDeadline: number | undefined;
   let forcedAt: number | undefined;
-  const startupDeadline = performance.now() + 30_000;
+  const startedAt = performance.now();
+  const startupDeadline = startedAt + 30_000;
+  let readyAt: number | undefined, receiptAt: number | undefined, exitedAt: number | undefined, closedAt: number | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   let inspectionRevoked = false;
   let checking: Promise<void> | undefined;
+  let inputTask = Promise.resolve();
+  let inputQueuedBytes = 0, inputAcknowledgedBytes = 0, inputWritePending = false, startQueued = false;
+  let inputPhase: "source" | "request" | "start" | "cancel" | undefined;
+  const inputCompleted: Partial<Record<"source" | "request" | "start" | "cancel", number>> = {};
   let resolveCompletion!: (result: { code: number | null; signal: NodeJS.Signals | null }) => void;
   let rejectCompletion!: (error: Error) => void;
   const completed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => { resolveCompletion = resolve; rejectCompletion = reject; });
+  // Diagnostic consumers receive only owned identity, phase/timing and fixed
+  // status fields. Never attach argv, environment, nonce or raw system errors.
+  const diagnostics = (phase: string) => ({
+    phase, directory, guardPid: child.pid ?? null, guardExitCode: child.exitCode, guardSignal: child.signalCode,
+    launched, cancelled, exited, closed, inspectionRevoked, custodySettled: safe,
+    receiptVerified: receipt !== undefined, jobEmpty: receipt?.jobEmpty ?? null,
+    rootPid: receipt?.rootPid ?? null, targetCode: receipt?.code ?? null,
+    native: nativeDiagnostic(receipt?.diagnostics),
+    elapsedMs: Math.round(performance.now() - startedAt),
+    timing: { readyMs: readyAt, receiptMs: receiptAt, exitedMs: exitedAt, closedMs: closedAt,
+      forcedMs: forcedAt === undefined ? undefined : Math.round(forcedAt - startedAt) },
+    input: { phase: inputPhase, queuedBytes: inputQueuedBytes, acknowledgedBytes: inputAcknowledgedBytes,
+      writePending: inputWritePending, startQueued, completedMs: { ...inputCompleted } },
+  });
+  const custodyError = () => Object.assign(unresolved(), { diagnostics: diagnostics(inspectionRevoked ? "deadline" : "settlement") });
   // Ownership starts at spawn, even if the caller has not attached its consumer.
   void completed.catch(() => {});
   const stopGuard = () => {
@@ -186,9 +234,48 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
       try { child.kill("SIGKILL"); } catch { /* Absence is never inferred here. */ }
     }
   };
-  const send = (line: string) => {
-    if (closed || child.stdin.destroyed || child.stdin.writableEnded) return;
-    child.stdin.write(line, "utf8", (error) => { if (error) beginCancel(unavailable()); });
+  const inputWritable = () => !finished && !inspectionRevoked && !closed && !child.stdin.destroyed && !child.stdin.writableEnded;
+  const writeChunk = (bytes: Buffer): Promise<boolean> => new Promise((resolve) => {
+    if (!inputWritable()) { resolve(false); return; }
+    let acknowledged = false, drained = false, returned = false, needsDrain = false, done = false;
+    inputWritePending = true;
+    const settle = (accepted: boolean) => {
+      if (done) return;
+      done = true; inputWritePending = false;
+      child.stdin.removeListener("drain", onDrain);
+      child.stdin.removeListener("close", onClose);
+      child.stdin.removeListener("error", onError);
+      if (accepted) inputAcknowledgedBytes += bytes.length;
+      resolve(accepted);
+    };
+    const checkWrite = () => { if (returned && acknowledged && (!needsDrain || drained)) settle(true); };
+    const onDrain = () => { drained = true; checkWrite(); };
+    const onClose = () => settle(false);
+    const onError = () => { settle(false); beginCancel(unavailable()); };
+    child.stdin.on("drain", onDrain); child.stdin.once("close", onClose); child.stdin.once("error", onError);
+    try {
+      needsDrain = !child.stdin.write(bytes, (error) => {
+        if (error) { onError(); return; }
+        acknowledged = true; checkWrite();
+      });
+      returned = true; checkWrite();
+    } catch { onError(); }
+  });
+  const send = (phase: "source" | "request" | "start" | "cancel", line: string) => {
+    const bytes = Buffer.from(line, "utf8");
+    inputQueuedBytes += bytes.length;
+    inputTask = inputTask.then(async () => {
+      if (!inputWritable() || (phase === "start" && cancelled)) return;
+      inputPhase = phase;
+      if (phase === "start") { launched = true; armDeadline(); }
+      // Keep each write within a Windows pipe page, and join BOTH callback and
+      // backpressure before issuing the next chunk. The two initialization
+      // frames and later control frames must never overtake one another.
+      for (let offset = 0; offset < bytes.length; offset += 4096) {
+        if (!inputWritable() || !await writeChunk(bytes.subarray(offset, offset + 4096))) return;
+      }
+      inputCompleted[phase] = Math.round(performance.now() - startedAt);
+    }).catch(() => beginCancel(unavailable()));
   };
   const beginCancel = (error?: Error) => {
     if (finished) return;
@@ -197,7 +284,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
     cancelled = true;
     cleanupDeadline ??= performance.now() + cleanupTimeoutMs;
     armDeadline();
-    send(`cancel:${nonce}\n`);
+    send("cancel", `cancel:${nonce}\n`);
   };
   const onAbort = () => beginCancel();
   const finish = (error?: Error) => {
@@ -206,7 +293,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
     clearTimeout(timer);
     clearTimeout(deadlineTimer);
     signal?.removeEventListener("abort", onAbort);
-    if (error) rejectCompletion(error);
+    if (error) rejectCompletion(Object.assign(error, { diagnostics: diagnostics(inspectionRevoked ? "deadline" : "settlement") }));
     else resolveCompletion({ code: receipt?.code ?? null, signal: null });
   };
   // Enforcement never awaits receipt/ready I/O. In particular, cancellation's
@@ -228,10 +315,10 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
         if (receipt?.jobEmpty) {
           safe = true;
           finish(failure ?? (receipt.failure ? unavailable() : undefined));
-        } else finish(unresolved());
+        } else finish(custodyError());
         return;
       }
-      if (now - forcedAt >= 2000) { finish(unresolved()); return; }
+      if (now - forcedAt >= 2000) { finish(custodyError()); return; }
     }
     armDeadline();
   };
@@ -255,20 +342,22 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
             !(record.code === null || integer(record.code)) || (record.rootPid === 0) !== (record.code === null) ||
             !(record.failure === null || record.failure === "native-job-failed")) throw unavailable();
           receipt = record as unknown as Receipt;
-          if (!receipt.jobEmpty) beginCancel(unresolved());
+          receiptAt = Math.round(performance.now() - startedAt);
+          if (!receipt.jobEmpty) beginCancel(custodyError());
           else { cleanupDeadline ??= performance.now() + cleanupTimeoutMs; armDeadline(); }
         }
       }
-      if (!receipt && !launched && !cancelled && !closed && !exited) {
+      if (!receipt && !launched && !startQueued && !cancelled && !closed && !exited) {
         const ready = await readRecord(join(directory, "ready.json"), () => !finished && !inspectionRevoked);
         enforceDeadline();
         if (finished || inspectionRevoked) return;
         if (ready) {
           if (!validIdentity(ready)) throw unavailable();
+          readyAt = Math.round(performance.now() - startedAt);
           // Abort can arrive during either filesystem await. Recheck immediately
           // before the sole authorization to create/resume a target.
           if (!cancelled && !signal?.aborted && !closed && !exited) {
-            launched = true; armDeadline(); send(`start:${nonce}\n`);
+            startQueued = true; send("start", `start:${nonce}\n`);
           }
         }
       }
@@ -283,7 +372,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
       // created a target; an OS spawn failure cannot have created a guard.
       safe = Boolean(receipt?.jobEmpty) || (!launched && (!child.pid ||
         (forcedAt === undefined && child.signalCode === null && child.exitCode === 70)));
-      if (!safe) finish(unresolved());
+      if (!safe) finish(custodyError());
       else if (failure || receipt?.failure || (!receipt && !cancelled)) finish(failure ?? unavailable());
       else finish();
       return;
@@ -293,7 +382,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
     // cannot publish new evidence. Retain the files and reject without claiming
     // that kill-on-close has synchronously settled the job.
     if (exited && !receipt?.jobEmpty && (launched || child.signalCode !== null || child.exitCode !== 70)) {
-      finish(unresolved()); return;
+      finish(custodyError()); return;
     }
   };
   const check = (): Promise<void> => {
@@ -314,11 +403,12 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
     if (forcedAt !== undefined) enforceDeadline();
     else { armDeadline(); void check(); }
   };
-  child.once("exit", () => { exited = true; terminalChanged(); });
-  child.once("close", () => { closed = true; terminalChanged(); });
+  child.once("exit", () => { exited = true; exitedAt = Math.round(performance.now() - startedAt); terminalChanged(); });
+  child.once("close", () => { closed = true; closedAt = Math.round(performance.now() - startedAt); terminalChanged(); });
   signal?.addEventListener("abort", onAbort, { once: true });
   // Fixed compiler input and UTF-8 data, never interpolation into executable code.
-  send(`${Buffer.from(WINDOWS_UPDATE_JOB_SOURCE, "utf8").toString("base64")}\n${request}\n`);
+  send("source", `${Buffer.from(WINDOWS_UPDATE_JOB_SOURCE, "utf8").toString("base64")}\n`);
+  send("request", `${request}\n`);
   if (signal?.aborted) onAbort();
   armDeadline();
   void check();
@@ -327,7 +417,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
     await completed.catch(() => {});
     // Do not join a stalled inspector after the independently bounded outcome.
     // Its finalizer still closes any handle acquired after cancellation.
-    if (!safe) throw unresolved();
+    if (!safe) throw custodyError();
   };
   let disposal: Promise<void> | undefined;
   return {
@@ -336,7 +426,10 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
       disposal ??= (async () => {
         await cancel();
         try { await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
-        catch { throw Object.assign(new Error("Windows update helper cleanup is incomplete."), { custodyUnresolved: true as const }); }
+        catch (error) { throw Object.assign(new Error("Windows update helper cleanup is incomplete."), {
+          custodyUnresolved: true as const,
+          diagnostics: { ...diagnostics("cleanup"), ...filesystemDiagnostic(error, directory) },
+        }); }
       })().catch((error: unknown) => { disposal = undefined; throw error; });
       return disposal;
     },

@@ -1,6 +1,6 @@
 /** Native CI diagnostic only. No installer or user configuration is used. */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, win32 } from "node:path";
 import { startWindowsUpdateJob } from "../src/runtime/windows-update-job";
@@ -74,6 +74,23 @@ async function main(): Promise<void> {
           const data = JSON.parse(await readFile(join(directory, name), "utf8"));
           item.record = Object.fromEntries(["version", "guardPid", "rootPid", "jobEmpty", "code", "failure"].filter(key => key in data).map(key => [key, data[key]]));
         } catch (error) { item.readError = (error as NodeJS.ErrnoException).code; }
+      }
+      if (name === "bootstrap.jsonl") {
+        const file = await open(join(directory, name), "r").catch(() => undefined);
+        if (file) {
+          try {
+            const bytes = Buffer.alloc(8193);
+            const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+            if (bytesRead > 8192) throw new Error("Bootstrap diagnostic exceeded its bound.");
+            item.stages = bytes.subarray(0, bytesRead).toString("utf8").trim().split(/\r?\n/).filter(Boolean).map(line => {
+              const value = JSON.parse(line);
+              if (typeof value.phase !== "string" || !/^[a-z-]{1,40}$/.test(value.phase)
+                || !Number.isSafeInteger(value.guardPid) || !Number.isSafeInteger(value.utcMs)) throw new Error("Invalid bootstrap diagnostic.");
+              return { phase: value.phase, guardPid: value.guardPid, utcMs: value.utcMs };
+            });
+          } catch (error) { item.readError = String(error); }
+          finally { await file.close(); }
+        }
       }
       files.push(item);
     }
