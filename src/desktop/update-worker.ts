@@ -6,8 +6,9 @@ import type { Readable } from "node:stream";
 import { dirname, join, win32 } from "node:path";
 import { acquireTransitionLease, adoptTransitionLease, serverLeasePath, type RuntimeLease } from "../cli/runtime-lease";
 import { backupWindowsInstallation, regularUpdateFile, updateFileHash, writeUpdateJson } from "./update-files";
-import { spawnDesktopUpdateOwner, ownDesktopInstallerJob, verifyDesktopSidecarVersion, exitedWithin, type OwnedDesktopInstaller, type OwnedUpdateProcess } from "./update-process";
+import { spawnDesktopUpdateOwner, ownDesktopInstallerJob, verifyDesktopSidecarVersion, waitForDesktopUpdateReadiness, exitedWithin, type OwnedDesktopInstaller, type OwnedUpdateProcess } from "./update-process";
 import { startWindowsUpdateJob } from "../runtime/windows-update-job";
+import { createDesktopSuccessorChannel } from "./update-successor-channel";
 import {
   UPDATE_EVENT_PREFIX, UPDATE_SUCCESSOR_ENV, UPDATE_WORKER_ENTRY, UPDATE_WORKER_TOKEN_ENV,
   validateUpdateHandoff, createDesktopRecoveryTicket, windowsNsisArguments, windowsInstallationLocation, validToken,
@@ -125,27 +126,32 @@ export async function runDesktopUpdateWorker(argv: readonly string[]): Promise<n
         await writeUpdateJson(join(h.directory, "recovery-handoff.json"), ticket);
       }
       await writeReceipt(h, recovery ? "recovering" : "verifying", identity, successorToken, recovery, installer, false, receiptOutcome);
-      const transfer = lease!.reserveHandoff(successorToken);
+      const channel = await createDesktopSuccessorChannel(successorToken);
+      let transfer: ReturnType<RuntimeLease["reserveHandoff"]> | undefined;
       try {
+        transfer = lease!.reserveHandoff(successorToken);
         successor = spawnDesktopUpdateOwner(h.hostPath, [], h.userDataDir, { ...cleanUpdateEnvironment(),
           EASYRESEARCH_CODING_AGENT_DIR: h.agentDir,
-          [UPDATE_SUCCESSOR_ENV]: JSON.stringify({ directory: h.directory, token: successorToken, workerPid: process.pid }),
+          [UPDATE_SUCCESSOR_ENV]: JSON.stringify({ directory: h.directory, token: successorToken, workerPid: process.pid, pipe: channel.path }),
         });
         if (!successor.child.pid) throw new Error("Successor did not spawn.");
+        channel.bindChild(successor.child.pid);
         transfer.commit(successor.child.pid);
-        const ready = await successor.event("successor-ready", successorToken, 15 * 60_000);
+        const ready = await waitForDesktopUpdateReadiness(channel.ready, successor, 15 * 60_000);
         if (ready.version !== (recovery ? h.currentVersion : h.version) || ready.pid !== successor.child.pid || typeof ready.bootId !== "string"
           || !ready.bootId || ready.bootId === h.oldBootId || !Number.isSafeInteger(ready.sidecarPid) || (ready.sidecarPid as number) <= 0) throw new Error("Successor identity mismatch.");
         transfer.relinquish();
         lease = adoptTransitionLease(h.agentDir, "desktop", process.pid, successorToken);
+        await channel.accept();
         successorAccepted = true;
         successor.child.stdin.end();
         successor.child.unref(); successor.child.stdout.destroy(); successor.child.stderr.destroy();
       } catch (error) {
+        await channel.close();
         if (successor) await successor.stop();
-        if (!transfer.transferred) transfer.cancel();
+        if (transfer && !transfer.transferred) transfer.cancel();
         throw error;
-      }
+      } finally { await channel.close(); }
     };
     await runUpdateCustody({
       async prepare() {

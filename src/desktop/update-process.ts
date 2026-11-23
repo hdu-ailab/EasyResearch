@@ -62,9 +62,28 @@ export interface OwnedUpdateProcess {
   readonly closed: boolean;
   readonly treeClosed: boolean;
   readonly treeSettled: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  exitError(): Error;
   event(type: string, token: string, timeoutMs: number): Promise<Record<string, unknown>>;
   send(message: unknown): Promise<void>;
   stop(): Promise<void>;
+}
+
+export async function waitForDesktopUpdateReadiness<T>(ready: Promise<T>, child: OwnedUpdateProcess, timeoutMs: number): Promise<T> {
+  const deadline = performance.now() + timeoutMs;
+  let channelFailed = false, timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      ready.catch(error => { channelFailed = true; throw error; }),
+      child.exited.then(() => { throw child.exitError(); }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Update successor readiness timed out.")), timeoutMs); }),
+    ]);
+  } catch (error) {
+    if (!child.closed && channelFailed) {
+      await exitedWithin(child.exited, Math.max(0, Math.min(1000, deadline - performance.now())));
+    }
+    if (child.closed) throw child.exitError();
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 
 /** Shared launch boundary for the custodian and the host that survives its exit. */
@@ -143,8 +162,11 @@ export function spawnUpdateProcess(executable: string, args: string[], options: 
   };
   child.stdout.on("data", (chunk: Buffer) => consume(chunk, true));
   child.stderr.on("data", (chunk: Buffer) => consume(chunk, false));
+  const exitError = () => failure ?? Object.assign(new Error("Update process exited before acknowledgement."), {
+    code: "UPDATE_PROCESS_EXIT", childExitCode: rootExit?.code, childSignal: rootExit?.signal, stderr: stderr.toString("utf8"), stderrTruncated,
+  });
   return {
-    child, exited, treeSettled, get closed() { return closed; }, get treeClosed() { return treeClosed; },
+    child, exited, treeSettled, exitError, get closed() { return closed; }, get treeClosed() { return treeClosed; },
     event(type, token, timeoutMs) {
       return new Promise((resolve, reject) => {
         const done = (error?: Error, value?: Record<string, unknown>) => {
@@ -153,9 +175,7 @@ export function spawnUpdateProcess(executable: string, args: string[], options: 
         };
         const check = () => {
           if (failure || closed) {
-            done(failure ?? Object.assign(new Error("Update process exited before acknowledgement."), {
-              code: "UPDATE_PROCESS_EXIT", childExitCode: rootExit?.code, childSignal: rootExit?.signal, stderr: stderr.toString("utf8"), stderrTruncated,
-            }));
+            done(exitError());
             return;
           }
           const index = events.findIndex((event) => event.type === type && event.token === token);

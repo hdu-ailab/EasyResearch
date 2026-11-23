@@ -7,9 +7,10 @@ import type { DesktopDownloadedUpdate } from "./update";
 import { DesktopUpdateCleanupError, type DesktopUpdateCustodian } from "./update-install";
 import { regularUpdateFile, writeUpdateJson, type UpdateFileHasher } from "./update-files";
 import { spawnDesktopUpdateOwner, type OwnedUpdateProcess } from "./update-process";
+import type { DesktopSuccessorReady } from "./update-successor-channel";
 import { cleanupDesktopUpdateStaging } from "./update-staging";
 import {
-  UPDATE_EVENT_PREFIX, UPDATE_SUCCESSOR_ENV, UPDATE_WORKER_ENTRY, UPDATE_WORKER_TOKEN_ENV,
+  UPDATE_SUCCESSOR_ENV, UPDATE_WORKER_ENTRY, UPDATE_WORKER_TOKEN_ENV,
   validateUpdateHandoff, validateDesktopRecoveryTicket, canReclaimDesktopUpdateReceipt, validToken, validDigest,
   type DesktopUpdateHandoff, type DesktopUpdateReceipt, type DesktopUpdateSuccessor,
 } from "./update-protocol";
@@ -117,12 +118,13 @@ export function consumeDesktopUpdateSuccessor(env: NodeJS.ProcessEnv): DesktopUp
   if (raw === undefined) return undefined;
   if (raw.length > 8192) throw new Error("Invalid update successor.");
   const value = JSON.parse(raw) as DesktopUpdateSuccessor;
-  if (!value || Object.keys(value).sort().join(",") !== "directory,token,workerPid" || !validToken(value.token)
+  if (!value || Object.keys(value).sort().join(",") !== "directory,pipe,token,workerPid" || !validToken(value.token)
+    || typeof value.pipe !== "string" || !/^\\\\\.\\pipe\\easyresearch-update-[a-f0-9-]{36}$/u.test(value.pipe)
     || typeof value.directory !== "string" || !isAbsolute(value.directory) || !Number.isSafeInteger(value.workerPid) || value.workerPid <= 0) throw new Error("Invalid update successor.");
   return value;
 }
 
-export async function acceptDesktopUpdateSuccessor(context: DesktopUpdateSuccessor, host: { hostPath: string; userDataDir: string; version: string; hashFile: UpdateFileHasher }): Promise<{ lease: RuntimeLease; handoff: DesktopUpdateHandoff; recovery: boolean; finish(): Promise<void>; ready(bootId: string, sidecarPid: number): void }> {
+export async function acceptDesktopUpdateSuccessor(context: DesktopUpdateSuccessor, host: { hostPath: string; userDataDir: string; version: string; hashFile: UpdateFileHasher }): Promise<{ lease: RuntimeLease; handoff: DesktopUpdateHandoff; recovery: boolean; finish(): Promise<void>; ready(bootId: string, sidecarPid: number): DesktopSuccessorReady }> {
   await regularUpdateFile(join(context.directory, "handoff.json"), 32 * 1024);
   await regularUpdateFile(join(context.directory, "receipt.json"), 32 * 1024);
   const receipt = JSON.parse(await readFile(join(context.directory, "receipt.json"), "utf8")) as DesktopUpdateReceipt;
@@ -167,7 +169,7 @@ export async function acceptDesktopUpdateSuccessor(context: DesktopUpdateSuccess
       const transfer = lease.reserveHandoff(context.token);
       transfer.commit(context.workerPid);
       transfer.relinquish();
-      process.stdout.write(`${UPDATE_EVENT_PREFIX}${JSON.stringify({ type: "successor-ready", token: context.token, version: installedVersion, pid: process.pid, bootId, sidecarPid })}\n`);
+      return { version: installedVersion, pid: process.pid, bootId, sidecarPid };
     },
   };
 }

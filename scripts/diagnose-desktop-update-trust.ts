@@ -1,4 +1,4 @@
-/** Diagnose the actual private Desktop TLS prerequisite without installing the app. */
+/** Diagnose native Desktop prerequisites without building or installing the app. */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -9,6 +9,7 @@ import { assertFixtureChild, assertHostedWindowsFixture, createDesktopFixtureCer
 import { fixtureWindowsProcesses, stopFixtureWindowsProcesses, withWindowsFixtureRoamingAppData } from "./smoke-desktop-update-windows";
 import { createDesktopSmokeEnvironment } from "./smoke-desktop-support";
 import { selectShell } from "../src/background/shell/process";
+import { verifyWindowsElectronSuccessorChannel } from "./diagnose-desktop-successor-channel";
 
 async function verifyWindowsFixtureProcessCleanup(root: string): Promise<Record<string, unknown>> {
   assertHostedWindowsFixture();
@@ -123,6 +124,7 @@ try {
     return true;
   }));
   profileRestored = true;
+  await step("native-electron-successor-channel", () => verifyWindowsElectronSuccessorChannel(root));
   await step("native-process-observation-and-cleanup", () => verifyWindowsFixtureProcessCleanup(root));
   passed = true;
 } finally {

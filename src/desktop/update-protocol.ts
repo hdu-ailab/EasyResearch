@@ -38,6 +38,7 @@ export interface DesktopUpdateSuccessor {
   directory: string;
   token: string;
   workerPid: number;
+  pipe: string;
 }
 
 export interface DesktopRecoveryTicket {
@@ -53,7 +54,7 @@ export interface DesktopRecoveryTicket {
   expiresAt: number;
 }
 
-export function createDesktopRecoveryTicket(handoff: DesktopUpdateHandoff, identity: InstalledDesktopIdentity, context: DesktopUpdateSuccessor, sourceHandoffSha256: string, now = Date.now()): DesktopRecoveryTicket {
+export function createDesktopRecoveryTicket(handoff: DesktopUpdateHandoff, identity: InstalledDesktopIdentity, context: Pick<DesktopUpdateSuccessor, "directory" | "token" | "workerPid">, sourceHandoffSha256: string, now = Date.now()): DesktopRecoveryTicket {
   const ticket: DesktopRecoveryTicket = { schema: 1, purpose: "recover-installed-host", operationId: handoff.operationId,
     workerPid: context.workerPid, successorToken: context.token, sourceHandoffSha256, version: handoff.currentVersion,
     identity: { ...identity }, issuedAt: now, expiresAt: now + 120_000 };
@@ -61,7 +62,7 @@ export function createDesktopRecoveryTicket(handoff: DesktopUpdateHandoff, ident
   return ticket;
 }
 
-export function validateDesktopRecoveryTicket(raw: unknown, handoff: DesktopUpdateHandoff, identity: InstalledDesktopIdentity, context: DesktopUpdateSuccessor, sourceHandoffSha256: string, now = Date.now()): asserts raw is DesktopRecoveryTicket {
+export function validateDesktopRecoveryTicket(raw: unknown, handoff: DesktopUpdateHandoff, identity: InstalledDesktopIdentity, context: Pick<DesktopUpdateSuccessor, "directory" | "token" | "workerPid">, sourceHandoffSha256: string, now = Date.now()): asserts raw is DesktopRecoveryTicket {
   validateUpdateHandoff(handoff, now, true);
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid recovery handoff.");
   const ticket = raw as DesktopRecoveryTicket;

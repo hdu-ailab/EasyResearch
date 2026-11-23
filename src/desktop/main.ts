@@ -67,6 +67,7 @@ import { hashDesktopUpdateFile } from "./update-host-files";
 import { desktopPackageKind } from "./update-download";
 import { installDesktopUpdate, type DesktopUpdateCustodian } from "./update-install";
 import { acceptDesktopUpdateSuccessor, consumeDesktopUpdateSuccessor, desktopUpdateRecovery, prepareDesktopUpdateCustodian } from "./update-custodian";
+import { connectDesktopSuccessorChannel } from "./update-successor-channel";
 import { isDesktopUpdateSender, registerDesktopUpdateIpc, type DesktopUpdateOwner } from "./update-ipc";
 import { LATEST_RELEASE_PAGE, type UpdateController, type UpdateSnapshot } from "../runtime/update-contract";
 import {
@@ -114,12 +115,21 @@ let desktopEnvironment: NodeJS.ProcessEnv | undefined;
 const updateHelpers = new Set<DesktopUpdateCustodian>();
 const updateSuccessor = consumeDesktopUpdateSuccessor(process.env);
 let updateSuccessorReady = false;
+let updateSuccessorParent: Awaited<ReturnType<typeof connectDesktopSuccessorChannel>> | undefined;
+let updateSuccessorConnected: Promise<typeof updateSuccessorParent> | undefined;
 if (updateSuccessor) {
   writeDesktopLog(`Desktop update successor entered; single-instance lock ${hasSingleInstanceLock ? "acquired" : "denied"}.`);
-  process.stdin.once("end", () => { if (!updateSuccessorReady) { writeDesktopLog("Desktop update parent pipe ended before readiness."); void terminalExit(); } });
-  process.stdin.once("error", () => { if (!updateSuccessorReady) { writeDesktopLog("Desktop update parent pipe failed before readiness."); void terminalExit(); } });
-  process.stdin.resume();
   process.stdout.on("error", () => {});
+  if (hasSingleInstanceLock) {
+    updateSuccessorConnected = connectDesktopSuccessorChannel(updateSuccessor, () => {
+      if (!updateSuccessorReady) { writeDesktopLog("Desktop update parent channel closed before acceptance."); void terminalExit(); }
+    }).then(parent => {
+      updateSuccessorParent = parent;
+      if (lifecycle.exiting) parent.close();
+      return parent;
+    });
+    void updateSuccessorConnected.catch(() => { writeDesktopLog("Desktop update successor channel could not attach."); void terminalExit(); });
+  }
 }
 
 if (!hasSingleInstanceLock) {
@@ -153,6 +163,8 @@ if (!hasSingleInstanceLock) {
     createTray();
     showLoading("Preparing the local research workspace...");
     if (updateSuccessor) {
+      const parent = await updateSuccessorConnected;
+      if (!parent || lifecycle.exiting) throw new Error("Desktop update successor channel is unavailable.");
       const accepted = await acceptDesktopUpdateSuccessor(updateSuccessor, {
         hostPath: process.execPath, userDataDir: app.getPath("userData"), version: app.getVersion(), hashFile: hashDesktopUpdateFile,
       });
@@ -160,9 +172,9 @@ if (!hasSingleInstanceLock) {
       // exact-root environment is passed through the existing sidecar startup.
       process.env.EASYRESEARCH_CODING_AGENT_DIR = accepted.handoff.agentDir;
       if (!await startApplication(accepted.handoff.route, accepted.lease) || !sidecar || lifecycle.exiting) throw new Error("Updated Desktop could not start.");
-      accepted.ready(sidecar.ready.bootId, sidecar.pid);
+      await parent.ready(accepted.ready(sidecar.ready.bootId, sidecar.pid));
       updateSuccessorReady = true;
-      process.stdin.pause();
+      parent.close();
       void accepted.finish().catch((error) => writeDesktopLog(`Desktop update staging cleanup failed: ${errorMessage(error)}`));
       if (accepted.recovery) await showUpdateFallback("Installation failed. Open latest Release.");
     } else {
@@ -675,6 +687,7 @@ function getUpdater(): UpdateController {
 function terminalExit(): Promise<void> {
   if (exitAttempt) return exitAttempt;
   lifecycle = beginDesktopExit(lifecycle);
+  updateSuccessorParent?.close();
   sidecarOwnership.closeLaunchAdmission();
   const current = (async () => {
     if (smokeTimer) clearInterval(smokeTimer);
