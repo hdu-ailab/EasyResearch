@@ -352,6 +352,7 @@ jobs:
             ${{ runner.temp }}/desktop-update.json
             ${{ runner.temp }}/easyresearch-update-fixture-*/*.log
             ${{ runner.temp }}/easyresearch-desktop-update-*/*/*.log
+            ${{ runner.temp }}/easyresearch-desktop-update-*/*/update-failure.json
           retention-days: 7
           if-no-files-found: warn
 

@@ -6,7 +6,7 @@ import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertExternalFixtureReceipt, copyUpdateFixtureSource, parseUpdateFixtureOptions, removeUpdateFixture } from "../../scripts/build-update-fixture";
-import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, findDesktopUpdateLineage, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
+import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopUpdateFixtureInput, findDesktopUpdateLineage, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
 import { discoverDesktopRelease, downloadDesktopAsset } from "../desktop/update-download";
 import { windowsInstallerRegistryId } from "../desktop/update-worker";
 import { assertWindowsFixtureInstallation, parseFixtureWindowsProcesses } from "../../scripts/smoke-desktop-update-windows";
@@ -15,6 +15,19 @@ import { LATEST_RELEASE_PAGE, type UpdateSnapshot } from "./update-contract";
 const roots: string[] = [];
 function temporary() { const path = realpathSync(mkdtempSync(join(tmpdir(), "er-update-fixture-test-"))); roots.push(path); return path; }
 afterEach(() => { for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true }); });
+
+it("recognizes the original update task when native tool context follows its user input", () => {
+  const marker = "fixture-unique";
+  const messages = [
+    { role: "user", content: `${marker}:history` },
+    { role: "user", content: [{ type: "text", text: `${marker}:active` }] },
+    { role: "tool", tool_call_id: "update_owned_shell", content: "Managed shell is working." },
+    { role: "user", content: "<system-reminder>Native background task context.</system-reminder>" },
+  ];
+  expect(desktopUpdateFixtureInput({ messages }, marker)).toBe("active");
+  expect(desktopUpdateFixtureInput({ messages: [messages[0]!, messages[3]!] }, marker)).toBe("history");
+  expect(desktopUpdateFixtureInput({ messages: [{ role: "system", content: `${marker}:active` }, messages[3]!] }, marker)).toBeUndefined();
+});
 
 describe("private older-version source fixture", () => {
   it("requires an explicit native target and older stable version", () => {

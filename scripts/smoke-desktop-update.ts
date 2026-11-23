@@ -27,10 +27,11 @@ import { DESKTOP_ACCESS_HEADER, DESKTOP_SMOKE_USER_DATA_ENV } from "../src/deskt
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
 import type { DesktopUpdateHandoff, DesktopUpdateReceipt, InstalledDesktopIdentity } from "../src/desktop/update-protocol";
 import type { UpdateAction, UpdateActionResult, UpdateSnapshot } from "../src/runtime/update-contract";
-import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, digestFile, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand,
+import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopUpdateFixtureInput, digestFile, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand,
   startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
 import { assertFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, installedHostHasNativeMenu, installedWindowEvidence, readBoundedFixtureJson,
   readFixtureServer, requestInstalledHostExit, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
+import { smokeAgentText } from "./smoke-agent-scenario";
 
 const USAGE = "bun scripts/smoke-desktop-update.ts windows-x64 --old-version <older-stable-version> [--fixture <private-fixture.json>] [--receipt <json>]";
 export function parseDesktopUpdateSmokeOptions(args: string[]): { oldVersion: string; fixture?: string; receipt?: string } {
@@ -104,29 +105,41 @@ async function exitInstalledFixtureHost(pid: number, sidecarPid: number, agentDi
     && !existsSync(join(agentDir, "server.lease")) && !existsSync(join(agentDir, "server.transition.lease")) ? true : undefined, 30_000);
 }
 
-function modelFixture(shellPidPath: string, marker: string) {
+function modelFixture(shellPidPath: string, marker: string, logPath: string) {
   let calls = 0; let held = false; let cancelled = false; let failure: unknown;
   let shellReturned = false;
+  const requests: Record<string, unknown>[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 255,
     async fetch(request) {
       try {
         assert(request.method === "POST" && new URL(request.url).pathname === "/v1/chat/completions", "Unexpected model fixture request");
         const text = await request.text(); assert(text.length < 2 * 1024 * 1024, "Model fixture request exceeded its bound");
-        const body = JSON.parse(text) as { messages: Array<{ role: string; content: unknown }>; tools?: Array<{ function?: { name: string } }> };
-        const last = JSON.stringify(body.messages.filter(message => message.role === "user").at(-1)?.content);
+        const body = JSON.parse(text) as { messages: Array<{ role: string; content: unknown; tool_call_id?: string }>; tools?: Array<{ function?: { name: string } }> };
+        const input = desktopUpdateFixtureInput(body, marker);
         assert(++calls <= 3, "Unexpected inference after terminal update cleanup");
+        requests.push({ call: calls, input: input ?? "unrecognized", roles: body.messages.slice(-16).map(message => message.role),
+          toolResults: body.messages.filter(message => message.role === "tool").map(message => message.tool_call_id).slice(-8),
+          userPreviews: body.messages.filter(message => message.role === "user").slice(-3).map(message => fixtureDiagnosticError(smokeAgentText(message.content).slice(-512))) });
+        writeFileSync(logPath, `${requests.map(record => JSON.stringify(record)).join("\n")}\n`, { mode: 0o600 });
         const respond = (delta: unknown, finish: string) => new Response([
           { choices: [{ index: 0, delta, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: finish }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
         ].map(chunk => `data: ${JSON.stringify({ id: marker, object: "chat.completion.chunk", created: 1, model: "desktop-update", ...chunk })}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
-        if (last.includes(`${marker}:history`)) return respond({ role: "assistant", content: `${marker}:preserved` }, "stop");
-        assert(last.includes(`${marker}:active`), "Unexpected model prompt");
+        if (input === "history") {
+          assert(calls === 1 && !shellReturned, "Unexpected repeated history inference");
+          return respond({ role: "assistant", content: `${marker}:preserved` }, "stop");
+        }
+        assert(input === "active", "Unexpected model prompt");
         if (!shellReturned) {
+          assert.equal(calls, 2, "Active fixture work did not follow the verified history turn");
           assert(body.tools?.some(tool => tool.function?.name === "shell"), "Installed root has no managed shell tool"); shellReturned = true;
           const literal = `'${shellPidPath.replaceAll("'", "''")}'`;
           return respond({ role: "assistant", tool_calls: [{ index: 0, id: "update_owned_shell", type: "function", function: { name: "shell", arguments: JSON.stringify({
             command: `[IO.File]::WriteAllText(${literal}, [string]$PID); while($true){Start-Sleep -Seconds 1}`, background: true,
           }) } }] }, "tool_calls");
         }
+        assert.equal(calls, 3, "Unexpected shell follow-up inference");
+        assert.equal(body.messages.filter(message => message.role === "tool" && message.tool_call_id === "update_owned_shell").length, 1,
+          "Native shell follow-up did not retain its exact tool result");
         held = true;
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
@@ -192,7 +205,7 @@ async function driveScenario(options: {
   for (const key of Object.keys(env)) if (/proxy|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED/iu.test(key)) delete env[key];
   const python = resolveSmokePython({ explicit: process.env.EASYRESEARCH_SMOKE_PYTHON });
   env.PATH = `${dirname(python)};${env.PATH ?? ""}`; env.PIP_RETRIES = "3"; env.PIP_DEFAULT_TIMEOUT = "30";
-  const marker = `desktop-update-${randomUUID()}`; const shellPidPath = join(project, "owned-shell.pid"); const model = modelFixture(shellPidPath, marker);
+  const marker = `desktop-update-${randomUUID()}`; const shellPidPath = join(project, "owned-shell.pid"); const model = modelFixture(shellPidPath, marker, join(root, "model-fixture.log"));
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { smoke: { baseUrl: `http://127.0.0.1:${model.port}/v1`, api: "openai-completions", apiKey: "isolated-fixture",
     compat: { supportsDeveloperRole: false, supportsReasoningEffort: false }, models: [{ id: "desktop-update", name: "Desktop update fixture", contextWindow: 256_000, maxTokens: 2048 }] } } }));
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "smoke", defaultModel: "desktop-update", retry: { enabled: false },

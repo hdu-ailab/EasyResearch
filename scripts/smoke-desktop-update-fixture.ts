@@ -9,6 +9,14 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep,
 import { pipeline } from "node:stream/promises";
 import type { WindowsFixtureProcess } from "./smoke-desktop-update-windows";
 import type { UpdateActionResult } from "../src/runtime/update-contract";
+import { smokeAgentText, type SmokeAgentRequest } from "./smoke-agent-scenario";
+
+export function desktopUpdateFixtureInput(request: SmokeAgentRequest, marker: string): "history" | "active" | undefined {
+  const inputs = request.messages?.filter(message => message.role === "user").map(message => smokeAgentText(message.content)) ?? [];
+  if (inputs.some(text => text.includes(`${marker}:active`))) return "active";
+  if (inputs.some(text => text.includes(`${marker}:history`))) return "history";
+  return undefined;
+}
 
 function diagnosticText(text: string, secrets: readonly string[], limit: number): string {
   for (const secret of secrets) if (secret) text = text.split(secret).join("[redacted]");
