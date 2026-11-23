@@ -7,6 +7,14 @@ import { windowsInstallerRegistryId } from "../src/desktop/update-worker";
 import { assertFixtureChild, assertHostedWindowsFixture, powershell, runFixtureCommand, withFixtureRoamingBinding } from "./smoke-desktop-update-fixture";
 
 export interface WindowsFixtureProcess { pid: number; parentPid: number; start: string; executable: string; worker: boolean; installer: boolean; job: boolean; requestedFrench?: boolean }
+export function retainFixtureProcessObservation(previous: WindowsFixtureProcess | undefined, current: WindowsFixtureProcess): WindowsFixtureProcess {
+  if (!previous || previous.pid !== current.pid || previous.start !== current.start) return current;
+  assert(previous.parentPid === current.parentPid, "Conflicting retained process parent identity");
+  assert(!previous.executable || !current.executable || previous.executable.toLowerCase() === current.executable.toLowerCase(), "Conflicting retained process executable identity");
+  return { ...current, executable: current.executable || previous.executable,
+    worker: previous.worker || current.worker, installer: previous.installer || current.installer,
+    job: previous.job || current.job, requestedFrench: previous.requestedFrench || current.requestedFrench };
+}
 export function parseFixtureWindowsProcesses(text: string): WindowsFixtureProcess[] {
   assert(Buffer.byteLength(text, "utf8") <= 2 * 1024 * 1024, "Windows process observations exceed their bound");
   const rows: unknown = JSON.parse(text);
@@ -58,7 +66,7 @@ export async function stopFixtureWindowsProcesses(root: string, previouslyOwned:
   const known = new Map(parseFixtureWindowsProcesses(JSON.stringify(previouslyOwned)).map(row => [row.pid, row]));
   for (let attempt = 0; attempt < 5; attempt++) {
     const processes = await fixtureWindowsProcesses(root, [...known.values()]); if (!processes.length) return;
-    for (const row of processes) known.set(row.pid, row);
+    for (const row of processes) known.set(row.pid, retainFixtureProcessObservation(known.get(row.pid), row));
     await powershell(`
       $rows=ConvertFrom-Json $env:ER_FIXTURE_PROCESSES;
       foreach($row in $rows){

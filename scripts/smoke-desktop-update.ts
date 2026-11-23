@@ -30,7 +30,7 @@ import type { UpdateAction, UpdateActionResult, UpdateSnapshot } from "../src/ru
 import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, digestFile, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand,
   startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
 import { assertFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, installedHostHasNativeMenu, installedWindowEvidence, readBoundedFixtureJson,
-  readFixtureServer, requestInstalledHostExit, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
+  readFixtureServer, requestInstalledHostExit, retainFixtureProcessObservation, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
 import { smokeAgentText, smokeBackgroundReports } from "./smoke-agent-scenario";
 import { selectShell } from "../src/background/shell/process";
 
@@ -343,7 +343,7 @@ async function driveScenario(options: {
     const sampleProcesses = () => {
       if (sampling) return;
       sampling = fixtureWindowsProcesses(root, [...seen.values()]).then(values => {
-        liveProcesses = values; for (const value of values) seen.set(value.pid, value);
+        liveProcesses = values; for (const value of values) seen.set(value.pid, retainFixtureProcessObservation(seen.get(value.pid), value));
         writeFileSync(join(root, "custody-observation.log"), `${JSON.stringify({ receipts: observer.diagnostics(), seen: [...seen.values()], live: liveProcesses })}\n`, { mode: 0o600 });
       })
         .catch(error => { samplingFailure = error; }).finally(() => { sampling = undefined; });
@@ -441,7 +441,7 @@ async function driveScenario(options: {
       credentials.add(frenchRecord.token);
       assert.notEqual(frenchRecord.token, successor.token); assert.notEqual(frenchRecord.pid, successor.pid);
       const frenchProcesses = await fixtureWindowsProcesses(root, [...seen.values()]);
-      for (const row of frenchProcesses) seen.set(row.pid, row);
+      for (const row of frenchProcesses) seen.set(row.pid, retainFixtureProcessObservation(seen.get(row.pid), row));
       assert(frenchProcesses.some(row => row.pid === successorPid && row.requestedFrench && row.executable.toLowerCase() === realpathSync(host).toLowerCase()), "Pruned installed host did not actually launch with --lang=fr");
       assert(frenchProcesses.some(row => row.pid === frenchRecord.pid && row.parentPid === successorPid && row.executable.toLowerCase() === realpathSync(installedSidecar).toLowerCase()));
       assert.equal(new URL(french.page.url()).origin, `http://127.0.0.1:${frenchRecord.port}`);

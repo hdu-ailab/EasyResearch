@@ -1,7 +1,15 @@
 import { expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import { createDesktopUpdateInput, runUpdateCustody } from "./update-worker";
-import { windowsInstallationLocation, windowsNsisArguments } from "./update-protocol";
+import { desktopUpdateFailure, windowsInstallationLocation, windowsNsisArguments } from "./update-protocol";
+
+it("retains native failure categories without publishing exception messages, paths or arbitrary codes", () => {
+  const error = Object.assign(new Error("private-token and private-path"), { code: "EPERM", path: "private-path" });
+  expect(desktopUpdateFailure("rollback-remove-current", error)).toEqual({ operation: "rollback-remove-current", code: "EPERM" });
+  for (const code of ["private-token", 123, undefined]) {
+    expect(desktopUpdateFailure("rollback-registry", { ...error, code })).toEqual({ operation: "rollback-registry", code: "FAILED" });
+  }
+});
 
 it("preserves a space-containing original NSIS directory as the raw final argument", () => {
   const args = windowsNsisArguments("C:\\Custom Apps\\EasyResearch");

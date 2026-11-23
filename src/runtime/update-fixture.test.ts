@@ -9,7 +9,7 @@ import { assertExternalFixtureReceipt, copyUpdateFixtureSource, parseUpdateFixtu
 import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, findDesktopUpdateLineage, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
 import { discoverDesktopRelease, downloadDesktopAsset } from "../desktop/update-download";
 import { windowsInstallerRegistryId } from "../desktop/update-worker";
-import { assertWindowsFixtureInstallation, parseFixtureWindowsProcesses } from "../../scripts/smoke-desktop-update-windows";
+import { assertWindowsFixtureInstallation, parseFixtureWindowsProcesses, retainFixtureProcessObservation } from "../../scripts/smoke-desktop-update-windows";
 import { LATEST_RELEASE_PAGE, type UpdateSnapshot } from "./update-contract";
 import type { DesktopUpdateReceipt } from "../desktop/update-protocol";
 
@@ -317,6 +317,15 @@ describe("fixture authority boundaries", () => {
     expect(findDesktopUpdateLineage(records.map(row => row.pid === 20 ? { ...row, parentPid: 99 } : row), options)).toBeUndefined();
     expect(findDesktopUpdateLineage(records.map(row => row.pid === 60 ? { ...row, executable: "C:\\foreign\\easyresearch.exe" } : row), options)).toBeUndefined();
     expect(findDesktopUpdateLineage(records, { ...options, oldHostPid: 50 })).toBeUndefined();
+    const partial = { ...records[0]!, executable: "", worker: false };
+    const retained = retainFixtureProcessObservation(records[0], partial);
+    expect(findDesktopUpdateLineage([retained, ...records.slice(1)], options)).toMatchObject({ worker: { pid: 20, executable: helper } });
+    expect(partial.executable).toBe(""); // The live snapshot is not enriched or mutated.
+    const reused = retainFixtureProcessObservation(records[0], { ...partial, start: "later-creation" });
+    expect(findDesktopUpdateLineage([reused, ...records.slice(1)], options)).toBeUndefined();
+    for (const change of [{ parentPid: 999 }, { executable: "C:\\foreign\\helper.exe" }]) {
+      expect(() => retainFixtureProcessObservation(records[0], { ...partial, ...change })).toThrow();
+    }
   });
 
   it("does not allow a receipt to replace candidate source or an escaped link", () => {

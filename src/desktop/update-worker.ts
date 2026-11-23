@@ -11,6 +11,7 @@ import { startWindowsUpdateJob } from "../runtime/windows-update-job";
 import {
   UPDATE_EVENT_PREFIX, UPDATE_SUCCESSOR_ENV, UPDATE_WORKER_ENTRY, UPDATE_WORKER_TOKEN_ENV,
   validateUpdateHandoff, createDesktopRecoveryTicket, windowsNsisArguments, windowsInstallationLocation, validToken,
+  desktopUpdateFailure, type DesktopUpdateFailure, type DesktopUpdateOperation,
   type DesktopUpdateHandoff, type DesktopUpdateReceipt, type DesktopUpdateOutcome, type InstalledDesktopIdentity,
 } from "./update-protocol";
 
@@ -85,6 +86,11 @@ export async function runDesktopUpdateWorker(argv: readonly string[]): Promise<n
   let ownsQuarantine = false;
   let receiptPhase: DesktopUpdateReceipt["phase"] | undefined;
   let receiptOutcome: DesktopUpdateOutcome | undefined;
+  let failure: DesktopUpdateFailure | undefined;
+  const observe = async <T>(operation: DesktopUpdateOperation, run: () => T | Promise<T>): Promise<T> => {
+    try { return await run(); }
+    catch (error) { failure = desktopUpdateFailure(operation, error); throw error; }
+  };
   const abort = new AbortController();
   input.onAbort(() => abort.abort());
   let backup = "";
@@ -190,15 +196,16 @@ export async function runDesktopUpdateWorker(argv: readonly string[]): Promise<n
         if (exit.code !== 0 || exit.signal !== null) throw new Error("Installer failed.");
       },
       async verify() {
-        await verifyPerUserInstallation(original, h.directory);
-        await verifyVersion(h.version); identity = await installedIdentity();
+        await observe("verify-registry", () => verifyPerUserInstallation(original, h.directory));
+        await observe("verify-version", () => verifyVersion(h.version));
+        identity = await observe("verify-files", installedIdentity);
       },
       startSuccessor: () => launchHost(false),
       async rollback() {
         successorAccepted = false;
         // Never restore under an installer/successor that may still hold files.
-        if (successor) await successor.stop();
-        if (installer) await installer.stop();
+        if (successor) await observe("rollback-stop", () => successor!.stop());
+        if (installer) await observe("rollback-stop", () => installer!.stop());
         if (!backupComplete) return;
         // A failed successor may have returned/released its startup lease. Reclaim
         // exclusive transition custody before touching installed files, and refuse
@@ -209,28 +216,35 @@ export async function runDesktopUpdateWorker(argv: readonly string[]): Promise<n
           try { returned = adoptTransitionLease(h.agentDir, "desktop", process.pid, candidateToken); break; }
           catch { /* Only a matching on-disk worker identity can be adopted. */ }
         }
-        lease = returned ?? await acquireTransitionLease(h.agentDir, "desktop", { timeoutMs: 0 });
-        await waitForUpdateServerRelease(h.agentDir);
-        await mkdir(quarantined, { mode: 0o700 });
+        lease = returned ?? await observe("rollback-lease", () => acquireTransitionLease(h.agentDir, "desktop", { timeoutMs: 0 }));
+        await observe("rollback-server", () => waitForUpdateServerRelease(h.agentDir));
+        await observe("rollback-quarantine", () => mkdir(quarantined, { mode: 0o700 }));
         ownsQuarantine = true;
-        try { await rename(original, join(quarantined, "installation")); }
+        try { await observe("rollback-remove-current", () => rename(original, join(quarantined, "installation"))); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        await rename(backup, original);
+        await observe("rollback-restore-files", () => rename(backup, original));
         ownsBackup = false;
         backupComplete = false;
         for (const record of registryBackup) {
-          if (await updateFileHash(record.path) !== record.sha256) throw new Error("Registry backup changed.");
-          registryCommand(["import", record.path]);
+          await observe("rollback-registry", async () => {
+            if (await updateFileHash(record.path) !== record.sha256) throw new Error("Registry backup changed.");
+            registryCommand(["import", record.path]);
+          });
         }
-        if (await updateFileHash(h.hostPath) !== h.oldHostSha256) throw new Error("Original Desktop recovery failed.");
+        await observe("rollback-verify", async () => {
+          if (await updateFileHash(h.hostPath) !== h.oldHostSha256) throw new Error("Original Desktop recovery failed.");
+        });
       },
       async recover() {
-        identity = await installedIdentity();
-        if (identity.hostSha256 !== h.oldHostSha256 || identity.appSha256 !== h.oldAppSha256 || identity.sidecarSha256 !== h.oldSidecarSha256) throw new Error("Restored Desktop identity mismatch.");
-        await verifyVersion(h.currentVersion);
-        await launchHost(true);
+        identity = await observe("recovery-verify", async () => {
+          const restored = await installedIdentity();
+          if (restored.hostSha256 !== h.oldHostSha256 || restored.appSha256 !== h.oldAppSha256 || restored.sidecarSha256 !== h.oldSidecarSha256) throw new Error("Restored Desktop identity mismatch.");
+          return restored;
+        });
+        await observe("recovery-version", () => verifyVersion(h.currentVersion));
+        await observe("recovery-launch", () => launchHost(true));
       },
-      async report(phase, outcome) { receiptPhase = phase; receiptOutcome = outcome; await writeReceipt(h, phase, identity, successorToken, recovering, installer, false, outcome); },
+      async report(phase, outcome) { receiptPhase = phase; receiptOutcome = outcome; await writeReceipt(h, phase, identity, successorToken, recovering, installer, false, outcome, failure); },
       async release() {
         // A failed bounded kill never releases the transition while a child survives.
         // Keep this custodian alive until the real close event; the failure receipt
@@ -252,7 +266,7 @@ export async function runDesktopUpdateWorker(argv: readonly string[]): Promise<n
     return 0;
   } catch (error) {
     const unresolved = (error as { custodyUnresolved?: boolean } | null)?.custodyUnresolved === true;
-    if (handoff) await writeReceipt(handoff, abort.signal.aborted && !installer ? "cancelled" : "failed", identity, successorToken, recovering, installer, unresolved, receiptOutcome).catch(() => {});
+    if (handoff) await writeReceipt(handoff, abort.signal.aborted && !installer ? "cancelled" : "failed", identity, successorToken, recovering, installer, unresolved, receiptOutcome, failure).catch(() => {});
     if (unresolved && lease?.held) {
       // Persist an unresolved handoff guard: worker death must not let another
       // launcher mistake an unverified descendant tree for a completed transition.
@@ -267,7 +281,7 @@ async function verifyInstaller(h: DesktopUpdateHandoff): Promise<void> {
   if (await regularUpdateFile(path) !== h.installerSize || await updateFileHash(path) !== h.installerSha256) throw new Error("Installer verification failed.");
 }
 
-async function writeReceipt(h: DesktopUpdateHandoff, phase: DesktopUpdateReceipt["phase"], identity?: InstalledDesktopIdentity, successorToken?: string, recovery = false, installer?: Pick<OwnedUpdateProcess, "child" | "treeClosed">, unresolved = false, outcome?: DesktopUpdateOutcome): Promise<void> {
+async function writeReceipt(h: DesktopUpdateHandoff, phase: DesktopUpdateReceipt["phase"], identity?: InstalledDesktopIdentity, successorToken?: string, recovery = false, installer?: Pick<OwnedUpdateProcess, "child" | "treeClosed">, unresolved = false, outcome?: DesktopUpdateOutcome, failure?: DesktopUpdateFailure): Promise<void> {
   await writeUpdateJson(join(h.directory, "receipt.json"), { phase, operationId: h.operationId, version: h.version, workerPid: process.pid,
     ...(identity ? { identity } : {}), ...(successorToken ? { successorToken } : {}),
     ...(recovery ? { recovery: true } : {}),
@@ -275,6 +289,7 @@ async function writeReceipt(h: DesktopUpdateHandoff, phase: DesktopUpdateReceipt
     ...(installer?.treeClosed ? { installerSettled: true } : {}),
     ...(unresolved ? { custodyUnresolved: true } : {}),
     ...(outcome ? { outcome } : {}),
+    ...(failure ? { failure } : {}),
     ...(phase === "failed" ? { message: "Installation failed. Open latest Release." } : {}),
   } satisfies DesktopUpdateReceipt);
 }

@@ -24,6 +24,10 @@ export function desktopCustodyDiagnostic(receipt: DesktopUpdateReceipt): Record<
   if (["prepared", "installing", "verifying", "recovering", "complete", "failed", "cancelled"].includes(receipt.phase)) result.phase = receipt.phase;
   for (const key of ["workerPid", "installerGuardPid"] as const) if (Number.isSafeInteger(receipt[key]) && receipt[key]! > 0) result[key] = receipt[key];
   for (const key of ["installerSettled", "custodyUnresolved", "recovery"] as const) if (typeof receipt[key] === "boolean") result[key] = receipt[key];
+  if (receipt.failure && /^(?:verify-(?:registry|version|files)|rollback-(?:stop|lease|server|quarantine|remove-current|restore-files|registry|verify)|recovery-(?:verify|version|launch))$/u.test(receipt.failure.operation)
+    && /^(?:EPERM|EACCES|ENOENT|EBUSY|ENOTEMPTY|EEXIST|ETIMEDOUT|EINVAL|EIO|FAILED)$/u.test(receipt.failure.code)) {
+    result.failure = { operation: receipt.failure.operation, code: receipt.failure.code };
+  }
   if (receipt.outcome) {
     const outcome: Record<string, unknown> = {};
     for (const key of ["installerAdmitted", "hostExited", "recoveryComplete"] as const) if (typeof receipt.outcome[key] === "boolean") outcome[key] = receipt.outcome[key];

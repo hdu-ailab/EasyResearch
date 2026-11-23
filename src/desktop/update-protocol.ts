@@ -92,6 +92,16 @@ export interface DesktopUpdateReceipt {
   installerSettled?: true;
   custodyUnresolved?: true;
   outcome?: DesktopUpdateOutcome;
+  failure?: DesktopUpdateFailure;
+}
+
+export type DesktopUpdateOperation = "verify-registry" | "verify-version" | "verify-files" | "rollback-stop"
+  | "rollback-lease" | "rollback-server" | "rollback-quarantine" | "rollback-remove-current" | "rollback-restore-files"
+  | "rollback-registry" | "rollback-verify" | "recovery-verify" | "recovery-version" | "recovery-launch";
+export interface DesktopUpdateFailure { operation: DesktopUpdateOperation; code: string }
+export function desktopUpdateFailure(operation: DesktopUpdateOperation, error: unknown): DesktopUpdateFailure {
+  const code = (error as { code?: unknown } | null)?.code;
+  return { operation, code: typeof code === "string" && ["EPERM", "EACCES", "ENOENT", "EBUSY", "ENOTEMPTY", "EEXIST", "ETIMEDOUT", "EINVAL", "EIO"].includes(code) ? code : "FAILED" };
 }
 
 export function canReclaimDesktopUpdateReceipt(receipt: DesktopUpdateReceipt): boolean {
