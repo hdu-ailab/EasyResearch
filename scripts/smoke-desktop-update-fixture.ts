@@ -9,6 +9,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep,
 import { pipeline } from "node:stream/promises";
 import type { WindowsFixtureProcess } from "./smoke-desktop-update-windows";
 import type { UpdateActionResult } from "../src/runtime/update-contract";
+import type { DesktopUpdateReceipt } from "../src/desktop/update-protocol";
 import { smokeAgentText, type SmokeAgentRequest } from "./smoke-agent-scenario";
 
 export function desktopUpdateFixtureInput(request: SmokeAgentRequest, marker: string): "history" | "active" | undefined {
@@ -16,6 +17,20 @@ export function desktopUpdateFixtureInput(request: SmokeAgentRequest, marker: st
   if (inputs.some(text => text.includes(`${marker}:active`))) return "active";
   if (inputs.some(text => text.includes(`${marker}:history`))) return "history";
   return undefined;
+}
+
+export function desktopCustodyDiagnostic(receipt: DesktopUpdateReceipt): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (["prepared", "installing", "verifying", "recovering", "complete", "failed", "cancelled"].includes(receipt.phase)) result.phase = receipt.phase;
+  for (const key of ["workerPid", "installerGuardPid"] as const) if (Number.isSafeInteger(receipt[key]) && receipt[key]! > 0) result[key] = receipt[key];
+  for (const key of ["installerSettled", "custodyUnresolved", "recovery"] as const) if (typeof receipt[key] === "boolean") result[key] = receipt[key];
+  if (receipt.outcome) {
+    const outcome: Record<string, unknown> = {};
+    for (const key of ["installerAdmitted", "hostExited", "recoveryComplete"] as const) if (typeof receipt.outcome[key] === "boolean") outcome[key] = receipt.outcome[key];
+    if (["not-required", "pending", "complete"].includes(receipt.outcome.rollback)) outcome.rollback = receipt.outcome.rollback;
+    result.outcome = outcome;
+  }
+  return result;
 }
 
 function diagnosticText(text: string, secrets: readonly string[], limit: number): string {

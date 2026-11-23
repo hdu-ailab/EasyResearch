@@ -6,7 +6,7 @@ import type { Readable } from "node:stream";
 import { dirname, join, win32 } from "node:path";
 import { acquireTransitionLease, adoptTransitionLease, serverLeasePath, type RuntimeLease } from "../cli/runtime-lease";
 import { backupWindowsInstallation, regularUpdateFile, updateFileHash, writeUpdateJson } from "./update-files";
-import { spawnUpdateProcess, ownDesktopInstallerJob, verifyDesktopSidecarVersion, exitedWithin, type OwnedDesktopInstaller, type OwnedUpdateProcess } from "./update-process";
+import { spawnDesktopUpdateOwner, ownDesktopInstallerJob, verifyDesktopSidecarVersion, exitedWithin, type OwnedDesktopInstaller, type OwnedUpdateProcess } from "./update-process";
 import { startWindowsUpdateJob } from "../runtime/windows-update-job";
 import {
   UPDATE_EVENT_PREFIX, UPDATE_SUCCESSOR_ENV, UPDATE_WORKER_ENTRY, UPDATE_WORKER_TOKEN_ENV,
@@ -121,10 +121,10 @@ export async function runDesktopUpdateWorker(argv: readonly string[]): Promise<n
       await writeReceipt(h, recovery ? "recovering" : "verifying", identity, successorToken, recovery, installer, false, receiptOutcome);
       const transfer = lease!.reserveHandoff(successorToken);
       try {
-        successor = spawnUpdateProcess(h.hostPath, [], { env: { ...cleanUpdateEnvironment(),
+        successor = spawnDesktopUpdateOwner(h.hostPath, [], h.userDataDir, { ...cleanUpdateEnvironment(),
           EASYRESEARCH_CODING_AGENT_DIR: h.agentDir,
           [UPDATE_SUCCESSOR_ENV]: JSON.stringify({ directory: h.directory, token: successorToken, workerPid: process.pid }),
-        } });
+        });
         if (!successor.child.pid) throw new Error("Successor did not spawn.");
         transfer.commit(successor.child.pid);
         const ready = await successor.event("successor-ready", successorToken, 15 * 60_000);

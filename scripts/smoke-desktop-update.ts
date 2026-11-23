@@ -27,7 +27,7 @@ import { DESKTOP_ACCESS_HEADER, DESKTOP_SMOKE_USER_DATA_ENV } from "../src/deskt
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
 import type { DesktopUpdateHandoff, DesktopUpdateReceipt, InstalledDesktopIdentity } from "../src/desktop/update-protocol";
 import type { UpdateAction, UpdateActionResult, UpdateSnapshot } from "../src/runtime/update-contract";
-import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopUpdateFixtureInput, digestFile, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand,
+import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, digestFile, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand,
   startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
 import { assertFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, installedHostHasNativeMenu, installedWindowEvidence, readBoundedFixtureJson,
   readFixtureServer, requestInstalledHostExit, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
@@ -161,6 +161,7 @@ function modelFixture(shellPidPath: string, marker: string, logPath: string) {
 /** Handoffs span preparation. Terminal receipts are optional diagnostic samples, never acceptance gates. */
 function observeUpdateReceipts(userData: string) {
   const handoffs = new Map<string, DesktopUpdateHandoff>(); const receipts = new Map<string, DesktopUpdateReceipt>();
+  const transitions: Record<string, unknown>[] = []; const last = new Map<string, string>();
   let failure: unknown;
   const scan = () => {
     try {
@@ -172,12 +173,19 @@ function observeUpdateReceipts(userData: string) {
         const handoff = readBoundedFixtureJson<DesktopUpdateHandoff>(join(path, "handoff.json"));
         const receipt = readBoundedFixtureJson<DesktopUpdateReceipt>(join(path, "receipt.json"));
         if (handoff) handoffs.set(path, handoff);
-        if (receipt) receipts.set(path, receipt);
+        if (receipt) {
+          receipts.set(path, receipt);
+          const diagnostic = desktopCustodyDiagnostic(receipt); const encoded = JSON.stringify(diagnostic);
+          if (last.get(path) !== encoded) {
+            last.set(path, encoded); transitions.push({ directory: path, at: Date.now(), ...diagnostic });
+            if (transitions.length > 128) transitions.shift();
+          }
+        }
       }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") failure = error; }
   };
   const timer = setInterval(scan, 25); scan();
-  return { handoffs, receipts, assertHealthy() { if (failure) throw failure; }, close() { clearInterval(timer); scan(); } };
+  return { handoffs, receipts, diagnostics: () => [...transitions], assertHealthy() { if (failure) throw failure; }, close() { clearInterval(timer); scan(); } };
 }
 
 function tlsHandshake(port: number, ca?: Buffer, servername = "api.github.com"): Promise<void> {
@@ -217,6 +225,7 @@ async function driveScenario(options: {
     easyresearch: { web: { autoSessionTitle: false }, agentDefaults: { "research-assistant": { model: "smoke/desktop-update", thinking: "off" } } } }));
   const observer = observeUpdateReceipts(userData);
   const seen = new Map<number, WindowsFixtureProcess>();
+  let liveProcesses: WindowsFixtureProcess[] = [];
   const credentials = new Set<string>(["isolated-fixture"]);
   const diagnosticSecrets = () => [...credentials, ...[...observer.handoffs.values()].map(value => value.token),
     ...[...observer.receipts.values()].flatMap(value => value.successorToken ? [value.successorToken] : [])];
@@ -331,10 +340,12 @@ async function driveScenario(options: {
     assert.equal(committed.helperSha256, oldManifest.sidecar.sha256);
     assert.deepEqual({ hostSha256: committed.oldHostSha256, appSha256: committed.oldAppSha256, sidecarSha256: committed.oldSidecarSha256 }, oldIdentity);
     let sampling: Promise<void> | undefined; let samplingFailure: unknown;
-    let liveProcesses: WindowsFixtureProcess[] = [];
     const sampleProcesses = () => {
       if (sampling) return;
-      sampling = fixtureWindowsProcesses(root, [...seen.values()]).then(values => { liveProcesses = values; for (const value of values) seen.set(value.pid, value); })
+      sampling = fixtureWindowsProcesses(root, [...seen.values()]).then(values => {
+        liveProcesses = values; for (const value of values) seen.set(value.pid, value);
+        writeFileSync(join(root, "custody-observation.log"), `${JSON.stringify({ receipts: observer.diagnostics(), seen: [...seen.values()], live: liveProcesses })}\n`, { mode: 0o600 });
+      })
         .catch(error => { samplingFailure = error; }).finally(() => { sampling = undefined; });
     };
     sampleProcesses();
@@ -344,6 +355,11 @@ async function driveScenario(options: {
       accepted = await waitFor("settled native installer and installed successor", () => {
         installing.assertInstalling("Waiting for installed successor after handoff", true);
         observer.assertHealthy(); model.assertHealthy(); if (samplingFailure) throw samplingFailure;
+        const terminal = readBoundedFixtureJson<DesktopUpdateReceipt>(join(staging, "receipt.json"));
+        if (terminal?.phase === "failed" && terminal.operationId === downloaded.operationId && terminal.version === candidateManifest.version
+          && Number.isSafeInteger(terminal.workerPid) && terminal.workerPid > 0 && !alive(terminal.workerPid) && !terminal.outcome?.recoveryComplete) {
+          throw new Error(`Update worker exited before recovery readiness: ${JSON.stringify(desktopCustodyDiagnostic(terminal))}`);
+        }
         const record = readFixtureServer(agentDir); if (!record || record.pid === initialRecord.pid) return;
         const lineage = findDesktopUpdateLineage([...seen.values()], { oldHostPid: oldHost!.pid!, sidecarPid: record.pid, host,
           helper: join(staging, "custodian.exe"), installer: join(staging, installerName), sidecar: installedSidecar });
@@ -468,6 +484,7 @@ async function driveScenario(options: {
       ...(mode === "rollback" ? { corruptDownloadRejected: true, recoveryReleaseDialogObserved: true } : {}) };
   } catch (error) {
     try { const current = readFixtureServer(agentDir); if (current) credentials.add(current.token); } catch { /* Diagnostics never require a valid current listener. */ }
+    writeFileSync(join(root, "custody-observation.log"), `${JSON.stringify({ receipts: observer.diagnostics(), seen: [...seen.values()], live: liveProcesses })}\n`, { mode: 0o600 });
     primary = new Error(fixtureDiagnosticError(error, diagnosticSecrets()));
     try {
       await captureDesktopUpdateFailure({ root, userData, error, secrets: diagnosticSecrets(), actions: installActions,

@@ -6,7 +6,7 @@ import { acquireTransitionLease, adoptTransitionLease, waitForTransitionLeaseOwn
 import type { DesktopDownloadedUpdate } from "./update";
 import { DesktopUpdateCleanupError, type DesktopUpdateCustodian } from "./update-install";
 import { regularUpdateFile, writeUpdateJson, type UpdateFileHasher } from "./update-files";
-import { spawnUpdateProcess, type OwnedUpdateProcess } from "./update-process";
+import { spawnDesktopUpdateOwner, type OwnedUpdateProcess } from "./update-process";
 import { cleanupDesktopUpdateStaging } from "./update-staging";
 import {
   UPDATE_EVENT_PREFIX, UPDATE_SUCCESSOR_ENV, UPDATE_WORKER_ENTRY, UPDATE_WORKER_TOKEN_ENV,
@@ -92,8 +92,8 @@ export async function prepareDesktopUpdateCustodian(options: {
     abort: async () => { options.signal.removeEventListener("abort", onAbort); if (!committed) await abort(); },
   };
   try {
-    child = spawnUpdateProcess(helperPath, [UPDATE_WORKER_ENTRY], { detached: true,
-      env: { ...process.env, [UPDATE_WORKER_TOKEN_ENV]: token } });
+    child = spawnDesktopUpdateOwner(helperPath, [UPDATE_WORKER_ENTRY], userDataDir,
+      { ...process.env, [UPDATE_WORKER_TOKEN_ENV]: token });
     options.retain(handle);
     if (!child.child.pid) throw new Error("Update helper did not spawn.");
     transfer.commit(child.child.pid);
