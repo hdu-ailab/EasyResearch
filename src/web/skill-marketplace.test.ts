@@ -158,10 +158,11 @@ describe("skill marketplace", () => {
 });
 
 describe("bounded publication and transport", () => {
-  it("keeps namespaced unsupported catalog entries from breaking usable results", () => {
+  it("admits namespaced GitHub and website catalog identities", () => {
     const rows = parseMarketSkills([fixture.skill, { ...fixture.skill, skillId: "stitch::design" }]);
     expect(rows[0]?.supported).toBe(true);
-    expect(rows[1]?.supported).toBe(false);
+    expect(rows[1]?.supported).toBe(true);
+    expect(parseMarketSkills([{ ...fixture.skill, source: "open.feishu.cn" }])[0]?.supported).toBe(true);
   });
   it("allows the public canonical redirect but never redirects to arbitrary hosts", async () => {
     const requested: string[] = [];

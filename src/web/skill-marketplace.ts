@@ -3,7 +3,7 @@ import { ConfigServiceError, type ConfigFileService } from "./config-files";
 import type { SkillResourceDto } from "./contracts";
 import type { MarketSkillDto, SkillMarketCatalogDto, SkillMarketDetailDto, SkillMarketInstalledDto, SkillMarketView } from "./skill-marketplace-contracts";
 import { publishNewSkill, skillMarketplaceIdentity, type SkillInstallFile } from "./skill-marketplace-install";
-import { MARKET_RECEIPT, marketError, parseMarketId, SkillMarketplaceSource, type SkillSourceSnapshot } from "./skill-marketplace-source";
+import { MARKET_RECEIPT, marketError, parseMarketId, skillInstallDirectory, validMarketRevision, SkillMarketplaceSource, type SkillSourceSnapshot } from "./skill-marketplace-source";
 
 interface CacheEntry<T> { expires: number; value: T }
 
@@ -19,6 +19,7 @@ export class SkillMarketplace {
   private readonly source: SkillMarketplaceSource;
   private readonly catalogs = new Map<string, CacheEntry<MarketSkillDto[]>>();
   private readonly snapshots = new Map<string, CacheEntry<SkillSourceSnapshot>>();
+  private readonly explanations = new Map<string, CacheEntry<{ content: string; url: string; summary: string }>>();
   private readonly operations = new Map<AbortController, Promise<unknown>>();
   private readonly installing = new Set<string>();
   private closed = false;
@@ -42,10 +43,20 @@ export class SkillMarketplace {
   }
 
   detail(id: string, caller?: AbortSignal): Promise<SkillMarketDetailDto> {
-    return this.run(caller, 45_000, async (signal) => {
+    return this.run(caller, 90_000, async (signal) => {
       const snapshot = await this.snapshot(id, signal);
       const resources = await listGlobalSkills(this.options.config, this.options.skillOptions());
       return this.detailDto(snapshot, resources);
+    });
+  }
+
+  description(id: string, caller?: AbortSignal) {
+    return this.run(caller, 30_000, async signal => {
+      const cached = this.explanations.get(id);
+      if (cached && cached.expires > Date.now()) return cached.value;
+      const value = await this.source.description(id, signal);
+      this.cache(this.explanations, id, value, 300_000, 32);
+      return value;
     });
   }
 
@@ -54,8 +65,8 @@ export class SkillMarketplace {
       if (!input || typeof input !== "object" || Array.isArray(input)) marketError("Invalid install request.", 400);
       const row = input as Record<string, unknown>;
       const { id } = parseMarketId(row.id);
-      if (Object.keys(row).some((key) => key !== "id" && key !== "commit") || typeof row.commit !== "string" || !/^[a-f0-9]{40}$/.test(row.commit)) {
-        marketError("Installation requires the previewed source commit.", 400);
+      if (Object.keys(row).some((key) => key !== "id" && key !== "commit") || !validMarketRevision(row.commit)) {
+        marketError("Installation requires the previewed source revision.", 400);
       }
       const snapshot = await this.snapshot(id, signal, row.commit);
       if (this.installing.has(snapshot.name)) marketError("This skill is already being installed.", 409, "SKILL_MARKET_CONFLICT");
@@ -91,7 +102,7 @@ export class SkillMarketplace {
         }
         signal.throwIfAborted();
         files.push({ path: MARKET_RECEIPT, bytes: Buffer.from(JSON.stringify({ version: 1, id, name: snapshot.name, commit: snapshot.commit })) });
-        publishNewSkill(this.options.config.globalRoot, snapshot.name, files);
+        publishNewSkill(this.options.config.globalRoot, skillInstallDirectory(snapshot.name), files);
         await this.options.notify();
         return { id, name: snapshot.name };
       } finally { this.installing.delete(snapshot.name); }
@@ -104,6 +115,7 @@ export class SkillMarketplace {
     await Promise.allSettled([...this.operations.values()]);
     this.catalogs.clear();
     this.snapshots.clear();
+    this.explanations.clear();
   }
 
   private detailDto(snapshot: SkillSourceSnapshot, resources: SkillResourceDto[]): SkillMarketDetailDto {
@@ -112,6 +124,8 @@ export class SkillMarketplace {
       id: snapshot.id, name: snapshot.name, description: snapshot.description,
       content: snapshot.content, commit: snapshot.commit, directory: snapshot.directory,
       files: snapshot.files.map((file) => file.path),
+      sourceType: snapshot.sourceType,
+      sourceUrl: snapshot.sourceUrl,
       state: !existing ? "available" : skillMarketplaceIdentity(existing) === snapshot.id ? "installed" : "conflict",
     };
   }
@@ -122,6 +136,10 @@ export class SkillMarketplace {
     if (cached && cached.expires > Date.now() && (!commit || cached.value.commit === commit)) return cached.value;
     const value = await this.source.snapshot(id, signal, commit);
     this.cache(this.snapshots, id, value, 300_000, 8);
+    // Website snapshots include verified supporting bytes rather than mutable URLs.
+    const retainedBytes = () => [...this.snapshots.values()].reduce((total, entry) => total + entry.value.descriptorBytes.length
+      + entry.value.files.reduce((sum, file) => sum + (file.bytes?.length ?? 0), 0), 0);
+    while (this.snapshots.size > 1 && retainedBytes() > 32 * 1024 * 1024) this.snapshots.delete(this.snapshots.keys().next().value!);
     return value;
   }
 

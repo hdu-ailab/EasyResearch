@@ -22,6 +22,8 @@ export const routes = {
   skillResources: () => `${API_ROOT}/skill-resources`,
   skillMarket: (q: string, view: string) => `${API_ROOT}/skill-marketplace?${new URLSearchParams({ q, view })}`,
   skillMarketDetail: (id: string) => `${API_ROOT}/skill-marketplace/detail?${new URLSearchParams({ id })}`,
+  skillMarketDescription: (id: string, summary = false) =>
+    `${API_ROOT}/skill-marketplace/description?${new URLSearchParams({ id, ...(summary ? { summary: "1" } : {}) })}`,
   skillMarketInstall: () => `${API_ROOT}/skill-marketplace/install`,
   skillResource: (name: string) => `${API_ROOT}/skill-resources/${encodeURIComponent(name)}`,
   models: () => `${API_ROOT}/models`,

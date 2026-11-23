@@ -421,21 +421,24 @@ export function ResourceSettingsPanel({
   const [market, setMarket] = useState(initialMarketplace);
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <PanelHeading>{t("settings.category.resources")}</PanelHeading>
-        <fieldset className="er-market-switch">
-          <legend className="sr-only">{t("settings.resources.skills")}</legend>
-          <button type="button" aria-pressed={!market} onClick={() => setMarket(false)}>
-            {t("skillMarket.installed").replace("{n}", String(skills.length))}
-          </button>
-          <button type="button" aria-pressed={market} onClick={() => setMarket(true)}>
-            {t("skillMarket.browse")}
-          </button>
-        </fieldset>
-      </div>
-      <div hidden={!market}>
-        <SkillMarketplacePanel active={active && market} skills={skills} onInstalled={onInstalled} />
-      </div>
+      <SkillMarketplacePanel
+        active={active && market}
+        showMarketplace={market}
+        title={<PanelHeading>{t("settings.category.resources")}</PanelHeading>}
+        controls={
+          <fieldset className="er-market-switch">
+            <legend className="sr-only">{t("settings.resources.skills")}</legend>
+            <button type="button" aria-pressed={!market} onClick={() => setMarket(false)}>
+              {t("skillMarket.installed").replace("{n}", String(skills.length))}
+            </button>
+            <button type="button" aria-pressed={market} onClick={() => setMarket(true)}>
+              {t("skillMarket.browse")}
+            </button>
+          </fieldset>
+        }
+        skills={skills}
+        onInstalled={onInstalled}
+      />
       <div hidden={market} className="flex flex-col gap-4">
         <section className={`${sectionClass} p-4`} aria-label={t("settings.resources.tools")}>
           <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.tools")}</h3>

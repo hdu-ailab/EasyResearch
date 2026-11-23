@@ -1,11 +1,13 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MarketSkillDto, SkillMarketCatalogDto } from "../../../../web/skill-marketplace-contracts";
 import * as api from "../../api/skill-marketplace";
 import { SkillMarketplacePanel } from "./SkillMarketplacePanel";
 
 vi.mock("../../api/skill-marketplace", () => ({
+  getSkillMarketSummary: vi.fn(),
+  getSkillMarketDescription: vi.fn(),
   getSkillMarket: vi.fn(),
   getSkillMarketDetail: vi.fn(),
   installMarketSkill: vi.fn(),
@@ -30,14 +32,95 @@ const detail = {
 };
 
 beforeEach(() => {
+  vi.mocked(api.getSkillMarketSummary).mockReset().mockResolvedValue("A concise skill summary.");
+  vi.mocked(api.getSkillMarketDescription).mockReset().mockRejectedValue(new Error("Catalog description unavailable"));
   vi.mocked(api.getSkillMarket)
     .mockReset()
     .mockResolvedValue({ skills: [skill] });
   vi.mocked(api.getSkillMarketDetail).mockReset().mockResolvedValue(detail);
   vi.mocked(api.installMarketSkill).mockReset().mockResolvedValue({ id: skill.id, name: "research" });
 });
+afterEach(() => vi.unstubAllGlobals());
 
 describe("Skill marketplace", () => {
+  it("loads summaries only when a card enters the viewport and shares duplicate cards", async () => {
+    const observers: Array<{ callback: IntersectionObserverCallback; element?: Element }> = [];
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        record: { callback: IntersectionObserverCallback; element?: Element };
+        constructor(callback: IntersectionObserverCallback) {
+          this.record = { callback };
+          observers.push(this.record);
+        }
+        observe(element: Element) {
+          this.record.element = element;
+        }
+        disconnect() {}
+      },
+    );
+    render(<SkillMarketplacePanel active skills={[]} onInstalled={() => {}} />);
+    await screen.findAllByRole("button", { name: "View Research" });
+    await waitFor(() =>
+      expect(observers).toHaveLength(screen.getAllByRole("button", { name: "View Research" }).length),
+    );
+    expect(api.getSkillMarketSummary).not.toHaveBeenCalled();
+    act(() => {
+      for (const observer of observers)
+        observer.callback(
+          [{ isIntersecting: true, target: observer.element } as IntersectionObserverEntry],
+          {} as IntersectionObserver,
+        );
+    });
+    await waitFor(() => expect(api.getSkillMarketSummary).toHaveBeenCalledOnce());
+    expect(await screen.findAllByText("A concise skill summary.")).toHaveLength(2);
+  });
+  it("keeps the author link independent and prefers the public explanation", async () => {
+    vi.mocked(api.getSkillMarketDescription).mockResolvedValue({
+      content: "# Public catalog guide",
+      url: "https://skills.sh/example/repo/research",
+    });
+    render(<SkillMarketplacePanel active skills={[]} onInstalled={() => {}} />);
+    const author = (await screen.findAllByRole("link", { name: "example/repo" }))[0]!;
+    expect(author).toHaveAttribute("href", "https://skills.sh/example/repo");
+    expect(author).toHaveAttribute("target", "_blank");
+    fireEvent.click(author);
+    expect(api.getSkillMarketDetail).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByRole("button", { name: "View Research" })[0]!);
+    expect(await screen.findByRole("heading", { name: "Public catalog guide" })).toBeInTheDocument();
+  });
+  it("offers manual and copied Agent requests even when source preview fails", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    vi.mocked(api.getSkillMarketDetail).mockRejectedValue(new Error("Download failed"));
+    render(<SkillMarketplacePanel active skills={[]} onInstalled={() => {}} />);
+    fireEvent.click((await screen.findAllByRole("button", { name: "Add Research" }))[0]!);
+    expect(await screen.findByRole("link", { name: "Manual download" })).toHaveAttribute(
+      "href",
+      "https://skills.sh/example/repo/research",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy installation request" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    const request = writeText.mock.calls[0]![0];
+    expect(request).toContain(skill.id);
+    expect(request).toContain("global Skills directory");
+    expect(api.installMarketSkill).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Copied. Paste/)).toBeInTheDocument();
+  });
+  it("selects a readable request when clipboard permission is denied", async () => {
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    vi.mocked(api.getSkillMarketDetail).mockRejectedValue(new Error("Download failed"));
+    render(<SkillMarketplacePanel active skills={[]} onInstalled={() => {}} />);
+    fireEvent.click((await screen.findAllByRole("button", { name: "Add Research" }))[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: "Copy installation request" }));
+    const field = screen.getByRole("textbox", { name: "Request for the Research Assistant" }) as HTMLTextAreaElement;
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(field.selectionEnd - field.selectionStart).toBe(field.value.length);
+    expect(screen.getByText(/Copy failed/)).toBeInTheDocument();
+  });
   it("only fetches when visible, searches explicitly, and rejects obsolete results", async () => {
     const old = Promise.withResolvers<SkillMarketCatalogDto>();
     const view = render(<SkillMarketplacePanel active={false} skills={[]} onInstalled={() => {}} />);

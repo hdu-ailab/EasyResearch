@@ -1,7 +1,7 @@
 import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ConfigServiceError, resolveAllowedConfigPath } from "./config-files";
-import { MARKET_RECEIPT, parseMarketId, safeSkillPath } from "./skill-marketplace-source";
+import { MARKET_RECEIPT, parseMarketId, safeSkillPath, validMarketRevision } from "./skill-marketplace-source";
 import type { SkillResourceDto } from "./contracts";
 
 export function skillMarketplaceIdentity(skill: SkillResourceDto): string | undefined {
@@ -13,7 +13,7 @@ export function skillMarketplaceIdentity(skill: SkillResourceDto): string | unde
     const receipt: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (!receipt || typeof receipt !== "object") return;
     const row = receipt as Record<string, unknown>;
-    if (row.version !== 1 || row.name !== skill.name || typeof row.commit !== "string" || !/^[a-f0-9]{40}$/.test(row.commit)) return;
+    if (row.version !== 1 || row.name !== skill.name || !validMarketRevision(row.commit)) return;
     return parseMarketId(row.id).id;
   } catch { return; }
 }
