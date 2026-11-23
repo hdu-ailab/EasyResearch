@@ -1,5 +1,5 @@
 /** Native CI diagnostic only. No installer or user configuration is used. */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, win32 } from "node:path";
@@ -14,6 +14,47 @@ async function main(): Promise<void> {
   if (where.status !== 0) throw new Error("The diagnostic requires installed Node.");
   const node = await realpath(where.stdout.trim().split(/\r?\n/)[0]!);
   const result: Record<string, unknown> = { root, canonicalRoot: await realpath(root), driver: { execPath: process.execPath, node: process.versions.node, bun: process.versions.bun }, target: node, cases: [] };
+  const powershell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const minimal = { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: win32.join(systemRoot, "System32"), TEMP: root, TMP: root };
+  const baselines: unknown[] = []; result.baselines = baselines;
+  try {
+  for (const mode of ["simple-minimal", "simple-full", "stdin-string", "stdin-buffer", "stdin-end"]) {
+    const input = mode.startsWith("stdin");
+    const command = input ? "$r = [IO.StreamReader]::new([Console]::OpenStandardInput()); [Console]::Write($r.ReadLine().Length); exit 0" : "[Console]::Write('ready'); exit 0";
+    const start = performance.now(); const value: Record<string, unknown> = { mode };
+    const child = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], {
+      env: mode === "simple-full" ? { ...process.env } : minimal, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"], windowsHide: true,
+    });
+    child.stdin?.on("error", () => {});
+    const payload = "x".repeat(32768) + "\n";
+    if (mode === "stdin-string") child.stdin!.write(payload);
+    if (mode === "stdin-buffer") child.stdin!.write(Buffer.from(payload));
+    if (mode === "stdin-end") child.stdin!.end(payload);
+    let output = "", errors = "";
+    child.stdout!.on("data", chunk => { value.firstOutputMs ??= performance.now() - start; output += chunk.toString(); });
+    child.stderr!.on("data", chunk => { errors = (errors + chunk.toString()).slice(-2048); });
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 10000);
+    await new Promise<void>(resolve => child.once("close", (code, signal) => { value.code = code; value.signal = signal; resolve(); }));
+    clearTimeout(timeout); value.elapsedMs = performance.now() - start; value.stdout = output; value.stderr = errors;
+    baselines.push(value); console.log(JSON.stringify(value));
+  }
+  if (process.versions.bun) {
+    const start = performance.now();
+    const command = "$r = [IO.StreamReader]::new([Console]::OpenStandardInput()); [Console]::Write($r.ReadLine().Length); exit 0";
+    const child = Bun.spawn([powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], { env: minimal, stdin: "pipe", stdout: "pipe", stderr: "pipe", windowsHide: true });
+    const timeout = setTimeout(() => child.kill(), 10000);
+    let ceiling: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const operation = (async () => {
+        child.stdin.write("x".repeat(32768) + "\n"); await child.stdin.flush();
+        const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+        return { mode: "bun-direct-flush", elapsedMs: performance.now() - start, code, stdout, stderr: stderr.slice(-2048) };
+      })();
+      const value = await Promise.race([operation, new Promise<never>((_, reject) => { ceiling = setTimeout(() => reject(new Error("Direct pipe probe did not settle")), 12000); })]);
+      baselines.push(value); console.log(JSON.stringify(value));
+    } finally { clearTimeout(ceiling); clearTimeout(timeout); if (child.exitCode === null) child.kill(); }
+  }
+  } catch (error) { result.baselineError = String(error); console.log(JSON.stringify({ baselineError: String(error) })); }
   const inspect = async (directory: string) => {
     const files = [];
     for (const name of await readdir(directory).catch(() => [])) {
