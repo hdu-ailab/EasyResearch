@@ -9,7 +9,7 @@ import { assertExternalFixtureReceipt, copyUpdateFixtureSource, parseUpdateFixtu
 import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, findDesktopUpdateLineage, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
 import { discoverDesktopRelease, downloadDesktopAsset } from "../desktop/update-download";
 import { windowsInstallerRegistryId } from "../desktop/update-worker";
-import { assertWindowsFixtureInstallation, parseFixtureWindowsProcesses, retainFixtureProcessObservation } from "../../scripts/smoke-desktop-update-windows";
+import { assessInstalledWindowEvidence, assertWindowsFixtureInstallation, formatInstalledWindowDiagnostic, parseFixtureWindowsProcesses, retainFixtureProcessObservation, type InstalledWindowEvidence } from "../../scripts/smoke-desktop-update-windows";
 import { LATEST_RELEASE_PAGE, type UpdateSnapshot } from "./update-contract";
 import type { DesktopUpdateReceipt } from "../desktop/update-protocol";
 
@@ -277,6 +277,59 @@ describe("closed Desktop Release fixture", () => {
     const digest = JSON.parse(metadata.body.toString()).assets[0].digest;
     expect(digest).not.toBe(`sha256:${createHash("sha256").update("immutable candidate").digest("hex")}`);
     expect(readFileSync(file, "utf8")).toBe("immutable candidate");
+  });
+});
+
+describe("native window evidence", () => {
+  const owner = { pid: 123, parentPid: 122, start: "2026-11-24T00:00:00.0000000Z", executable: "C:\\fixture\\EasyResearch.exe" };
+  const canonicalUrl = "http://127.0.0.1:12345/#/work/session?cwd=C%3A%5Cfixture";
+  const historyText = "desktop-update-01234567-89ab-cdef-0123-456789abcdef:preserved";
+  const evidence = (): InstalledWindowEvidence => ({ owner, urls: [canonicalUrl], names: [historyText], texts: ["EasyResearch"],
+    windows: [], scan: { handles: 1, accessibleRoots: 1, rootFailures: 0, visited: 2, integerChildren: 1, resolvedIntegerChildren: 0,
+      propertyErrors: 0, activationReads: 1, budgetLimited: false, depthLimited: false, valueLimited: false } });
+
+  it("requires exact canonical URL and history from the same verified host sample", () => {
+    const expected = { owner, canonicalUrl, historyText };
+    expect(assessInstalledWindowEvidence(evidence(), expected)).toMatchObject({ canonicalUrl: true, historyVisible: true, urlStatus: "canonical" });
+    for (const url of ["http://127.0.0.1:12345/", canonicalUrl.replace("session", "other"), `${canonicalUrl}/`]) {
+      expect(assessInstalledWindowEvidence({ ...evidence(), urls: [url] }, expected)).toMatchObject({ canonicalUrl: false, historyVisible: true, urlStatus: "same-origin-other-route" });
+    }
+    expect(assessInstalledWindowEvidence({ ...evidence(), urls: [] }, expected).urlStatus).toBe("no-urls");
+    expect(assessInstalledWindowEvidence({ ...evidence(), urls: [canonicalUrl.replace("12345", "12346")] }, expected).urlStatus).toBe("other-origin");
+    expect(assessInstalledWindowEvidence({ ...evidence(), names: ["other history"] }, expected).historyVisible).toBe(false);
+  });
+
+  it("rejects foreign or reused-PID samples instead of carrying their metadata forward", () => {
+    for (const change of [{ pid: 124 }, { parentPid: 999 }, { start: "later-creation" }, { executable: "C:\\foreign\\EasyResearch.exe" }]) {
+      const foreign = { ...evidence(), owner: { ...owner, ...change } };
+      expect(() => assessInstalledWindowEvidence(foreign, { owner, canonicalUrl, historyText })).toThrow(/identity/);
+      expect(() => formatInstalledWindowDiagnostic({ phase: "successor", owner, canonicalUrl, historyText, evidence: foreign, secrets: [] })).toThrow(/identity/);
+    }
+  });
+
+  it("bounds UTF-8 diagnostics after redaction while retaining route and history verdicts", () => {
+    const token = "t".repeat(43), secret = "fixture-private-key";
+    const raw = { ...evidence(), scan: { ...evidence().scan, privateExtra: token }, names: [historyText, `Authorization: Bearer ${secret}`, token, `handoffToken=${token}`,
+      ...Array.from({ length: 300 }, (_, index) => `${index}: ${"界😀".repeat(1000)}`)] };
+    const encoded = formatInstalledWindowDiagnostic({ phase: "successor", owner, canonicalUrl, historyText, evidence: raw,
+      sampledAt: 1, secrets: [token, secret], control: { canonicalUrl: true, historyVisible: true } });
+    expect(Buffer.byteLength(encoded, "utf8")).toBeLessThanOrEqual(16 * 1024);
+    const parsed = JSON.parse(encoded);
+    expect(parsed.checks).toMatchObject({ canonicalUrl: true, historyVisible: true });
+    expect(parsed.counts.names).toBe(raw.names.length);
+    expect(parsed.truncated).toBe(true);
+    expect(encoded).not.toContain(token); expect(encoded).not.toContain(secret); expect(encoded).not.toContain("\uFFFD");
+    expect(encoded).not.toContain("privateExtra");
+    expect(raw.names[2]).toBe(token);
+  });
+
+  it("distinguishes a query failure from an empty tree and preserves only its dated prior sample", () => {
+    const failed = JSON.parse(formatInstalledWindowDiagnostic({ phase: "successor", owner, canonicalUrl, historyText,
+      evidence: evidence(), sampledAt: 123, error: new Error("native query failed"), secrets: [] }));
+    expect(failed).toMatchObject({ queryStatus: "failed", sampleIsHistorical: true, sampledAt: 123 });
+    expect(failed.checks.canonicalUrl).toBe(true);
+    const absent = JSON.parse(formatInstalledWindowDiagnostic({ phase: "initial", owner, canonicalUrl, historyText, error: new Error("query failed"), secrets: [] }));
+    expect(absent).toMatchObject({ queryStatus: "failed", sampleIsHistorical: false, checks: { urlStatus: "no-sample", canonicalUrl: false, historyVisible: false } });
   });
 });
 

@@ -72,7 +72,7 @@ jobs:
           EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-update-tests/agent
           HOME: ${{ runner.temp }}/easyresearch-update-tests/home
           USERPROFILE: ${{ runner.temp }}/easyresearch-update-tests/home
-        run: bun scripts/windows-update-assembly.ts bun run test src/runtime/windows-update-job.test.ts src/runtime/windows-update-job.protocol.test.ts src/runtime/windows-update-job.native.test.ts src/runtime/npm-update-process.test.ts src/runtime/npm-update-process-windows.test.ts src/runtime/npm-update-process-windows.native.test.ts src/desktop/update-process.test.ts src/desktop/update-worker.test.ts src/desktop/update-successor-channel.test.ts
+        run: bun scripts/windows-update-assembly.ts bun run test src/runtime/windows-update-job.test.ts src/runtime/windows-update-job.protocol.test.ts src/runtime/windows-update-job.native.test.ts src/runtime/npm-update-process.test.ts src/runtime/npm-update-process-windows.test.ts src/runtime/npm-update-process-windows.native.test.ts src/desktop/update-process.test.ts src/desktop/update-worker.test.ts src/desktop/update-successor-channel.test.ts src/desktop/update-staging.test.ts
       - name: Verify accepted sidecar source matches
         if: ${{ inputs['desktop-native-run'] != '' }}
         env:

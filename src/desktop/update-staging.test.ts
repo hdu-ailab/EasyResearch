@@ -1,15 +1,71 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, unlink, rename, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { desktopUpdateRecovery } from "./update-custodian";
-import { retainManualDesktopDownload } from "./update-staging";
+import { cleanupDesktopUpdateStaging, retainManualDesktopDownload } from "./update-staging";
+const temporaryRoot = async (prefix: string) => realpath(await mkdtemp(join(tmpdir(), prefix)));
+
+it("reclaims a settled Windows image after a transient lock without removing foreign files", async () => {
+  const root = await temporaryRoot("desktop-stage-lock-");
+  try {
+    await writeFile(join(root, "custodian.exe"), "settled image"); await writeFile(join(root, "notes.txt"), "user work");
+    let failures = 2;
+    await cleanupDesktopUpdateStaging(root, "installer.exe", false, { platform: "win32", wait: async () => {}, unlink: async path => {
+      if (String(path).endsWith("custodian.exe") && failures-- > 0) throw Object.assign(new Error("image lock"), { code: "EPERM" });
+      await unlink(path);
+    } });
+    expect(await readdir(root)).toEqual(["notes.txt"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("preserves recovery authority when a Windows payload lock does not settle", async () => {
+  const root = await temporaryRoot("desktop-stage-locked-");
+  try {
+    for (const name of ["handoff.json", "receipt.json", "registry-0.reg"]) await writeFile(join(root, name), name);
+    let attempts = 0;
+    await expect(cleanupDesktopUpdateStaging(root, "installer.exe", false, { platform: "win32", wait: async () => {}, unlink: async path => {
+      if (String(path).endsWith("registry-0.reg")) { attempts++; throw Object.assign(new Error("image lock"), { code: "EPERM" }); }
+      await unlink(path);
+    } })).rejects.toMatchObject({ code: "EPERM" });
+    expect(attempts).toBeGreaterThan(1); expect(attempts).toBeLessThan(100);
+    expect(await readFile(join(root, "handoff.json"), "utf8")).toBe("handoff.json");
+    expect(await readFile(join(root, "receipt.json"), "utf8")).toBe("receipt.json");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("does not unlink a replacement that appeared while a settled image was locked", async () => {
+  const root = await temporaryRoot("desktop-stage-replaced-");
+  try {
+    const path = join(root, "custodian.exe"); await writeFile(path, "settled image");
+    await writeFile(join(root, "receipt.json"), "authority");
+    await expect(cleanupDesktopUpdateStaging(root, "installer.exe", false, { platform: "win32", unlink: async () => {
+      throw Object.assign(new Error("image lock"), { code: "EBUSY" });
+    }, wait: async () => { await rename(path, join(root, "retained-image")); await writeFile(path, "replacement"); } })).rejects.toThrow(/changed/i);
+    expect(await readFile(path, "utf8")).toBe("replacement");
+    expect(await readFile(join(root, "receipt.json"), "utf8")).toBe("authority");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("does not adopt a later authority-file replacement during another file's retry", async () => {
+  const root = await temporaryRoot("desktop-stage-later-replaced-");
+  try {
+    const image = join(root, "custodian.exe"), receipt = join(root, "receipt.json");
+    await writeFile(image, "settled image"); await writeFile(receipt, "original authority");
+    let locked = true;
+    await expect(cleanupDesktopUpdateStaging(root, "installer.exe", false, { platform: "win32", unlink: async path => {
+      if (path === image && locked) { locked = false; throw Object.assign(new Error("image lock"), { code: "EPERM" }); }
+      await unlink(path);
+    }, wait: async () => { await rename(receipt, join(root, "original-receipt")); await writeFile(receipt, "foreign replacement"); } })).rejects.toThrow(/changed/i);
+    expect(await readFile(receipt, "utf8")).toBe("foreign replacement");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 it.each(["complete", "failed", "cancelled", "rollback-incomplete", "failed-without-evidence", "failed-before-install"])("preserves or reclaims %s staging according to durable recovery evidence", async (scenario) => {
   const phase = scenario.startsWith("rollback-") || scenario.startsWith("failed-") ? "failed" : scenario;
   const reclaim = scenario !== "rollback-incomplete" && scenario !== "failed-without-evidence";
-  const root = await mkdtemp(join(tmpdir(), "desktop-stage-recovery-"));
+  const root = await temporaryRoot("desktop-stage-recovery-");
   try {
     const directory = join(root, "updates", "update-fixture"); await mkdir(directory, { recursive: true });
     const operationId = randomUUID(); const hash = "a".repeat(64);
@@ -38,7 +94,7 @@ it.each(["complete", "failed", "cancelled", "rollback-incomplete", "failed-witho
 });
 
 it("preserves unowned receipt directories and unrelated user files", async () => {
-  const root = await mkdtemp(join(tmpdir(), "desktop-stage-unowned-"));
+  const root = await temporaryRoot("desktop-stage-unowned-");
   try {
     const directory = join(root, "updates", "update-foreign"); await mkdir(directory, { recursive: true });
     await writeFile(join(directory, "receipt.json"), JSON.stringify({ phase: "complete", workerPid: 42 }));
@@ -50,7 +106,7 @@ it("preserves unowned receipt directories and unrelated user files", async () =>
 });
 
 it("retains only the current and previous unchanged owned manual downloads", async () => {
-  const root = await mkdtemp(join(tmpdir(), "desktop-manual-retention-"));
+  const root = await temporaryRoot("desktop-manual-retention-");
   try {
     for (const version of ["2.0.0", "3.0.0", "4.0.0"]) {
       const bytes = Buffer.from(`installer ${version}`); const name = `EasyResearch-${version}-macos-arm64.dmg`;
@@ -64,7 +120,7 @@ it("retains only the current and previous unchanged owned manual downloads", asy
 });
 
 it("never prunes foreign, unverifiable or user-modified manual files", async () => {
-  const root = await mkdtemp(join(tmpdir(), "desktop-manual-preserve-"));
+  const root = await temporaryRoot("desktop-manual-preserve-");
   try {
     await mkdir(join(root, "manual"));
     const foreign = "EasyResearch-0.9.0-macos-arm64.dmg"; await writeFile(join(root, "manual", foreign), "foreign");

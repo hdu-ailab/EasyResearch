@@ -29,8 +29,8 @@ import type { DesktopUpdateHandoff, DesktopUpdateReceipt, InstalledDesktopIdenti
 import type { UpdateAction, UpdateActionResult, UpdateSnapshot } from "../src/runtime/update-contract";
 import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, digestFile, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand,
   startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
-import { assertFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, installedHostHasNativeMenu, installedWindowEvidence, readBoundedFixtureJson,
-  readFixtureServer, requestInstalledHostExit, retainFixtureProcessObservation, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
+import { assessInstalledWindowEvidence, assertFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, formatInstalledWindowDiagnostic, installedHostHasNativeMenu, installedWindowEvidence, readBoundedFixtureJson,
+  readFixtureServer, requestInstalledHostExit, retainFixtureProcessObservation, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type NativeWindowOwner, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
 import { smokeAgentText, smokeBackgroundReports } from "./smoke-agent-scenario";
 import { selectShell } from "../src/background/shell/process";
 
@@ -73,8 +73,10 @@ async function launchInstalledFixtureHost(options: {
   onSpawn(child: ChildProcess): void; onBrowser(browser: Browser): void;
 }): Promise<{ child: ChildProcess; browser: Browser; page: Page }> {
   const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") }); const port = probe.port; probe.stop(true);
+  // The initial control must exercise native accessibility activation too; the
+  // argument-free automatic successor does not inherit Chromium switches.
   const child = spawn(options.host, [`--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1", "--no-proxy-server",
-    "--host-resolver-rules=MAP api.github.com 127.0.0.1, MAP github.com 127.0.0.1", "--force-renderer-accessibility",
+    "--host-resolver-rules=MAP api.github.com 127.0.0.1, MAP github.com 127.0.0.1",
     ...(options.language ? [`--lang=${options.language}`] : [])], { env: options.env, cwd: options.project, stdio: ["ignore", "pipe", "pipe"] });
   options.onSpawn(child); // caller owns cleanup even if startup/CDP fails
   let hostLog = ""; const log = (chunk: Buffer) => { hostLog = (hostLog + chunk.toString()).slice(-64 * 1024); writeFileSync(options.logPath, hostLog); };
@@ -233,6 +235,25 @@ async function driveScenario(options: {
   let diagnosticPage: Page | undefined;
   let oldHost: ChildProcess | undefined; let browser: Browser | undefined; let installed = false; let successorPid: number | undefined;
   let primary: unknown; let result: Record<string, unknown> | undefined; const cleanupErrors: unknown[] = [];
+  type NativeObservation = Parameters<typeof formatInstalledWindowDiagnostic>[0];
+  const nativeObservations = new Map<"initial" | "successor", NativeObservation>();
+  const persistNativeObservation = (observation: NativeObservation) => {
+    writeFileSync(assertFixtureChild(root, join(root, `native-window-${observation.phase}.log`)),
+      formatInstalledWindowDiagnostic({ ...observation, secrets: diagnosticSecrets() }), { mode: 0o600 });
+  };
+  const sampleNativeWindow = async (phase: "initial" | "successor", owner: NativeWindowOwner, canonicalUrl: string) => {
+    const previous = nativeObservations.get(phase);
+    const observation: NativeObservation = { phase, owner, canonicalUrl, historyText: `${marker}:preserved`, secrets: [],
+      // Never merge evidence across another owner or a reused PID. An error may
+      // retain only this exact owner's dated last sample, marked historical.
+      ...(previous?.owner === owner ? { evidence: previous.evidence, sampledAt: previous.sampledAt } : {}) };
+    try {
+      const evidence = await installedWindowEvidence(owner);
+      observation.evidence = evidence; observation.sampledAt = Date.now();
+      return evidence;
+    } catch (error) { observation.error = error; throw error; }
+    finally { nativeObservations.set(phase, observation); persistNativeObservation(observation); }
+  };
   try {
     const installCommand = nsisInstallCommand(old.installer!, install);
     await runFixtureCommand(installCommand.command, ["/S", "/currentuser", installCommand.args.at(-1)!], { env, cwd: project, windowsVerbatimArguments: true, timeoutMs: 180_000, logFile: join(root, "old-install.log") });
@@ -270,6 +291,21 @@ async function driveScenario(options: {
       return value.session.status === "ready" && !value.session.isStreaming && JSON.stringify(value.timeline).includes(`${marker}:preserved`) && existsSync(value.session.sessionFile) ? value : undefined;
     });
     const historyPath = assertFixtureChild(agentDir, history.session.sessionFile); const historyPrefix = readFileSync(historyPath);
+    const initialWindowOwner = (await fixtureWindowsProcesses(root)).find(row => row.pid === oldHost!.pid);
+    assert(initialWindowOwner && initialWindowOwner.parentPid === process.pid
+      && initialWindowOwner.executable.toLowerCase() === realpathSync(host).toLowerCase(), "Initial native window is not the owned installed host");
+    const initialUrl = `http://127.0.0.1:${initialRecord.port}/${route}`;
+    await waitFor("initial canonical Work/history native accessibility control", async () => {
+      const evidence = await sampleNativeWindow("initial", initialWindowOwner, initialUrl);
+      const [canonicalUrl, historyVisible] = await Promise.all([
+        page.evaluate(expected => location.href === expected, initialUrl),
+        page.getByText(`${marker}:preserved`, { exact: true }).isVisible(),
+      ]);
+      const control = { canonicalUrl, historyVisible };
+      const observation = nativeObservations.get("initial")!; observation.control = control; persistNativeObservation(observation);
+      const checks = assessInstalledWindowEvidence(evidence, { owner: initialWindowOwner, canonicalUrl: initialUrl, historyText: `${marker}:preserved` });
+      return control.canonicalUrl && control.historyVisible && checks.canonicalUrl && checks.historyVisible ? true : undefined;
+    }, 60_000, 500);
 
     if (mode === "rollback") {
       release.select(await createReleaseFixture(candidateManifest.version, options.candidateInstaller, { corruptDigest: true }));
@@ -411,8 +447,9 @@ async function driveScenario(options: {
       assert.notEqual(successor.runtimeId, initialRecord.runtimeId, "Upgrade kept the old native runtime identity");
     }
     const windowEvidence = await waitFor("successor canonical Work document through native accessibility", async () => {
-      const evidence = await installedWindowEvidence(successorPid!);
-      return evidence.urls.includes(`${successorOrigin}/${route}`) && evidence.names.some(name => name.includes(`${marker}:preserved`)) ? evidence : undefined;
+      const evidence = await sampleNativeWindow("successor", lineage.host, `${successorOrigin}/${route}`);
+      const checks = assessInstalledWindowEvidence(evidence, { owner: lineage.host, canonicalUrl: `${successorOrigin}/${route}`, historyText: `${marker}:preserved` });
+      return checks.canonicalUrl && checks.historyVisible ? evidence : undefined;
     }, 60_000, 500);
     assert(readFileSync(historyPath).subarray(0, historyPrefix.length).equals(historyPrefix), "Update rewrote existing native history");
     await waitFor("updater staging, recovery copies and transition cleanup", () => {
@@ -474,6 +511,7 @@ async function driveScenario(options: {
     result = { mode, oldVersion: old.version, installedVersion: expectedVersion, nativeSha256: expectedSidecar.sha256,
       oldLocaleCount: oldLocales.length, installedLocaleCount: readdirSync(join(install, "locales")).length,
       originalDirectoryPreserved: true, terminalModelAndShellCleanup: true, lateBusyReconfirmed: true,
+      initialNativeAccessibilityControlVerified: true,
       oldHostExited: true, freshControlCredential: true, oldRendererCredentialRejected: true,
       successorOriginChanged: successor.port !== initialRecord.port, persistedTranscriptRendered: true,
       successorProof: "installed host/app/sidecar hashes; authenticated fresh owner; worker→OS-job→NSIS and worker→host→sidecar lineage; rendered canonical Work/history; worker and installer exit; native staging/transition cleanup",
@@ -486,6 +524,8 @@ async function driveScenario(options: {
     try { const current = readFixtureServer(agentDir); if (current) credentials.add(current.token); } catch { /* Diagnostics never require a valid current listener. */ }
     writeFileSync(join(root, "custody-observation.log"), `${JSON.stringify({ receipts: observer.diagnostics(), seen: [...seen.values()], live: liveProcesses })}\n`, { mode: 0o600 });
     primary = new Error(fixtureDiagnosticError(error, diagnosticSecrets()));
+    try { for (const observation of nativeObservations.values()) persistNativeObservation(observation); }
+    catch (diagnosticError) { cleanupErrors.push(new Error(`Native window evidence capture failed: ${fixtureDiagnosticError(diagnosticError, diagnosticSecrets())}`)); }
     try {
       await captureDesktopUpdateFailure({ root, userData, error, secrets: diagnosticSecrets(), actions: installActions,
         ...(diagnosticPage ? { snapshot: () => diagnosticPage!.evaluate(() => window.easyresearchDesktop!.updateSnapshot!()) } : {}) });

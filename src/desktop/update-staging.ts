@@ -88,14 +88,36 @@ async function matchesManualOwnership(directory: string, record: ManualDownloadO
 }
 
 /** Only known updater files are removed. Foreign files/links and their directory remain. */
-export async function cleanupDesktopUpdateStaging(directory: string, installerName: string, keepInstaller = false): Promise<void> {
-  const stat = await lstat(directory);
+export async function cleanupDesktopUpdateStaging(directory: string, installerName: string, keepInstaller = false, io: {
+  unlink?: typeof unlink; wait?: (milliseconds: number) => Promise<void>; platform?: NodeJS.Platform;
+} = {}): Promise<void> {
+  const stat = await lstat(directory, { bigint: true });
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Invalid update staging directory.");
   const owned = new Set(["custodian.exe", "handoff.json", "recovery-handoff.json", "receipt.json", "receipt.json.acknowledged", "registry-0.reg", "registry-1.reg", "registry-probe.reg", "handoff.json.tmp", "recovery-handoff.json.tmp", "receipt.json.tmp"]);
   if (!keepInstaller) { owned.add(installerName); owned.add(`${installerName}.partial`); }
   const entries = await readdir(directory, { withFileTypes: true });
   if (entries.length > 32) throw new Error("Unexpected update staging contents.");
-  for (const entry of entries) if (entry.isFile() && owned.has(entry.name)) await unlink(join(directory, entry.name));
+  const authority = new Set(["handoff.json", "recovery-handoff.json", "receipt.json", "receipt.json.acknowledged"]);
+  entries.sort((a, b) => Number(authority.has(a.name)) - Number(authority.has(b.name)));
+  const candidates = await Promise.all(entries.filter(entry => entry.isFile() && owned.has(entry.name)).map(async entry => {
+    const path = join(directory, entry.name);
+    const original = await lstat(path, { bigint: true });
+    if (!original.isFile() || original.isSymbolicLink()) throw new Error("Update staging file changed before cleanup.");
+    return { path, original };
+  }));
+  for (const { path, original } of candidates) {
+    for (let attempt = 0; ; attempt++) {
+      const [currentDirectory, current] = await Promise.all([lstat(directory, { bigint: true }), lstat(path, { bigint: true })]);
+      if (!currentDirectory.isDirectory() || currentDirectory.isSymbolicLink() || currentDirectory.dev !== stat.dev || currentDirectory.ino !== stat.ino
+        || !current.isFile() || current.isSymbolicLink() || current.dev !== original.dev || current.ino !== original.ino
+        || current.size !== original.size || current.mtimeNs !== original.mtimeNs) throw new Error("Update staging identity changed during cleanup.");
+      try { await (io.unlink ?? unlink)(path); break; }
+      catch (error) {
+        if ((io.platform ?? process.platform) !== "win32" || attempt >= 20 || !["EPERM", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        await (io.wait ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))))(100);
+      }
+    }
+  }
   if (!keepInstaller) {
     try { await rmdir(directory); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY" && (error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
