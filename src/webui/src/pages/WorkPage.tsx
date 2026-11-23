@@ -1,12 +1,14 @@
 import { Bot, FileSearch, Layers3, Settings } from "lucide-react";
 import { type Ref, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { BackgroundTask } from "../../../background/contracts";
 import type {
   SessionTreeDto,
   SkillCommandDto,
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
 } from "../../../web/contracts";
+import type { FileLineRange } from "../../../web/file-reference-contracts";
 import { RESEARCH_ASSISTANT_AGENT } from "../agent-identity";
 import {
   compactSession,
@@ -20,6 +22,7 @@ import { parseSessionSnapshot } from "../api/parsers";
 import { AgentList, type AgentStatus } from "../components/AgentList";
 import { AgentTabBar } from "../components/AgentTabBar";
 import { ApiUsageStatisticsDialog } from "../components/ApiUsageStatisticsDialog";
+import { BackgroundTaskControls } from "../components/BackgroundTaskControls";
 import { ChatComposer, type ChatComposerHandle } from "../components/ChatComposer";
 import { ChatTranscript, type ChatTranscriptHandle } from "../components/ChatTranscript";
 import { ContextCapacity } from "../components/ContextCapacity";
@@ -27,7 +30,7 @@ import { ContextManagerDialog } from "../components/ContextManagerDialog";
 import { FileBrowser, type FileBrowserHandle } from "../components/FileBrowser";
 import { LlmRecoveryBanner } from "../components/LlmRecoveryBanner";
 import { resolveTranscriptFilePath } from "../components/markdown/file-references";
-import { TranscriptFileContext } from "../components/markdown/TranscriptFileLink";
+import { TranscriptFileReferences } from "../components/markdown/TranscriptFileReferences";
 import { RenameSessionDialog } from "../components/RenameSessionDialog";
 import { RetryBanner } from "../components/RetryBanner";
 import { SessionHistoryDialog } from "../components/SessionHistoryDialog";
@@ -37,6 +40,7 @@ import { WorkMobileTabs, type WorkView } from "../components/WorkMobileTabs";
 import { FILE_PATH_DRAG_TYPE, readFilePathDrop } from "../file-path-drag";
 import { EMPTY_FILE_EVENTS, parseFileWatcherEvent, type QueuedFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
+import { useBackgroundTaskControls } from "../hooks/useBackgroundTaskControls";
 import { canFocusElement } from "../hooks/useModalLayer";
 import { usePanelTransition } from "../hooks/usePanelTransition";
 import { useSessionConnection } from "../hooks/useSessionConnection";
@@ -222,6 +226,7 @@ function mergeChildView(snapshot: SessionViewState, live: SessionViewState, pref
 const PANEL_MIN = 240;
 const PANEL_DEFAULT = 320;
 const CHAT_MIN = 400;
+const NO_BACKGROUND_TASKS: NonNullable<SessionViewState["backgroundTasks"]> = [];
 
 export function WorkPage(props: WorkPageProps) {
   return <SessionWorkPage key={`${props.id}\0${props.cwd}`} {...props} />;
@@ -325,7 +330,7 @@ function SessionWorkPage({
   const structuredMessages = useRef({ revision: -1, hydration: -1, messages: emptyView.messages });
 
   const openTranscriptFile = useCallback(
-    (reference: string) => {
+    (reference: string, selection?: FileLineRange) => {
       if (!activity.current.interactive) return;
       const path = resolveTranscriptFilePath(cwd, reference);
       if (path === null) return;
@@ -335,7 +340,7 @@ function SessionWorkPage({
         // Keep keyboard focus out of Chat before it becomes hidden.
         filesTabRef.current?.focus();
       }
-      fileBrowserRef.current?.openPath(path);
+      fileBrowserRef.current?.openPath(path, selection);
     },
     [cwd, activity, isMobile],
   );
@@ -594,6 +599,10 @@ function SessionWorkPage({
     parentOwner.current = { id: sessionId, generation: parentOwner.current.generation + 1, deleted: false };
   }
   const status = connection.status;
+  const backgroundTasks = sessionView.backgroundTasks ?? NO_BACKGROUND_TASKS;
+  const backgroundEnabled =
+    !connection.deleted && !sessionView.subagentName && status !== "starting" && status !== "stopped";
+  const backgroundControls = useBackgroundTaskControls(sessionId, backgroundTasks, backgroundEnabled);
   useEffect(() => {
     if (hydrationRevision === 0 || connection.deleted) return;
     metadataCallback.current?.({ id: sessionId, cwd, name: sessionView.sessionName ?? "", status });
@@ -1200,6 +1209,44 @@ function SessionWorkPage({
     setActiveTab((current) => (current === key ? RESEARCH_ASSISTANT_AGENT : current));
   }, []);
 
+  const openBackgroundAgent = useCallback(
+    (task: BackgroundTask) => {
+      if (!activity.current.interactive || parentOwner.current.deleted || task.kind !== "subagent") return;
+      const summary = sessionView.subagentSummaries?.find((child) => child.childSessionId === task.sessionID);
+      setTabsState((current) => {
+        const existing = current.tabs.find((tab) => tab.sessionId === task.sessionID);
+        if (existing)
+          return { ...current, tabs: current.tabs.map((tab) => (tab === existing ? { ...tab, retained: true } : tab)) };
+        return {
+          ...current,
+          tabs: [
+            ...current.tabs,
+            {
+              key: `session:${task.sessionID}`,
+              sessionId: task.sessionID,
+              ownerSessionId: summary?.ownerSessionId ?? sessionId,
+              toolCallId: summary?.toolCallId ?? task.id,
+              agent: summary?.agent ?? task.agent ?? "subagent",
+              agentId: summary?.agentId,
+              retained: true,
+              running: summary?.status === "working",
+              error: summary?.status === "error",
+            },
+          ],
+        };
+      });
+      setActiveTab(`session:${task.sessionID}`);
+      void loadChild(task.sessionID);
+      requestAnimationFrame(returnRetryFocus);
+    },
+    [activity, sessionView.subagentSummaries, sessionId, loadChild, returnRetryFocus],
+  );
+  const dismissBackground = useCallback(() => {
+    if (!activity.current.interactive) return;
+    if (!composerDisabled) composerRef.current?.focus();
+    else returnRetryFocus();
+  }, [activity, composerDisabled, returnRetryFocus]);
+
   const startResize = useCallback(
     (event: React.PointerEvent<HTMLElement>) => {
       if (
@@ -1660,7 +1707,32 @@ function SessionWorkPage({
                 }
                 onSelect={selectAgentTab}
                 onClose={closeAgentTab}
-                onStop={() => abort()}
+                onStop={async (key) => {
+                  const tab = tabsState.tabs.find((candidate) => candidate.key === key);
+                  const ownerView =
+                    tab?.ownerSessionId === sessionId ? sessionView : childViews[tab?.ownerSessionId ?? ""];
+                  const childId =
+                    tab?.sessionId ??
+                    (tab
+                      ? (childSessionByInvocation.current.get(
+                          temporarySubagentTabKey(tab.ownerSessionId, tab.toolCallId),
+                        ) ??
+                        ownerView?.tools.find(
+                          (tool) => (tool.toolCallId ?? tool.key) === tab.toolCallId && tool.step === tab.step,
+                        )?.sessionId)
+                      : undefined);
+                  const task = backgroundTasks.find(
+                    (candidate) =>
+                      candidate.kind === "subagent" &&
+                      candidate.sessionID === childId &&
+                      candidate.status === "running",
+                  );
+                  if (!task) {
+                    setCommandError(t("background.unavailable"));
+                    return false;
+                  }
+                  return backgroundControls.cancel(task.id);
+                }}
                 trailing={
                   activeTab === RESEARCH_ASSISTANT_AGENT && !sessionView.subagentName ? (
                     <ContextCapacity
@@ -1688,7 +1760,12 @@ function SessionWorkPage({
               <p className="px-4 py-3 text-[13px] text-v2-text-text-muted">{t("work.childUnavailable")}</p>
             ) : null}
             <div className="flex min-h-0 w-full flex-1 flex-col">
-              <TranscriptFileContext value={openTranscriptFile}>
+              <TranscriptFileReferences
+                sessionId={sessionId}
+                cwd={cwd}
+                revision={`${fileEventSequence.current}:${hydrationRevision}:${configurationGeneration}:${contextSignal}`}
+                onOpen={openTranscriptFile}
+              >
                 <ChatTranscript
                   ref={transcriptRef}
                   messages={activeMessages}
@@ -1726,9 +1803,25 @@ function SessionWorkPage({
                   deferredEntries={transcriptView?.deferredEntries}
                   onReadEntry={connection.deleted ? undefined : readEntry}
                 />
-              </TranscriptFileContext>
+              </TranscriptFileReferences>
             </div>
             <footer className="sticky bottom-0 z-10 w-full shrink-0 bg-v2-background-bg-base px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] min-[820px]:pb-5">
+              {!connection.deleted && !sessionView.subagentName ? (
+                <BackgroundTaskControls
+                  key={sessionId}
+                  rootId={sessionId}
+                  leaseId={connection.fileWatchLeaseId}
+                  subscribeOutput={connection.subscribeBackgroundOutput}
+                  onOpenSubagent={openBackgroundAgent}
+                  onDismiss={dismissBackground}
+                  tasks={backgroundTasks}
+                  pending={backgroundControls.pending}
+                  error={backgroundControls.error}
+                  disabled={!backgroundEnabled || !interactive}
+                  onCancel={backgroundControls.cancel}
+                  onPromote={backgroundControls.promote}
+                />
+              ) : null}
               {activeTab !== RESEARCH_ASSISTANT_AGENT || sessionView.subagentName ? (
                 <p className="mb-2 text-[12px] text-v2-text-text-faint">{t("work.subagentLineNote")}</p>
               ) : null}

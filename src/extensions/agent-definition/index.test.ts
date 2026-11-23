@@ -18,18 +18,19 @@ async function loadExtension(
 ) {
   const handlers = new Map<string, (...args: any[]) => any>();
   const setActiveTools = vi.fn();
+  const registeredTools = ["read", "shell", "ssh-bash", "subagent", "models"];
   const api = {
-    getAllTools: vi.fn(() => ["read", "powershell", "ssh-bash"].map((name) => ({ name }))),
+    getAllTools: () => registeredTools.map((name) => ({ name })),
     on: vi.fn((event: string, handler: (...args: any[]) => any) => handlers.set(event, handler)),
     setActiveTools,
   };
   await (createAgentDefinitionExtension(runtimeBinding, platform) as ExtensionFactory)(api as never);
-  return { handlers, setActiveTools };
+  return { handlers, setActiveTools, registeredTools };
 }
 
 describe("createAgentDefinitionExtension", () => {
   it("applies the current definition's tools and contributes its exact Skill paths", async () => {
-    const runtimeBinding = binding(["read", "subagent"]);
+    const runtimeBinding = binding(["read", "subagent", "models"]);
     const { handlers, setActiveTools } = await loadExtension(runtimeBinding);
 
     await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/paper" });
@@ -38,35 +39,40 @@ describe("createAgentDefinitionExtension", () => {
       { cwd: "/paper" },
     );
 
-    expect(setActiveTools).toHaveBeenCalledWith(["read", "subagent"]);
+    expect(setActiveTools).toHaveBeenCalledWith(runtimeBinding.current().tools);
     expect(resources).toEqual({ skillPaths: ["/skills/workflow"] });
   });
 
   it("activates every registered tool when the definition has no strict allowlist", async () => {
-    const { handlers, setActiveTools } = await loadExtension(binding(undefined));
+    const { handlers, setActiveTools, registeredTools } = await loadExtension(binding(undefined));
 
     await handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
 
-    expect(setActiveTools).toHaveBeenCalledWith(["read", "powershell", "ssh-bash"]);
+    expect(setActiveTools).toHaveBeenCalledWith(registeredTools);
   });
 
-  it("normalizes strict shell names to powershell on Windows", async () => {
+  it.each(["win32", "linux", "darwin"] as const)("normalizes legacy strict local shells without changing SSH or dispatch capabilities on %s", async (platform) => {
+    const preserved = ["read", "ssh-bash", "subagent", "models"];
     const { handlers, setActiveTools } = await loadExtension(
-      binding(["read", "bash", "powershell", "ssh-bash"]),
-      "win32",
+      binding([...preserved, "bash", "powershell", "shell"]),
+      platform,
     );
 
     await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/paper" });
 
-    expect(setActiveTools).toHaveBeenCalledWith(["read", "powershell", "ssh-bash"]);
+    const active = setActiveTools.mock.lastCall?.[0] as string[];
+    expect(active.filter(tool => ["shell", "bash", "powershell"].includes(tool))).toEqual(["shell"]);
+    expect(active.filter(tool => tool !== "shell")).toEqual(preserved);
+    expect(new Set(active).size).toBe(active.length);
   });
 
-  it("uses Pi's already-filtered registry for all-tools", async () => {
-    const { handlers, setActiveTools } = await loadExtension(binding(undefined), "win32");
+  it.each(["win32", "linux", "darwin"] as const)("uses the current managed registry for all-tools on %s", async (platform) => {
+    const { handlers, setActiveTools, registeredTools } = await loadExtension(binding(undefined), platform);
+    registeredTools.push("custom-extension-tool");
 
     await handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
 
-    expect(setActiveTools).toHaveBeenCalledWith(["read", "powershell", "ssh-bash"]);
+    expect(setActiveTools).toHaveBeenCalledWith(registeredTools);
   });
 
   it("awaits pending configuration application after the complete run settles", async () => {

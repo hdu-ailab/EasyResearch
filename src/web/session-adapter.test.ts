@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { importPi } from "../runtime/pi-import";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionFactory, SessionTreeNode } from "@earendil-works/pi-coding-agent";
 import { createAgentDefinitionExtension } from "../extensions/agent-definition";
@@ -355,6 +359,44 @@ function created(session: InProcessAgentSession, binding = new FakeRuntimeBindin
 }
 
 describe("PiSessionFactory", () => {
+  it("keeps restart and shell harness notices out of live transcript events", async () => {
+    const session = new FakeAgentSession();
+    const adapter = new PiSessionFactory(async () => managed(session)).create({ cwd: "/project" });
+    await adapter.start();
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    for (const customType of ["easyresearch:restart", "easyresearch:background-result"]) {
+      const message = { role: "custom", customType, display: false, content: "private harness notice", timestamp: 1 };
+      for (const listener of session.listeners) {
+        listener({ type: "message_start", message });
+        listener({ type: "message_end", message });
+        listener({ type: "entry_appended", entry: { type: "custom_message", id: customType, ...message } });
+      }
+    }
+    expect(events).toEqual([]);
+    await adapter.stop();
+  });
+  it("interrupts the root without cancelling its independently owned background tree", async () => {
+    const session = new FakeAgentSession();
+    session.isStreaming = true;
+    let childRunning = true;
+    const harness = managed(session, "root", {
+      supervisor: {
+        isQuiescent: () => !childRunning,
+        cancelAll: async () => { childRunning = false; },
+        abortAll: async () => { childRunning = false; },
+      },
+    });
+    const adapter = new PiSessionFactory(async () => harness).create({ cwd: "/project" });
+    await adapter.start();
+    await adapter.abort();
+    expect(session.isStreaming).toBe(false);
+    expect(childRunning).toBe(true);
+    expect(adapter.hasBackgroundWork()).toBe(true);
+    await adapter.stop();
+    expect(childRunning).toBe(false);
+  });
+
   it("still aborts the root when branch-summary cancellation fails", async () => {
     const session = new FakeAgentSession();
     session.abortBranchSummary = () => { throw new Error("branch abort failed"); };
@@ -1513,14 +1555,8 @@ describe("PiSessionFactory", () => {
 
     await adapter.abort();
 
-    expect(order).toEqual([
-      "coordinator.beginCancellation",
-      "session.clearQueue",
-      "session.abort",
-      "supervisor.cancelAll",
-      "coordinator.finishCancellation",
-    ]);
-    expect(session.steeringMessages).toEqual([]);
+    expect(order).toEqual(["session.abort"]);
+    expect(session.steeringMessages).toEqual(["queued user steer"]);
     expect(session.abortCalls).toBe(1);
     expect(session.disposeCalls).toBe(0);
     expect(session.listeners.size).toBeGreaterThan(0);
@@ -1529,21 +1565,15 @@ describe("PiSessionFactory", () => {
     await adapter.prompt("new run");
     session.isStreaming = true;
     await adapter.abort();
-    expect(order.slice(5)).toEqual([
-      "coordinator.beginCancellation",
-      "session.clearQueue",
-      "session.abort",
-      "supervisor.cancelAll",
-      "coordinator.finishCancellation",
-    ]);
-    expect(session.clearQueueCalls).toBe(2);
+    expect(order.slice(1)).toEqual(["session.abort"]);
+    expect(session.clearQueueCalls).toBe(0);
     expect(session.abortCalls).toBe(2);
     expect(beginClosing).not.toHaveBeenCalled();
     expect(abortAll).not.toHaveBeenCalled();
     expect(dispose).not.toHaveBeenCalled();
 
     await adapter.stop();
-    expect(order.slice(10)).toEqual([
+    expect(order.slice(2)).toEqual([
       "coordinator.beginClosing",
       "session.clearQueue",
       "session.abort",
@@ -1555,7 +1585,7 @@ describe("PiSessionFactory", () => {
     ]);
   });
 
-  it("waits for reusable descendant cancellation before resolving Stop", async () => {
+  it("does not wait for or rewrite a descendant notification when interrupting the root", async () => {
     const session = new FakeAgentSession();
     let releaseDescendants!: () => void;
     const descendantsSettled = new Promise<void>((resolve) => {
@@ -1581,11 +1611,11 @@ describe("PiSessionFactory", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(stopResolved).toBe(false);
+    expect(pendingBatch).toBe("natural-batch");
+    await stopping;
+    expect(stopResolved).toBe(true);
     expect(pendingBatch).toBe("natural-batch");
     releaseDescendants();
-    await stopping;
-    expect(pendingBatch).toBe("cancelled-batch");
   });
 
   it("shares concurrent cancellation and retries after a failed cancellation without reopening early", async () => {
@@ -1594,17 +1624,18 @@ describe("PiSessionFactory", () => {
     const cancellationGate = new Promise<void>((resolve) => {
       releaseCancellation = resolve;
     });
-    const failure = new Error("descendant cancellation failed");
+    const failure = new Error("root cancellation failed");
     let cancelAttempt = 0;
     const beginCancellation = vi.fn();
     const finishCancellation = vi.fn();
-    const cancelAll = vi.fn(async () => {
+    const cancelAll = vi.fn(async () => {});
+    session.abortImpl = async () => {
       cancelAttempt += 1;
       if (cancelAttempt === 1) {
         await cancellationGate;
         throw failure;
       }
-    });
+    };
     const adapter = new PiSessionFactory(async () => managed(session, session.sessionId, {
       coordinator: { beginCancellation, finishCancellation },
       supervisor: { cancelAll },
@@ -1613,18 +1644,18 @@ describe("PiSessionFactory", () => {
 
     const first = adapter.abort();
     const concurrent = adapter.abort();
-    await vi.waitFor(() => expect(cancelAll).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(cancelAttempt).toBe(1));
     expect(session.abortCalls).toBe(1);
     releaseCancellation();
-    await expect(Promise.all([first, concurrent])).rejects.toBe(failure);
+    await expect(Promise.all([first, concurrent])).rejects.toThrow("Session stop could not abort active work");
     expect(finishCancellation).not.toHaveBeenCalled();
 
     await expect(adapter.abort()).resolves.toBeUndefined();
-    expect(beginCancellation).toHaveBeenCalledTimes(2);
-    expect(session.clearQueueCalls).toBe(2);
+    expect(beginCancellation).not.toHaveBeenCalled();
+    expect(session.clearQueueCalls).toBe(0);
     expect(session.abortCalls).toBe(2);
-    expect(cancelAll).toHaveBeenCalledTimes(2);
-    expect(finishCancellation).toHaveBeenCalledTimes(1);
+    expect(cancelAll).not.toHaveBeenCalled();
+    expect(finishCancellation).not.toHaveBeenCalled();
   });
 
   it("serializes terminal stop behind an active reusable cancellation", async () => {
@@ -1660,15 +1691,12 @@ describe("PiSessionFactory", () => {
     const stopping = adapter.stop();
     await Promise.resolve();
     expect(session.abortCalls).toBe(1);
-    expect(order).toEqual(["beginCancellation"]);
+    expect(order).toEqual([]);
 
     releaseSessionAbort();
     await Promise.all([cancelling, stopping]);
     expect(session.abortCalls).toBe(2);
     expect(order).toEqual([
-      "beginCancellation",
-      "cancelAll",
-      "finishCancellation",
       "beginClosing",
       "abortAll",
     ]);
@@ -2143,6 +2171,11 @@ function runtimeOwnerDeps() {
     recoverSubagentTree: async () => {},
     createDirectChildSupervisor: () => ({
       attach: () => {},
+      acquirePromptAdmission: async () => () => {},
+      hasPendingNotifications: () => false,
+      runtimeBecameCoherent: () => {},
+      recoverBackground: async () => {},
+      suspendAll: async () => {},
       cancelAll: async () => {},
       abortAll: async () => {},
       flushNotifications: async () => {},
@@ -2159,13 +2192,19 @@ function retryableStartHarness(
 ) {
   let runtimeAttempts = 0;
   const session = bindableSession([]);
+  const journal: CoordinatorSessionManager = {
+    getSessionId: () => session.sessionId,
+    getSessionFile: () => session.sessionFile,
+    getEntries: () => [],
+    appendCustomEntry: () => "entry",
+  };
   const creator = createPiAgentSessionCreator({
     agentDir: "/agent",
     liveConfiguration: liveConfiguration(),
     ...runtimeOwnerDeps(),
     createExtensionFactories: () => [],
-    createSessionManager: () => ({} as never),
-    openSessionManager: () => ({} as never),
+    createSessionManager: () => journal,
+    openSessionManager: () => journal,
     createSettingsManager: () => fakeSettingsManager({}),
     createModelRuntime: async () => {
       const attempt = ++runtimeAttempts;
@@ -2590,65 +2629,78 @@ describe("createPiAgentSessionCreator", () => {
   });
 
   it("lets the real root wake guard recover a transient triggered batch on its bounded retry", async () => {
-    const harness = creatorHarness();
-    const managedRoot = await createPiAgentSessionCreator(harness.deps as never)({ cwd: "/project" });
-    const guard = harness.supervisors[0]?.turnGuards[0];
-    expect(guard).toBeTypeOf("function");
-    const session = managedRoot.session as FakeAgentSession;
-    let guardAttempts = 0;
-    session.isIdle = false;
-    session.waitForIdle = async () => {
-      guardAttempts += 1;
-      if (guardAttempts === 1) throw new Error("transient root readiness failure");
-      session.isIdle = true;
-    };
-    const entries: unknown[] = [];
-    const manager: CoordinatorSessionManager = {
-      getSessionId: () => session.sessionId,
-      getSessionFile: () => session.sessionFile,
-      getEntries: () => entries,
-      appendCustomEntry(customType, data) {
-        const id = `entry-${entries.length}`;
-        entries.push({ type: "custom", id, customType, data });
-        return id;
-      },
-    };
-    const coordinator = new SubagentCoordinator(manager);
-    coordinator.recordNotificationBatch({
-      batchId: "root-triggered-batch",
-      ownerSessionId: session.sessionId,
-      launchIds: [],
-      content: "root hidden handoff",
-      triggerTurn: true,
-    });
-    const scheduled: Array<() => void> = [];
-    const supervisor = new SubagentSupervisor({
-      coordinator,
-      launchStage: async () => {
-        throw new Error("not used");
-      },
-      schedule: (run) => scheduled.push(run),
-    });
-    const sent: string[] = [];
-    session.sendCustomMessage = async (message) => {
-      sent.push(message.content);
-      const persisted = { role: "custom", ...message };
-      session.entries.push(persisted);
-      for (const listener of session.listeners) listener({ type: "message_end", message: persisted });
-    };
-    supervisor.attach(session as unknown as SupervisableAgentSession, guard);
+    const directory = mkdtempSync(join(tmpdir(), "easyresearch-owned-wake-"));
+    const cwd = join(directory, "project");
+    mkdirSync(cwd);
+    vi.stubEnv("EASYRESEARCH_CODING_AGENT_DIR", join(directory, "agent"));
+    let supervisor: SubagentSupervisor | undefined;
+    try {
+      const harness = creatorHarness();
+      const managedRoot = await createPiAgentSessionCreator(harness.deps as never)({ cwd });
+      const guard = harness.supervisors[0]?.turnGuards[0];
+      expect(guard).toBeTypeOf("function");
+      const session = managedRoot.session as FakeAgentSession;
+      let guardAttempts = 0;
+      session.isIdle = false;
+      session.waitForIdle = async () => {
+        guardAttempts += 1;
+        if (guardAttempts === 1) throw new Error("transient root readiness failure");
+        session.isIdle = true;
+      };
+      const pi = await importPi();
+      const manager = pi.SessionManager.create(cwd, join(directory, "sessions"));
+      session.sessionId = manager.getSessionId();
+      session.sessionFile = manager.getSessionFile()!;
+      const coordinator = new SubagentCoordinator(manager);
+      const child = pi.SessionManager.create(cwd, join(directory, "sessions"));
+      child.appendMessage({ role: "user", content: "Owned notification fixture", timestamp: Date.now() });
+      const { fauxAssistantMessage } = await import("@earendil-works/pi-ai");
+      child.appendMessage(fauxAssistantMessage("Fixture child finished"));
+      const agent = researchAssistant({ name: "fixture-child", subagents: [] });
+      const reservation = coordinator.reserveDispatch({ ownerSessionId: session.sessionId,
+        toolCallId: "fixture-child-call", requested: agent.name, catalog: { all: [agent], available: [agent] } });
+      coordinator.recordMaterialized(reservation, { childSessionId: child.getSessionId(), sessionPath: child.getSessionFile()! });
+      coordinator.recordLaunchAcknowledged(reservation.launchId);
+      coordinator.recordTerminal({ launchId: reservation.launchId, status: "complete" });
+      coordinator.recordNotificationBatch({
+        batchId: "root-triggered-batch",
+        ownerSessionId: session.sessionId,
+        launchIds: [reservation.launchId],
+        content: "root hidden handoff",
+        triggerTurn: true,
+      });
+      const scheduled: Array<() => void> = [];
+      supervisor = new SubagentSupervisor({
+        coordinator,
+        launchStage: async () => {
+          throw new Error("not used");
+        },
+        schedule: (run) => scheduled.push(run),
+      });
+      const sent: string[] = [];
+      session.sendCustomMessage = async (message) => {
+        sent.push(message.content);
+        const persisted = { role: "custom", ...message };
+        session.entries.push(persisted);
+        for (const listener of session.listeners) listener({ type: "message_end", message: persisted });
+      };
+      supervisor.attach(session as unknown as SupervisableAgentSession, guard);
 
-    scheduled.shift()?.();
-    await vi.waitFor(() => {
-      expect(guardAttempts).toBe(1);
-      expect(scheduled).toHaveLength(1);
-    });
+      scheduled.shift()?.();
+      await vi.waitFor(() => {
+        expect(guardAttempts).toBe(1);
+        expect(scheduled).toHaveLength(1);
+      });
 
-    scheduled.shift()?.();
-    await vi.waitFor(() => expect(sent).toEqual(["root hidden handoff"]));
-    expect(guardAttempts).toBe(2);
-    await supervisor.waitForQuiescence();
-    await supervisor.dispose();
+      scheduled.shift()?.();
+      await vi.waitFor(() => expect(sent).toEqual(["root hidden handoff"]));
+      expect(guardAttempts).toBe(2);
+      await supervisor.waitForQuiescence();
+    } finally {
+      await supervisor?.dispose();
+      vi.unstubAllEnvs();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("reloads an idle root from accepted Skill paths instead of raw home-policy settings", async () => {
@@ -3186,7 +3238,7 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
     expect(session.promptCalls).toEqual([]);
   });
 
-  it("cancels undelivered steers when the run is aborted (ADR-083)", async () => {
+  it("preserves admitted steers when only the current run is interrupted", async () => {
     const session = new FakeAgentSession();
     session.steeringMessages = ["queued note"];
     const factory = new PiSessionFactory(async () => created(session));
@@ -3195,9 +3247,9 @@ describe("DirectSessionAdapter steer lifecycle (ADR-083)", () => {
 
     await adapter.abort();
 
-    expect(session.clearQueueCalls).toBe(1);
+    expect(session.clearQueueCalls).toBe(0);
     expect(session.abortCalls).toBe(1);
-    expect(adapter.getSteeringMessages()).toEqual([]);
+    expect(adapter.getSteeringMessages()).toEqual(["queued note"]);
   });
 
 });

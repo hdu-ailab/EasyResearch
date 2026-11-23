@@ -21,7 +21,7 @@ unbounded cost, unsafe mutation, metric hacking, or bypassing formal evidence
 requirements.
 
 Follow the session's selected execution mode. In subagent-driven mode, Research
-Assistant defines and monitors the campaign and one Experiment specialist owns
+Assistant defines and acceptance-reviews the campaign and one Experiment specialist owns
 the trials. In single-Agent mode, Research Assistant applies the `experiment`
 Skill and executes the same bounded loop directly, without child dispatch or a
 specialist handoff. The campaign contract and evidence requirements apply in both.
@@ -86,9 +86,22 @@ blocked trial. Also add a concise human-readable entry to
 ## Dispatch One Campaign Owner
 
 Dispatch one fresh `experiment` child for the whole campaign, not one child per
-trial. State the complete contract and exact artifact paths in its task. Require
-the child to load its `experiment` Skill, preserve the existing experiment
-layout, and return only after a stop condition is reached.
+trial. Call `subagent` with `agent: "experiment"`, a short `description`, and a
+`prompt` containing the complete contract and exact artifact paths. Omit
+`sessionID` for the initial dispatch; retain the returned native `sessionID` for
+running or idle direct-child follow-ups. Set `model` only for an explicit user
+model/variant request after discovery through `models`; the override belongs only
+to this child session. Require the child to load its `experiment` Skill and
+preserve the existing experiment layout.
+
+The call returns after durable admission, without waiting for inference. Each
+busy period reports through a harness `<background-result>` notice, including
+outstanding work. Such notices are not human speech; never reproduce or fabricate
+their XML. The child may end an intermediate response while a managed command or
+Search child runs, then resume automatically. It publishes its final campaign
+handoff only at an actual stop condition, not every idle boundary. Do independent
+useful work or end the response while waiting; never sleep, poll, proactively
+check progress, or launch a duplicate campaign or trial.
 
 The task must require this autonomous loop:
 
@@ -100,7 +113,11 @@ The task must require this autonomous loop:
 4. Snapshot only the mutable scope. Never use repository-wide destructive reset
    when unrelated user changes may exist.
 5. Apply the candidate, run the exact bounded command with output redirected to
-   its trial log, and parse the declared metric.
+   its trial log, and parse the declared metric after confirmed completion.
+   For local trials use `shell`; for remote trials use `ssh-bash` with `action: "run"`.
+   Both use `background: true` and a positive `timeout` in milliseconds matching
+   the accepted per-trial runtime budget. Resume from
+   its automatic completion report; do not start the next trial while it runs.
 6. Treat missing/non-finite metrics, timeout, crash, evaluator mutation, or
    leakage as invalid. Record the outcome and restore the incumbent.
 7. Accept only a candidate satisfying the declared metric threshold and
@@ -134,21 +151,33 @@ Stop the loop only when:
 
 - the agreed trial, wall-clock, or compute budget is exhausted;
 - the objective or target threshold is reached;
-- the user presses Stop or explicitly redirects the campaign;
+- the user cancels the campaign task tree, exits the application, or explicitly
+  redirects or ends the campaign;
 - no safe valid candidate remains;
 - infrastructure, evidence, or compute creates a genuine blocker.
 
-A local foreground command must honor the tool timeout and abort signal. Do not
-claim that EasyResearch Stop controls a detached remote process. For remote
-work, use an owned foreground launch or persist an exact remote job identifier
-and cancellation command in `campaign.json`; otherwise return blocked before
-starting unattended work.
+Composer Stop interrupts only the selected session's current run; stopping the
+Research Assistant does not cancel its Experiment campaign. Task-specific
+cancellation stops the selected campaign's owned subtree; terminal Exit cancels
+all owned work. A foreground `shell` or `ssh-bash` run timeout is only a wait budget: omitted/zero
+waits two minutes and then backgrounds the original process without killing or
+restarting it. Use explicit background execution with a positive millisecond
+timeout for the trial runtime limit; omitted/zero background timeout is unlimited,
+not a bounded trial. Remote trials remain owned through their SSH channel; do not
+manually detach them or poll their completion. Cancellation requests TERM and
+closes the connection, but escaped remote descendants may survive. Remote SSH
+connections do not survive daemon shutdown/restart: inspect recorded ownership
+and artifacts after a lost connection rather than assuming process handover or
+launching a duplicate trial.
 
-After every trial, persisted state must be sufficient for a completed child-id
-continuation to resume without guessing. If the campaign child terminates
-unexpectedly and the contract remains valid, the Research Assistant may make
-one targeted continuation of that completed child using its agent id. Repeated
-infrastructure failure is blocked, not an excuse to fabricate progress.
+After every trial, persisted state must be sufficient for a `sessionID`
+continuation to resume without guessing. A running direct-child follow-up steers
+that campaign; it does not launch another owner or promise to interrupt its
+current tool. After restart, use confirmed records and reported process outcomes
+without repeating completed work or duplicating surviving trials. If the campaign
+reports a terminal recoverable failure and the contract remains valid, the
+Research Assistant may make one targeted follow-up using that child's `sessionID`.
+Repeated infrastructure failure is blocked, not an excuse to fabricate progress.
 
 ## Campaign Handoff
 

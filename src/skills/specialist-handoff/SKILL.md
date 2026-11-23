@@ -1,6 +1,6 @@
 ---
 name: specialist-handoff
-description: Use before a bundled specialist writes a long report or manuscript, recovers an interrupted write, or finishes a normal run or continuation with a durable handoff for its immediate caller.
+description: Use before a bundled specialist writes a long report or manuscript, recovers an interrupted write, or reaches an actual task outcome requiring a durable handoff for its immediate caller.
 license: MIT
 metadata:
   hermes:
@@ -12,14 +12,19 @@ metadata:
 
 ## Purpose
 
-Before every normal terminal response, write one immutable project-local record
+At an actual normal task outcome, write one immutable project-local record
 of what this specialist inspected, did, produced, could not resolve, and
-recommends next. The chat response wakes the caller; the Markdown file lets the
-caller verify the work without reconstructing it from transcript prose.
+recommends next before the terminal response. The Markdown file lets the caller
+verify the work without reconstructing it from transcript prose.
 
-This is an artifact contract, not runtime state. Pi session JSONL and the hidden
-`<agent_status>` plus `<agent_handoff>` notification remain authoritative for
-runtime completion, Error, Stop, and continuation.
+This is an artifact contract, not runtime state. Pi session JSONL and durable
+`<background-result>` notifications carry runtime outcomes and outstanding work.
+These user-role notices are harness input, not human user speech; never fabricate
+or reproduce their XML. Reports occur after each busy period, not just at task
+completion. An idle specialist with required background work remaining gives a
+brief pending-work summary and ends its response for automatic wakeup, without
+publishing a final handoff or claiming `complete`. Do not sleep, poll, proactively
+check progress, or duplicate pending work.
 
 ## When To Apply
 
@@ -28,12 +33,17 @@ not the user-facing Research Assistant. In single-Agent mode the Research
 Assistant may use the long-document recovery recipe below, but gives a natural
 user-facing result without creating a specialist handoff for itself.
 
-Apply this Skill to every normally terminating Search, Experiment, Writing,
-Figures, or Review run, including:
+Apply this Skill to every actual normal task outcome from Search, Experiment,
+Writing, Figures, or Review, including:
 
 - `complete`, `partial`, and `blocked` outcomes;
-- a fresh child run;
-- every turn that continues a completed agent id.
+- the outcome of a fresh child task;
+- the outcome of later work continued through that child's native `sessionID`.
+
+Running direct-child follow-ups join the current busy period. They do not require
+one handoff per tool call or intermediate idle reply. Publish when the assigned
+work actually concludes as complete, partial, or blocked, and reference the
+previous published handoff only when one exists.
 
 A hard runtime Error or external interruption may prevent file creation. Never
 invent a handoff for work the specialist did not complete or observe.
@@ -94,8 +104,11 @@ tool call. Context-window capacity is not an output-token or time budget.
    role does not authorize arbitrary deletion; the publisher owns draft cleanup.
 
 For permission, disk-space/quota, or path errors, correct the specific blocker;
-smaller writes cannot fix these. A user Stop is not permission to restart work.
-Runtime Error may still prevent a final handoff; never fabricate success.
+smaller writes cannot fix these. Explicit task-tree cancellation is not permission
+to restart that work. Composer Stop interrupts only the current run; it does not
+cancel every background child. Terminal Exit cancels all owned work. After a
+runtime restart, resume from confirmed artifacts without repeating completed
+work. Runtime Error may still prevent a final handoff; never fabricate success.
 
 ## Immutable Path
 
@@ -119,7 +132,7 @@ Write the complete content first to a unique
 with Python `uuid.uuid4()` or PowerShell `[guid]::NewGuid()`; the draft is not a
 handoff and is removed only after successful publication.
 
-Run the shell with the exact session cwd as its working directory and use the
+Use `shell` with the exact session cwd as `workdir` and use the
 absolute path of this loaded Skill's publisher. Linux/macOS:
 
 ```bash
@@ -174,9 +187,10 @@ report, figure, and manifest files actually used to reach the outcome.
   dependency or decision.
 
 These are semantic task outcomes. Do not write `Error`, `interrupted`, or
-`aborted` as a substitute. Runtime Error/Stop belongs to the supervisor. After a
-caller resolves a `blocked` dependency, it may continue the same completed agent
-id; that continuation writes a new handoff and names this one as previous.
+`aborted` as a substitute. Runtime failure/cancellation belongs to the harness.
+After a caller resolves a `blocked` dependency, it may continue its direct child
+with the returned `sessionID`; the actual outcome of that continuation writes a
+new handoff and names this one as previous.
 
 ## Final Response
 

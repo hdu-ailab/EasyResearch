@@ -31,6 +31,9 @@ export interface SubagentSupervisorEvent extends SubagentJobSummary {
 }
 
 export interface SubagentLaunchDetails {
+  sessionID?: string;
+  status?: "running";
+  output?: string;
   mode: "single";
   background: true;
   job: SubagentJobIdentity & { status: "working" };

@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownBlock } from "./MarkdownBlock";
 import {
@@ -7,10 +8,25 @@ import {
   type MarkdownWorkerLike,
   resetMarkdownRuntimeForTests,
 } from "./markdown/client";
+import { FileReferenceBatch } from "./markdown/file-reference-batch";
 import { parseMarkdownBlocks } from "./markdown/parse";
 import type { MarkdownParseRequest, MarkdownWorkerResponse } from "./markdown/protocol";
 import { clearCompletedMarkdownCacheForTests } from "./markdown/render";
-import { TranscriptFileContext } from "./markdown/TranscriptFileLink";
+import { FileReferenceResolutionContext, TranscriptFileContext } from "./markdown/TranscriptFileLink";
+
+function VerifiedFiles({ children }: { children: ReactNode }) {
+  return (
+    <FileReferenceResolutionContext
+      value={
+        new FileReferenceBatch(async (paths) => ({
+          references: paths.map((reference) => ({ reference, paths: [`/p/${reference}`], truncated: false })),
+        }))
+      }
+    >
+      {children}
+    </FileReferenceResolutionContext>
+  );
+}
 
 vi.mock("mermaid", () => ({
   default: {
@@ -90,15 +106,17 @@ describe("MarkdownBlock", () => {
     const user = userEvent.setup();
     const before = window.location.hash;
     const { container } = render(
-      <TranscriptFileContext value={open}>
-        <MarkdownBlock
-          scope="paths"
-          cacheKey="body"
-          text={
-            "Read results/table.csv and `C:\\My Papers\\draft.md`. [Open](notes/report%20final.md) [web](https://example.com/a.md)\n\n```text\nresults/code.csv\n```"
-          }
-        />
-      </TranscriptFileContext>,
+      <VerifiedFiles>
+        <TranscriptFileContext value={open}>
+          <MarkdownBlock
+            scope="paths"
+            cacheKey="body"
+            text={
+              "Read results/table.csv and `C:\\My Papers\\draft.md`. [Open](notes/report%20final.md) [web](https://example.com/a.md)\n\n```text\nresults/code.csv\n```"
+            }
+          />
+        </TranscriptFileContext>
+      </VerifiedFiles>,
     );
     const path = await screen.findByRole("button", { name: "results/table.csv" });
     path.focus();
@@ -139,18 +157,22 @@ describe("MarkdownBlock", () => {
     const oldOpen = vi.fn();
     const newOpen = vi.fn();
     const first = render(
-      <TranscriptFileContext value={oldOpen}>
-        <MarkdownBlock scope="same" cacheKey="same" text="results/table.csv" />
-      </TranscriptFileContext>,
+      <VerifiedFiles>
+        <TranscriptFileContext value={oldOpen}>
+          <MarkdownBlock scope="same" cacheKey="same" text="results/table.csv" />
+        </TranscriptFileContext>
+      </VerifiedFiles>,
     );
     await screen.findByRole("button", { name: "results/table.csv" });
     first.unmount();
     render(
-      <TranscriptFileContext value={newOpen}>
-        <MarkdownBlock scope="same" cacheKey="same" text="results/table.csv" />
-      </TranscriptFileContext>,
+      <VerifiedFiles>
+        <TranscriptFileContext value={newOpen}>
+          <MarkdownBlock scope="same" cacheKey="same" text="results/table.csv" />
+        </TranscriptFileContext>
+      </VerifiedFiles>,
     );
-    await userEvent.click(screen.getByRole("button", { name: "results/table.csv" }));
+    await userEvent.click(await screen.findByRole("button", { name: "results/table.csv" }));
     expect(newOpen).toHaveBeenCalledWith("results/table.csv");
     expect(oldOpen).not.toHaveBeenCalled();
     expect(worker.requests).toBe(1);

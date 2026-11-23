@@ -39,16 +39,20 @@ import type { NetworkPolicy } from "../runtime/network-policy";
 import type { InstalledNetworkRouter } from "../runtime/network-routing";
 import { NetworkProxySettingsService } from "./network-proxy-settings";
 import { SkillMarketplace } from "./skill-marketplace";
+import { BackgroundOutputService } from "./background-output";
 import { createNetworkProxyProbe, type NetworkProxyProbe } from "./network-proxy-probe";
 import { RuntimeRestartCoordinator } from "./runtime-restart";
 import { localInterfaceIpAddresses, rejectDisallowedWebRequest } from "./request-admission";
+import { recoverBackgroundRoots } from "../background/root-recovery";
 
 export interface Server {
   port: number;
-  stop: () => Promise<void>;
+  stop: (options?: { restart?: boolean }) => Promise<void>;
 }
 
 export interface StartServerOptions {
+  /** Supplied only by the CLI/Desktop entry after acquiring the exclusive server lease. */
+  ownsExclusiveServerLease?: boolean;
   host?: string;
   port?: number;
   bootId?: string;
@@ -274,14 +278,15 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
   let serverStopped = false;
   let closeRoutes: (() => Promise<void>) | undefined;
 
-  const cleanup = async (): Promise<void> => {
+  const cleanup = async (restart = false): Promise<void> => {
     // Close transfer admission/cancel readers immediately, even if Agent teardown is slow.
     const routesClosed = closeRoutes?.();
     void routesClosed?.catch(() => {});
     if (registry && !sessionsStopped) {
-      await registry.shutdown();
+      await registry.shutdown({ restart });
       sessionsStopped = true;
     }
+    if (registry && !restart) await registry.cancelSuspended();
     await routesClosed;
     if (configurationProjectWatches && !projectWatchesClosed) {
       await configurationProjectWatches.close();
@@ -331,7 +336,7 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
     const idleTimeoutMs = await readWebSessionIdleTimeout(config);
     const historyStore = createReadonlySubagentSessionStore(pi);
     registry = new ActiveSessionRegistry(
-      await PiSessionFactory.resolve(live, networkRouter),
+      await PiSessionFactory.resolve(live, networkRouter, options.ownsExclusiveServerLease === true),
       logger,
       {
         idleTimeoutMs,
@@ -414,6 +419,12 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       },
       listModels,
       checkForUpdate: () => checkNpmUpdate(packageVersion),
+      backgroundOutput: new BackgroundOutputService({
+        agentDir,
+        isKnownRoot: async (id) => activeRegistry.has(id)
+          || toUserSessionSummaries(await SessionManager.listAll(undefined)).some((session) => session.id === id),
+        publish: (id, event) => activeRegistry.publishSessionEvent(id, event),
+      }),
       skillMarketplace: new SkillMarketplace({
         config,
         skillOptions: () => ({ skillPolicy: live.skillPolicy }),
@@ -487,6 +498,16 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
       maxRequestBodySize: FILE_UPLOAD_LIMIT,
     });
     logger.info("web server started", { host, port: server.port ?? port });
+    // Managed CLI/Desktop entry owns the exclusive server lease before construction.
+    // Unregistered embeddings must not sweep another process's execution claims.
+    if (options.daemonControl && options.ownsExclusiveServerLease) {
+      const recovered = await recoverBackgroundRoots({
+        listAll: () => historyStore.listAll(),
+        inspect: (path) => historyStore.open(path),
+        open: (target) => activeRegistry.open(target),
+      });
+      if (recovered.failed.length) logger.warn("background session recovery incomplete", { sessions: recovered.failed });
+    }
   } catch (error) {
     return failStartupAfterCleanup(error);
   }
@@ -495,10 +516,10 @@ export async function startServer(options: StartServerOptions): Promise<Server> 
     port: server.port ?? port,
     stop: (() => {
       let attempt: Promise<void> | undefined;
-      return () => {
+      return (options?: { restart?: boolean }) => {
         if (attempt) return attempt;
         logger.info("web server stopping");
-        const current = cleanup().finally(() => {
+        const current = cleanup(options?.restart).finally(() => {
           if (attempt === current) attempt = undefined;
         });
         attempt = current;

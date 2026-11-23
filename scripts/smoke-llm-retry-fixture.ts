@@ -143,7 +143,15 @@ export function createLlmRetryFixture(options: { runId: string; directory: strin
       const leaf = new RetryFixtureLane(leafName, final(leafName), marker, { name: shell, command }, 5);
       lanes.set(leafName, leaf);
       const dispatch = (caller: string, agent: string, child: string) => new SmokeAgentLane(`retry_${caller}`, [{
-        name: "subagent", args: () => ({ agent, task: prompt(child) }), terminal: () => final(child),
+        name: "subagent", args: () => ({ agent, description: "Verify native retry recovery", prompt: prompt(child) }), terminal: () => final(child),
+        ...(child === leafName ? { acceptErrorPeriod: (report: { text: string }) => {
+          const issuedFailures = Array.from({ length: leaf.failures }, (_, index) =>
+            `503 service unavailable: controlled LLM retry ${leafName} failure ${index + 1}`);
+          assert(issuedFailures.some(message => {
+            const at = report.text.indexOf(message);
+            return at >= 0 && !/[A-Za-z0-9_-]/.test(report.text[at + message.length] ?? "");
+          }), "Unexpected Retry child error period");
+        } } : {}),
       }], () => final(caller));
       const owner = depth === 2 ? dispatch(`${name}_owner`, leafAgent, leafName) : undefined;
       if (owner) lanes.set(`${name}_owner`, owner);

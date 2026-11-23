@@ -48,7 +48,7 @@ async function responseDetails(response: Response): Promise<unknown> {
 }
 
 export async function requestJson<T>(path: string, decode: Decoder<T>, init?: RequestInit): Promise<T> {
-  return requestBudget.run(path, init?.signal, () => readJson(path, decode, init));
+  return requestBudget.run(path, init?.signal, () => readJson(path, decode, init), init?.method);
 }
 
 async function readJson<T>(path: string, decode: Decoder<T>, init?: RequestInit): Promise<T> {
@@ -71,11 +71,16 @@ async function readJson<T>(path: string, decode: Decoder<T>, init?: RequestInit)
 }
 
 export async function requestVoid(path: string, init: RequestInit): Promise<void> {
-  return requestBudget.run(path, init.signal, async () => {
-    const response = await fetch(path, init);
-    if (!response.ok) throw new ApiError(response.status, await responseDetails(response));
-    if (response.status !== 204) await response.text();
-  });
+  return requestBudget.run(
+    path,
+    init.signal,
+    async () => {
+      const response = await fetch(path, init);
+      if (!response.ok) throw new ApiError(response.status, await responseDetails(response));
+      if (response.status !== 204) await response.text();
+    },
+    init.method,
+  );
 }
 
 export interface UploadOptions {
@@ -151,6 +156,7 @@ export function requestUpload<T>(
           finish({ error });
         }
       }),
+    "PUT",
   );
 }
 
@@ -158,7 +164,7 @@ export async function requestBytes(
   path: string,
   options: { maxBytes: number; signal?: AbortSignal },
 ): Promise<ArrayBuffer> {
-  return requestBudget.run(path, options.signal, () => readBytes(path, options));
+  return requestBudget.run(path, options.signal, () => readBytes(path, options), "GET");
 }
 
 async function readBytes(path: string, options: { maxBytes: number; signal?: AbortSignal }): Promise<ArrayBuffer> {

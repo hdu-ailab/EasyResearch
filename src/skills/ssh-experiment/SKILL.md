@@ -60,10 +60,10 @@ an `experiments/` child inside the mount. Keep raw/failed artifacts in
 Use only the configured tool:
 
 ```text
-ssh-bash { action: "run", command: "<remote command>", timeout: <1-7200> }
+ssh-bash { action: "run", command: "<remote command>", background: true, timeout: <runtime-limit-in-milliseconds> }
 ```
 
-The tool is cross-platform and provides complete bounded remote Bash; do not
+The tool is cross-platform and provides managed remote Bash; do not
 invoke `ssh`, `sshpass`, a POSIX wrapper, PowerShell remoting, or a second
 executable. Commands execute on the configured server and are not confined by
 the tool to the project root, so every experiment command must explicitly enter
@@ -71,16 +71,20 @@ the configured remote project root first. Use conservative shell quoting and put
 free-form experiment values in reviewed config files on the mounted workspace
 rather than interpolating paper text or user-authored shell fragments.
 
-Long training commands must detach remotely and return a PID or scheduler job id
-within the tool deadline. Record the exact command before launch. A typical
-shape is:
+Record the exact command before launch. Long training commands use
+`background: true` and a positive millisecond timeout matching the approved
+runtime budget, for example `7200000` for an authorized two-hour run. Omitted or
+zero background timeout is unlimited, not additional compute authority.
+Foreground omitted/zero timeout waits two minutes, then backgrounds the same
+remote operation without restarting it; a foreground timeout is a wait limit,
+not a command runtime limit. Do not add `nohup`, `&`, or manual detachment.
+A command shape is:
 
 ```text
 remote_root='<configured-remote-experiment-root>' &&
 case "$remote_root" in /*) ;; *) remote_root="$HOME/$remote_root" ;; esac &&
 cd "$remote_root" && mkdir -p logs outputs &&
-nohup env CUDA_VISIBLE_DEVICES=<ids> uv run python src/train.py
-  <reviewed-arguments> > logs/<run-id>.log 2>&1 < /dev/null & echo $!
+env CUDA_VISIBLE_DEVICES=<ids> uv run python src/train.py <reviewed-arguments>
 ```
 
 Use the actual environment command when it differs from `uv` and record it.
@@ -97,7 +101,7 @@ Select only currently available GPUs compatible with the approved task. Set
 `CUDA_VISIBLE_DEVICES` explicitly. Never assume a GPU model, count, fixed index,
 CUDA version, or scheduler policy.
 
-## Launch And Monitor
+## Launch And Completion
 
 Before launch:
 
@@ -107,9 +111,19 @@ Before launch:
 - ensure raw output goes to `outputs/<run-id>/` and logs to `logs/`; and
 - run a short smoke trial when code or environment changed.
 
-Monitor logs and outputs through the local mount, with occasional bounded
-`ssh-bash` status calls. Do not keep an interactive connection open for hours.
-Update `experiment-record.md` after completion or failure before another run.
+The managed result returns a shell ID while work is running. Full combined
+output is captured to an owned file; completion is delivered automatically to
+the owning Agent with a bounded preview and the exit outcome. Do independent
+useful work or end the response for automatic wakeup. Do not sleep, poll logs or
+status, or start another copy while waiting. After the completion notice, inspect
+the selected-root artifacts and update `experiment-record.md` before another run.
+
+Task cancellation requests TERM on the SSH channel and closes the connection
+with bounded cleanup. Remote descendants that escape that channel may survive;
+do not claim whole-server process-tree termination. SSH connections do not survive
+daemon shutdown/restart. Treat a lost connection as interrupted work and inspect
+actual remote artifacts/ownership before deciding whether a new launch is needed;
+local process-worker handover does not apply to SSH.
 
 A PID or quiet log is not proof of success. Verify exit/status evidence and
 expected outputs, then promote only reproducible formal artifacts to `results/`.

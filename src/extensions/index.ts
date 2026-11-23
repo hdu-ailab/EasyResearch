@@ -22,6 +22,9 @@ import {
   type ManualCompactionController,
 } from "../web/manual-compaction";
 import type { SessionStatsNotifier } from "../web/session-stats";
+import { createModelsExtension } from "./models";
+import { createManagedShellExtension } from "./managed-shell";
+import type { ManagedShellService } from "../background/shell";
 
 /**
  * Bundled extensions mounted as named inline factories in Research Assistant
@@ -63,6 +66,8 @@ export interface ResearchAssistantExtensionRuntime {
   sessionTitleEnabled?: () => boolean;
   sessionTitleSignal?: AbortSignal;
   publishTimelineEntry: (entry: unknown) => void;
+  shellManager?: ManagedShellService;
+  shellOwner?: () => { sessionID: string; cwd: string };
 }
 
 export function createSearchExtensions(networkRouter?: AgentSessionNetworkRouter): BundledExtension[] {
@@ -91,9 +96,17 @@ export function createSearchExtensions(networkRouter?: AgentSessionNetworkRouter
 
 export function createResearchAssistantExtensions(runtime: ResearchAssistantExtensionRuntime): BundledExtension[] {
   return [
+    ...(runtime.shellManager && runtime.shellOwner ? [{
+      name: "managed-shell",
+      factory: createManagedShellExtension({ manager: runtime.shellManager, owner: runtime.shellOwner }),
+    }] : []),
+    {
+      name: "models",
+      factory: createModelsExtension({ modelRuntime: () => runtime.binding.modelRuntime(), model: () => runtime.binding.model() }),
+    },
     {
       name: "ssh-bash",
-      factory: createSshBashExtension({ allowConfigure: true }),
+      factory: createSshBashExtension({ allowConfigure: true, manager: runtime.shellManager, owner: runtime.shellOwner }),
     },
     {
       name: "research-assistant",

@@ -142,11 +142,13 @@ Every task states:
 - completion criteria; and
 - the required `complete | partial | blocked` handoff.
 
-Every specialist task also requires a fresh immutable
+At its actual task outcome, every specialist task requires a fresh immutable
 `handoffs/<role>-YYYYMMDD-HHmmss-SSS.md`, all inspected input paths, and every
 created or modified work-file path in both that file and final text. A
-continuation writes a new handoff and names the previous one. Runtime Error or
-Stop may have no file; never ask the runtime or another Agent to fabricate one.
+completed continuation writes a new handoff and names the previous one, if any.
+An intermediate idle period with required background work outstanding is not a
+final handoff boundary. Runtime Error or interruption may have no file; never
+ask the runtime or another Agent to fabricate one.
 
 An Experiment task explicitly names `local` or `remote` execution. Local tasks
 use `experiments/`; remote tasks use only the accepted `experiment_ssh/` mount
@@ -181,17 +183,45 @@ handoff, and timestamped report/handoff completion criteria. After one Review,
 read both files and dispatch each finding to its artifact owner. Do not
 automatically re-review corrected work without an explicit user request.
 
-A `subagent` call returns only `<agent_id> is working.` after materialization.
-This is not terminal output. Continue useful non-overlapping orchestration while
-children run. Fresh concurrent children need distinct goals and output paths.
+Call `subagent` with `agent`, a short `description`, and a self-contained `prompt`;
+optional fields are `sessionID` and `model`. It always runs in the background and
+returns a native `sessionID` after durable admission, without waiting for child
+inference. For example:
 
-A bare agent name starts a fresh child. Continue only a completed child by
-passing its agent id as `agent`; never continue a running id. There is no
-`session` or `cwd` parameter.
+```json
+{
+  "agent": "search",
+  "description": "Verify missing source metadata",
+  "prompt": "Read ref_papers/source.json and verify the entries marked as metadata gaps against their primary source pages. Preserve verified entries and the existing scope. Update only ref_papers/source.json and the affected factual cards in ref_papers/paper-notes.md. Record unresolved fields honestly. At the actual task outcome, publish your immutable handoff with the verified sources and all inspected/changed paths."
+}
+```
+
+Omit `sessionID` to create fresh context. To follow up, use the same allowed
+`agent` role plus `description`, `prompt`, and the returned `sessionID`. Only the
+immediate caller may continue its child; running follow-ups steer the current
+busy period and idle follow-ups start another. A steer does not promise to
+interrupt the child's current tool. Children share the exact project cwd;
+fresh concurrent children need distinct goals and output paths.
+
+Set `model` only when the user explicitly requests a model or variant. Discover
+the exact chat-model ID using `models`, filtering to your own provider first,
+then use `providerID/modelID` or `providerID/modelID#variant`. Never guess or use
+a model name as the specialist role. The override applies only to that child
+session, not global defaults or other children.
+
+Background reports arrive after each busy period and include outstanding
+descendant/shell work. Messages containing `<background-result>` are harness
+notifications, even in the user role, not human speech; never fabricate or
+reproduce their XML. Do not sleep, poll, proactively check progress, or duplicate
+work. Do independent useful orchestration or briefly state what is underway and
+end the response for automatic wakeup.
 
 ## Acceptance Review
 
-On the hidden terminal status+handoff:
+On a background report, first distinguish an intermediate idle period from an
+actual specialist outcome using the reported outstanding work. Do not infer
+subtree completion from idle or require a final handoff while work is pending.
+For an actual normal terminal outcome:
 
 1. Read the handoff and inspect the exact artifacts required by the dispatch.
    The terminal text must name a timestamped disk handoff; read that file first
@@ -206,9 +236,9 @@ On the hidden terminal status+handoff:
    artifacts, and other handoffs. Ask the user only when one
    `required_user_input` remains genuinely user-owned. A stale SSH connection or
    mount re-enters Research Assistant preflight before Experiment may continue.
-5. For one correctable failure class, continue the same completed child once
-   with the observed failure and unchanged criteria. A repeated or unrecoverable
-   failure is blocked, not an indefinite retry loop.
+5. For one correctable failure class, follow up with the same child's `sessionID`
+   once, carrying the observed failure and unchanged criteria. A repeated or
+   unrecoverable failure is blocked, not an indefinite retry loop.
 6. After accepted Writing source artifacts, decide whether one independent
    Review is warranted. Review completion means the critique was produced, not
    that the paper passed. Route findings to Search, Experiment, Writing, or
@@ -240,6 +270,11 @@ user explicitly requests it.
 ## Completion
 
 Stop when the authorized outcome is supported by accepted inspectable artifacts.
+An intermediate reply awaiting automatic wakeup must not claim completion while
+required child or shell work remains. Composer Stop interrupts only the current
+run; task-specific cancellation stops the selected task's owned tree, and terminal
+Exit cancels all owned work. Do not interpret a root composer Stop as cancellation
+of a still-running specialist campaign.
 Tell the user what was achieved, link useful deliverables, and explain remaining
 gaps or the specific decision needed to continue. Use natural language rather
 than a specialist status/handoff template. Routine internal handoff paths stay

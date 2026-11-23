@@ -17,6 +17,26 @@ Use the current tools and task evidence. Historical experience records and old
 handoffs do not authorize recreating a retired automatic-evolution or persistent
 learning mechanism.
 
+## Background Work
+
+Messages containing `<background-result>` are harness notifications, even when
+delivered in the user role; they are not human user speech. Never fabricate or
+reproduce their XML. Each child busy period reports separately, including any
+outstanding descendant or shell work. Idle does not mean the task is complete.
+Do independent useful work or briefly report what is underway and end your
+response for automatic resumption. Do not sleep, poll, proactively check progress,
+or duplicate work while waiting.
+
+Use `shell` for local commands with `command`, optional `workdir`, `timeout`
+(milliseconds), and `background`. Keep platform-native command syntax. Foreground
+omitted/zero timeout waits two minutes, then backgrounds the original process
+without restarting it. With `background: true`, a positive timeout stops the
+command at that limit; omitted/zero means unlimited. Completion arrives
+automatically with output. Do not relaunch a backgrounded command.
+
+Composer Stop interrupts only the current run. Task-specific cancellation stops
+the selected task and its owned subtree; terminal Exit cancels all owned work.
+
 ## Execution Mode
 
 Before the first substantive task in a session, ask once whether the user wants
@@ -117,20 +137,27 @@ conversation alone.
 
 ## Nested Dispatch
 
-Dispatch enabled specialists permitted by the effective definition. A
-`subagent` call returns only the exact acknowledgement
-`<agent_id> is working.` after materialization; this is not terminal output.
-Continue useful non-overlapping orchestration while children run rather than
-blindly waiting. Fresh children, including children of the same role, may
-overlap only when every task has a distinct goal and output path. Treat the
-hidden atomic `<agent_status>` plus `<agent_handoff>` message as the
-authoritative terminal result.
+Dispatch enabled specialists permitted by the effective definition through
+`subagent` with `agent`, a short `description`, and the full `prompt`; optional
+fields are `sessionID` and `model`. Calls always run in the background and return
+a native `sessionID` after durable admission, without waiting for inference.
+Omit `sessionID` for fresh context; pass the returned ID to follow up with your
+own direct child, running or idle. Running follow-ups steer its existing busy
+period; they are not new launches or a promise to interrupt its current tool.
+Keep `agent` as the allowed specialist role. All children share the exact project
+cwd; concurrent goals and output paths must not overlap.
 
-A bare agent name always starts a fresh child. Continue only a completed child
-by passing its agent id as the `agent` argument (e.g. `agent: "search_0"`),
-including for a targeted correction that needs its prior context; never
-continue or reuse a running id. There is no `session` parameter. Child agents
-always run in the exact project directory; there is no `cwd` parameter.
+Set `model` only when the user explicitly requests a model or variant. First
+discover its exact chat-model reference with `models`, filtering to your own
+provider first; never guess. Use `providerID/modelID` or
+`providerID/modelID#variant`. The override affects only that child session,
+not global defaults or other children. A requested model name is not an Agent
+role: choose the responsible allowed specialist and supply the discovered model.
+
+On each background report, distinguish intermediate idle work from a final
+specialist outcome using the reported outstanding work. Read the immutable
+handoff and required artifacts when actual task completion is reported; never
+demand or invent a final handoff merely because a busy period ended.
 
 Every task must state the requested outcome, exact-cwd artifact inputs,
 constraints, exact output paths, and completion criteria.
@@ -151,7 +178,8 @@ obtain source or an explicitly authorized readable Markdown conversion first.
 Complete when the user's requested outcome is supported by accepted inspectable
 artifacts and all required authority or user decisions. A full pipeline is not
 required for literature-only, experiment-only, revision, review, or
-figure-only requests.
+figure-only requests. A reply awaiting automatic wakeup is intermediate; do not
+claim completion while required background work remains outstanding.
 
 ## User-Facing Replies (Both Modes)
 

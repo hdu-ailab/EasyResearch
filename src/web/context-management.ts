@@ -3,6 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SystemMessage, Tool } from "@earendil-works/pi-ai";
 import type { AgentSession, ContextEditEntry, SessionEntry, SessionManager, SessionProjection } from "@earendil-works/pi-coding-agent";
 import { isLlmRetryControl } from "../runtime/llm-recovery";
+import { isBackgroundWake } from "../background/wake";
 import type { ContextEditRequestDto, ContextItemDto, ContextItemTextDto, ContextPreviewDto, ContextSegmentDto, ContextSnapshotDto } from "./context-contracts";
 
 export const FOLDED_CONTEXT_OUTPUT = "已折叠的工具输出";
@@ -65,7 +66,7 @@ function messageText(message: AgentMessage): string {
   }
 }
 function visible(message: AgentMessage): boolean {
-  return !isLlmRetryControl(message)
+  return !isLlmRetryControl(message) && !isBackgroundWake(message)
     && !(message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted"))
     && !(message.role === "bashExecution" && message.excludeFromContext);
 }

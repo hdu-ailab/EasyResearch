@@ -156,6 +156,7 @@ beforeEach(() => {
   acquireServerLeaseMock.mockReset().mockImplementation(async (_root, _owner, token) => {
     serverLeaseState.path = join(_root, "server.lease");
     serverLeaseState.token = token;
+    serverLeaseState.held = true;
     return serverLeaseMock;
   });
   transitionLeaseState.held = true;
@@ -242,6 +243,7 @@ describe("runServe startup failure", () => {
       token: privateToken,
       runtimeId: "sandbox-runtime",
     });
+    expect(startServerMock.mock.calls[0]?.[0]?.ownsExclusiveServerLease).toBe(true);
     expect(environment).not.toHaveProperty(DAEMON_TOKEN_ENV);
     expect(environment).not.toHaveProperty(DAEMON_RUNTIME_ID_ENV);
     expect(environment).not.toHaveProperty(DAEMON_OWNER_ENV);
@@ -368,6 +370,7 @@ describe("runServe startup failure", () => {
     expect(startServerMock).toHaveBeenCalledWith({
       host: "127.0.0.1",
       port: 3000,
+      ownsExclusiveServerLease: true,
       bootId: expect.any(String),
       networkPolicy: expect.any(Object),
       daemonControl: expect.objectContaining({
@@ -407,6 +410,7 @@ describe("runServe startup failure", () => {
     expect(startServerMock).toHaveBeenCalledWith({
       host: "127.0.0.1",
       port: 0,
+      ownsExclusiveServerLease: true,
       bootId: expect.any(String),
       networkPolicy: expect.any(Object),
       daemonControl: expect.objectContaining({ token: "desktop-control" }),
@@ -813,13 +817,21 @@ describe("runServe startup failure", () => {
 
   it("aborts successor readiness on terminal shutdown and holds transition ownership through cleanup", async () => {
     bootstrapMock.mockResolvedValue(undefined);
-    startServerMock.mockResolvedValue({ port: 3456, stop: vi.fn(async () => {}) });
+    let successorOwnsJournals = false;
+    let journalRevocations = 0;
+    startServerMock.mockResolvedValue({ port: 3456, stop: vi.fn(async (options?: { restart?: boolean }) => {
+      if (options?.restart) return;
+      expect(successorOwnsJournals).toBe(false);
+      expect(serverLeaseState.held).toBe(true);
+      journalRevocations++;
+    }) });
     const readinessStarted = deferred<AbortSignal | undefined>();
     const terminalRequested = deferred<void>();
     const cleanupStarted = deferred<void>();
     const cleanup = deferred<void>();
     let requestTerminalShutdown: (() => void) | undefined;
     startCliDaemonSuccessorMock.mockImplementation(async (options) => {
+      successorOwnsJournals = true;
       const signal = (options as { signal?: AbortSignal }).signal;
       readinessStarted.resolve(signal);
       if (signal) {
@@ -833,6 +845,7 @@ describe("runServe startup failure", () => {
       }
       cleanupStarted.resolve();
       await cleanup.promise;
+      successorOwnsJournals = false;
     });
 
     const { runServe } = await import("./serve");
@@ -869,11 +882,15 @@ describe("runServe startup failure", () => {
     expect(startCliDaemonSuccessorMock).toHaveBeenCalledOnce();
     expect(transitionLeaseMock.release).toHaveBeenCalledOnce();
     expect(readServerProcess(root)).toEqual({ kind: "missing" });
+    expect(journalRevocations).toBe(1);
   });
 
   it("transfers restart ownership when terminal cancellation cannot settle the successor", async () => {
     bootstrapMock.mockResolvedValue(undefined);
-    startServerMock.mockResolvedValue({ port: 3456, stop: vi.fn(async () => {}) });
+    let journalRevocations = 0;
+    startServerMock.mockResolvedValue({ port: 3456, stop: vi.fn(async (options?: { restart?: boolean }) => {
+      if (!options?.restart) journalRevocations++;
+    }) });
     const readinessStarted = deferred<void>();
     let requestTerminalShutdown: (() => void) | undefined;
     startCliDaemonSuccessorMock.mockImplementation(async (options) => {
@@ -896,6 +913,7 @@ describe("runServe startup failure", () => {
       const handoff = transition.reserveHandoff("surviving-child-token");
       handoff.commit(222);
       handoff.relinquish();
+      acquireServerLeaseMock.mockRejectedValue(new Error("Successor still owns the server lease"));
       throw new Error("EasyResearch daemon successor did not exit after forced termination.");
     });
 
@@ -921,6 +939,7 @@ describe("runServe startup failure", () => {
     expect(transitionHandoffMock.commit).toHaveBeenCalledWith(222);
     expect(transitionHandoffMock.relinquish).toHaveBeenCalledOnce();
     expect(transitionLeaseMock.release).not.toHaveBeenCalled();
+    expect(journalRevocations).toBe(0);
     expect(loggerMock.error).toHaveBeenCalledWith(
       expect.stringContaining("did not exit after forced termination"),
     );

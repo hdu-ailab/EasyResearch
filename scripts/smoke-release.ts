@@ -76,6 +76,8 @@ import { smokeImmutablePublisher } from "./smoke-immutable-publisher";
 import { createKeylessSearchSmoke, KEYLESS_HOSTS, runInvalidKeylessSearchSmoke, runKeylessSearchSmoke, startKeylessSmokeOrigin } from "./smoke-keyless-search";
 import { SMOKE_KEYLESS_CA } from "./smoke-keyless-tls";
 import { createContextManagementSmoke, runContextManagementSmoke } from "./smoke-context-management";
+import { backgroundSmokeCommand, createBackgroundExecutionSmoke, runBackgroundExecutionSmoke, writeBackgroundExecutionScripts } from "./smoke-background-execution";
+import { createRemoteSshBackgroundSmoke } from "./smoke-ssh-background";
 
 const targetName = process.argv[2];
 const target = TARGETS.find((candidate) => candidate.name === targetName);
@@ -120,6 +122,14 @@ const shutdownStatusPath = join(root, "shutdown-status.txt");
 const daemonPidPath = join(agentDir, "server.pid");
 writeVenvValidationScript(validationScript);
 const smokeAgentName = "smoke-reviewer";
+const backgroundDirectory = join(root, "background-fixture");
+const backgroundSmoke = createBackgroundExecutionSmoke({
+  runId: setupRunId, agentName: smokeAgentName,
+  command: mode => backgroundSmokeCommand(process.platform, backgroundDirectory, mode),
+});
+const remoteBackgroundSmoke = await createRemoteSshBackgroundSmoke({
+  runId: setupRunId, project, agentDir, fixtureDirectory: join(root, "remote-ssh-fixture"),
+});
 const keylessAgentName = "smoke-keyless-reviewer";
 const keylessSmoke = createKeylessSearchSmoke(setupRunId, keylessAgentName);
 const keylessOrigin = await startKeylessSmokeOrigin(setupRunId);
@@ -346,6 +356,8 @@ const modelServer = Bun.serve({
   port: 0,
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    const backgroundGate = remoteBackgroundSmoke.scenario.gate(path) ?? backgroundSmoke.gate(path);
+    if (backgroundGate) return backgroundGate;
     if (path === "/gaxios-token") {
       const body = await request.text();
       if (
@@ -389,6 +401,17 @@ const modelServer = Bun.serve({
       return openAiStream({ text: "Native smoke research" });
     }
     modelRequests += 1;
+    const backgroundScenario = [remoteBackgroundSmoke.scenario, backgroundSmoke].find(scenario => scenario.matches(body));
+    if (backgroundScenario) {
+      try {
+        const action = await backgroundScenario.select(body);
+        return action.kind === "tool"
+          ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
+          : openAiStream({ text: action.text });
+      } catch (error) {
+        return Response.json({ error: { message: safeSmokeDiagnostic(error) } }, { status: 400 });
+      }
+    }
     if (llmRetrySmoke.laneFor(body)) return llmRetrySmoke.respond(body);
     if (contextManagementSmoke.matches(body)) return contextManagementSmoke.respond(body);
     if (keylessSmoke.laneFor(body)) {
@@ -476,6 +499,7 @@ const modelServer = Bun.serve({
       : openAiStream({ text: action.text });
   },
 });
+writeBackgroundExecutionScripts({ directory: backgroundDirectory, origin: `http://127.0.0.1:${modelServer.port}`, scenario: backgroundSmoke });
 const fakeTargetServer = Bun.serve({
   port: 0,
   fetch(request) {
@@ -624,7 +648,7 @@ const smokeDiagnosticSecrets = [
 ];
 
 function safeSmokeDiagnostic(value: unknown): string {
-  return redactSmokeDiagnostic(value, smokeDiagnosticSecrets);
+  return remoteBackgroundSmoke.redact(redactSmokeDiagnostic(value, smokeDiagnosticSecrets));
 }
 
 writeFileSync(googleCredentialsPath, JSON.stringify({
@@ -1359,6 +1383,12 @@ function smokeProgressDiagnostics(): string {
     gaxiosRequests,
     vertexProviderRequests,
     smokeModelState,
+    backgroundEvidence: backgroundSmoke.evidence,
+    backgroundFailure: backgroundSmoke.failure ? safeSmokeDiagnostic(backgroundSmoke.failure) : undefined,
+    backgroundRequests: backgroundSmoke.requests,
+    remoteBackgroundEvidence: remoteBackgroundSmoke.scenario.evidence,
+    remoteBackgroundRequests: remoteBackgroundSmoke.scenario.requests,
+    remoteBackgroundFailure: remoteBackgroundSmoke.failure ? safeSmokeDiagnostic(remoteBackgroundSmoke.failure) : undefined,
     smokeNetworkState,
     loopbackEvidence: loopbackEvidence(),
     loopbackWebFetchState,
@@ -2449,6 +2479,10 @@ try {
 
   await runWriteRecoverySmoke({ base, project, deadline: firstRunDeadline, scenario: writeRecoverySmoke });
   console.log("[smoke] root and child failed-write guidance, section preservation, recovery and terminal handoff passed");
+  await runBackgroundExecutionSmoke({ base, project, directory: backgroundDirectory, deadline: firstRunDeadline, scenario: backgroundSmoke });
+  console.log("[smoke] early child admission, running follow-up, per-period outstanding work, shell background/promotion and owner completion passed");
+  await remoteBackgroundSmoke.run({ base, deadline: firstRunDeadline });
+  console.log("[smoke] compiled SSH configure/test, Experiment background/promotion, owner completion and credential isolation passed");
   await runLlmRetrySmoke({ base, root, agentDir, deadline: firstRunDeadline, fixture: llmRetrySmoke });
   await runContextManagementSmoke({ base, root, deadline: firstRunDeadline, fixture: contextManagementSmoke });
   console.log("[smoke] context fold/pair-delete, original history, stale/busy admission, next request and native compaction passed");
@@ -2881,6 +2915,8 @@ try {
   }
 
   const expectedModelRequests = smokeModelState.completedRequests
+    + backgroundSmoke.requests
+    + remoteBackgroundSmoke.scenario.requests
     + llmRetrySmoke.requests
     + contextManagementSmoke.requests.length
     + keylessSmoke.requests
@@ -2963,6 +2999,15 @@ try {
     await dumpServerLogs();
   } catch (dumpError) {
     console.log(`[smoke] failed to dump smoke diagnostics: ${safeSmokeDiagnostic(dumpError)}`);
+  }
+} finally {
+  backgroundSmoke.release();
+  try {
+    await remoteBackgroundSmoke.close();
+  } catch (error) {
+    const message = `Remote SSH fixture cleanup failed: ${safeSmokeDiagnostic(error)}`;
+    if (primaryError) primaryError.message += `\n${message}`;
+    else primaryError = new Error(message);
   }
 }
 

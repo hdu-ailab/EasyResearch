@@ -149,7 +149,7 @@ export function CompactionActivity({ state }: { state: Exclude<CompactionStateDt
 
 function toolIcon(tool: ToolView) {
   if (tool.skillName) return BookOpen;
-  if (["bash", "powershell", "ssh-bash"].includes(tool.name)) return Terminal;
+  if (["shell", "bash", "powershell", "ssh-bash"].includes(tool.name)) return Terminal;
   if (["edit", "write", "patch", "apply_patch"].includes(tool.name)) return FilePenLine;
   if (["read", "find", "ls"].includes(tool.name)) return FileText;
   if (["grep", "web-search", "websearch", "search"].includes(tool.name)) return Search;
@@ -172,7 +172,7 @@ function ToolRow({
   const Icon = toolIcon(tool);
   const inputKind = tool.skillName
     ? "skill"
-    : ["bash", "powershell", "ssh-bash"].includes(tool.name)
+    : ["shell", "bash", "powershell", "ssh-bash"].includes(tool.name)
       ? "command"
       : ["read", "write", "edit"].includes(tool.name)
         ? "file"

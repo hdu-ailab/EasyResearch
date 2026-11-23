@@ -18,7 +18,7 @@ export default defineConfig(({ command, mode }) => {
       outDir: "dist",
       emptyOutDir: true,
     },
-    worker: { plugins: workerPlugins },
+    worker: { format: "es", plugins: workerPlugins },
     optimizeDeps: { exclude: ["rehype-katex", "hast-util-from-html-isomorphic"] },
     server: {
       port: 5173,

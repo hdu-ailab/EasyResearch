@@ -29,6 +29,8 @@ import {
   type PiRuntimeDependencies,
 } from "./session-adapter";
 import { LLM_RETRY_CONTROL_TYPE } from "../runtime/llm-recovery";
+import { BACKGROUND_WAKE_TYPE } from "../background/wake";
+import { EXECUTION_CLAIM_TYPE } from "../background/execution-claims";
 
 vi.mock("../runtime/logger", () => ({ createLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }) }));
 
@@ -175,6 +177,34 @@ async function harness(options: {
     managed = await creator(...args);
     return managed;
   }, pi.estimateTokens);
+  const prepareNotificationBatch = (coordinator: SubagentCoordinator, input: Parameters<SubagentCoordinator["recordNotificationBatch"]>[0]) => {
+    const references = input.launchIds.length ? input.launchIds : [`fixture-${input.batchId}`];
+    const identities = new Map(references.map((reference) => {
+      const child = common.createSessionManager(join(root, "project"));
+      const outcome = input.outcomes?.find((candidate) => candidate.launchId === reference);
+      child.appendMessage({ role: "user", content: `Notification fixture ${input.batchId}`, timestamp: Date.now() });
+      child.appendMessage(ai.fauxAssistantMessage(outcome?.text ?? "Fixture work completed"));
+      const reservation = coordinator.reserveDispatch({
+        ownerSessionId: input.ownerSessionId, toolCallId: `fixture-${input.batchId}-${reference}`, requested: rows[1]!.name,
+        catalog: { all: rows, available: [rows[1]!] },
+      });
+      coordinator.recordMaterialized(reservation, { childSessionId: child.getSessionId(), sessionPath: child.getSessionFile()! });
+      coordinator.recordLaunchAcknowledged(reservation.launchId);
+      coordinator.recordTerminal({ launchId: reservation.launchId, status: outcome?.status ?? "complete", latestAssistantText: outcome?.text });
+      expect(coordinator.ownedJournal().jobs.get(reservation.launchId)?.ownerSessionId).toBe(input.ownerSessionId);
+      return [reference, reservation] as const;
+    }));
+    const batch = { ...input, launchIds: references.map((reference) => identities.get(reference)!.launchId),
+      ...(input.outcomes ? { outcomes: input.outcomes.map((outcome) => ({ ...outcome,
+        launchId: identities.get(outcome.launchId)!.launchId, agentId: identities.get(outcome.launchId)!.agentId })) } : {}),
+    };
+    return batch;
+  };
+  const recordNotificationBatch = (coordinator: SubagentCoordinator, input: Parameters<SubagentCoordinator["recordNotificationBatch"]>[0]) => {
+    const batch = prepareNotificationBatch(coordinator, input);
+    coordinator.recordNotificationBatch(batch);
+    return batch;
+  };
   const launch = async (task = "complete") => {
     const manager = common.createSessionManager(join(root, "project"));
     const coordinator = new SubagentCoordinator(manager);
@@ -186,6 +216,8 @@ async function harness(options: {
       reservation, agent: rows[1]!, callerAgent: "research-assistant", task,
       cwd: join(root, "project"), coordinator, liveConfiguration: live,
     });
+    coordinator.recordMaterialized(reservation, { childSessionId: handle.childSessionId, sessionPath: handle.sessionPath });
+    coordinator.recordLaunchAcknowledged(reservation.launchId);
     return { handle, coordinator, session: sessions.at(-1)!, supervisor: supervisors.at(-1)!, binding: bindings.at(-1)! };
   };
   const publishConfiguration = () => {
@@ -197,10 +229,69 @@ async function harness(options: {
     };
     for (const listener of [...configListeners]) listener(event);
   };
-  return { ai, provider, factory, launch, sessions, supervisors, live, rows, bindings, publishConfiguration, managed: () => managed };
+  return { ai, provider, factory, launch, sessions, supervisors, live, rows, bindings, publishConfiguration, prepareNotificationBatch, recordNotificationBatch, managed: () => managed };
 }
 
 describe("Pinned Pi lifecycle ownership", () => {
+  it("resumes pending native user steers exactly once after root interrupt without leaking hidden wake controls", async () => {
+    const toolEntered = deferred();
+    const releaseTool = deferred();
+    const resumed = deferred();
+    const releaseResponse = deferred();
+    const contexts: Context[] = [];
+    const h = await harness({ extensions: [(api) => api.registerTool({
+      name: "hold", label: "Hold", description: "Wait for root interruption", parameters: Type.Object({}),
+      execute: async (_id, _args, signal) => {
+        toolEntered.resolve();
+        const onAbort = () => releaseTool.resolve();
+        signal?.addEventListener("abort", onAbort, { once: true });
+        try { await releaseTool.promise; }
+        finally { signal?.removeEventListener("abort", onAbort); }
+        return { content: [{ type: "text", text: "Root command interrupted" }], details: {} };
+      },
+    })] });
+    h.provider.setResponses([
+      (context) => { contexts.push(context); return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("hold", {}), { stopReason: "toolUse" }); },
+      async (context) => { contexts.push(context); resumed.resolve(); await releaseResponse.promise; return h.ai.fauxAssistantMessage("Queued instructions accepted"); },
+    ]);
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    const events: unknown[] = [];
+    adapter.onEvent((event) => events.push(event));
+    try {
+      await adapter.start();
+      await adapter.prompt("Initial root request");
+      await toolEntered.promise;
+      const session = h.sessions[0]!;
+      await adapter.prompt("STEER_FIRST");
+      await adapter.prompt("STEER_SECOND");
+      expect(session.getSteeringMessages()).toEqual(["STEER_FIRST", "STEER_SECOND"]);
+      await Promise.all([adapter.abort(), adapter.abort()]);
+      await vi.waitFor(() => expect(contexts, JSON.stringify({
+        steering: session.getSteeringMessages(), idle: session.isIdle, queued: session.agent.hasQueuedMessages(),
+        users: session.messages.filter((message) => message.role === "user").map((message) => message.content),
+        errors: events.filter((event) => (event as { type?: string }).type === "error"),
+      })).toHaveLength(2));
+      await resumed.promise;
+      expect(session.getSteeringMessages()).toEqual([]);
+      const request = JSON.stringify(contexts[1]!.messages);
+      expect(request).toContain("STEER_FIRST");
+      expect(request).toContain("STEER_SECOND");
+      expect(request.indexOf("STEER_FIRST")).toBeLessThan(request.indexOf("STEER_SECOND"));
+      expect(request).not.toContain(BACKGROUND_WAKE_TYPE);
+      expect(request).not.toContain(LLM_RETRY_CONTROL_TYPE);
+      releaseResponse.resolve();
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(h.provider.state.callCount).toBe(2);
+      expect(session.messages.filter((message) => message.role === "user")).toHaveLength(3);
+      expect(events.filter((event) => (event as { type?: string }).type === "agent_start")).toHaveLength(2);
+      expect(JSON.stringify(events)).not.toContain(BACKGROUND_WAKE_TYPE);
+      expect(JSON.stringify(await adapter.getTranscriptSnapshot())).not.toContain(BACKGROUND_WAKE_TYPE);
+    } finally {
+      releaseTool.resolve(); releaseResponse.resolve();
+      await adapter.stop();
+    }
+  });
+
   it("inspects native idle prompt/tool refreshes before the next provider request", async () => {
     const h = await harness({ extensions: [(api) => {
       for (const name of ["hold", "other"]) api.registerTool({ name, label: name, description: `${name} fixture tool`, parameters: Type.Object({}),
@@ -232,6 +323,54 @@ describe("Pinned Pi lifecycle ownership", () => {
       await expect(adapter.getContextItem!(before.revision, before.items[0]!.id, "current", 0)).rejects.toMatchObject({ code: "CONTEXT_STALE" });
       expect(h.provider.state.callCount).toBe(requests);
     } finally { await adapter.stop(); }
+  });
+
+  it("keeps a real background child running across root interrupt and cancels it on terminal Stop", async () => {
+    const entered = { root: deferred(), child: deferred() };
+    const release = { root: deferred(), child: deferred() };
+    const signals = new Map<string, AbortSignal>();
+    const effects: string[] = [];
+    const h = await harness({ dispatch: true, extensions: [(api) => api.registerTool({
+      name: "hold", label: "Hold", description: "Hold an owned run", parameters: Type.Object({ owner: Type.Union([Type.Literal("root"), Type.Literal("child")]) }),
+      execute: async (_id, args, signal) => {
+        effects.push(args.owner);
+        signals.set(args.owner, signal!);
+        const onAbort = () => release[args.owner].resolve();
+        signal?.addEventListener("abort", onAbort, { once: true });
+        entered[args.owner].resolve();
+        try { await release[args.owner].promise; }
+        finally { signal?.removeEventListener("abort", onAbort); }
+        return { content: [{ type: "text", text: "Released" }], details: {} };
+      },
+    })] });
+    const response: FauxResponseFactory = (context) => {
+      const child = getCurrentSystemPrompt(context.messages).includes("search test role");
+      if (!child && !context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", description: "Independent child work", prompt: "Run child task" }), { stopReason: "toolUse" });
+      }
+      return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("hold", { owner: child ? "child" : "root" }), { stopReason: "toolUse" });
+    };
+    h.provider.setResponses(Array.from({ length: 8 }, () => response));
+    const adapter = h.factory.create({ cwd: join(root, "project") });
+    try {
+      await adapter.start(); await adapter.prompt("Start independent work");
+      await Promise.all([entered.root.promise, entered.child.promise]);
+      const child = h.sessions.find((session) => session.systemPrompt.includes("search test role"))!;
+      await adapter.abort();
+      expect(signals.get("root")?.aborted).toBe(true);
+      expect(signals.get("child")?.aborted).toBe(false);
+      expect(child.isStreaming).toBe(true);
+      expect(adapter.getBackgroundTasks!()).toContainEqual(expect.objectContaining({ kind: "subagent", sessionID: child.sessionId, status: "running" }));
+      expect(adapter.hasBackgroundWork()).toBe(true);
+      await adapter.stop();
+      expect(signals.get("child")?.aborted).toBe(true);
+      expect(adapter.hasBackgroundWork()).toBe(false);
+      expect(effects.sort()).toEqual(["child", "root"]);
+      expect(child.sessionManager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user")).toHaveLength(1);
+    } finally {
+      release.root.resolve(); release.child.resolve();
+      await adapter.stop();
+    }
   });
 
   it("applies manual root context edits through native admission and the next real provider input", async () => {
@@ -293,6 +432,8 @@ describe("Pinned Pi lifecycle ownership", () => {
       const snapshot = await adapter.getContext!();
       const prose = snapshot.items.find((item) => item.type === "assistant")!;
       const bytes = readFileSync(session.sessionFile!);
+      const beforeEntries = [...session.sessionManager.getEntries()];
+      const beforeTimeline = projectSessionTimeline(session.sessionManager.getBranch());
       vi.spyOn(h.bindings[0]!, "ensureCurrent").mockImplementationOnce(async () => { entered.resolve(); await release.promise; });
       const operation = adapter.applyContext!({ revision: snapshot.revision, edits: [{ target: "item", id: prose.id, action: "delete" }] });
       const rejected = expect(operation).rejects.toMatchObject({ code: "CONTEXT_BUSY" });
@@ -306,7 +447,14 @@ describe("Pinned Pi lifecycle ownership", () => {
       release.resolve();
       await rejected;
       await stop;
-      expect(readFileSync(session.sessionFile!)).toEqual(bytes);
+      expect(readFileSync(session.sessionFile!).subarray(0, bytes.length)).toEqual(bytes);
+      expect(projectSessionTimeline(session.sessionManager.getBranch())).toEqual(beforeTimeline);
+      expect(session.sessionManager.getEntries().some((entry) => entry.type === "context_edit")).toBe(false);
+      const appended = session.sessionManager.getEntries().slice(beforeEntries.length);
+      for (const entry of appended) {
+        expect(entry).toMatchObject({ type: "custom", data: { sessionId: session.sessionId } });
+        expect([EXECUTION_CLAIM_TYPE, "easyresearch:background-owner"]).toContain(entry.type === "custom" ? entry.customType : entry.type);
+      }
     } finally { release.resolve(); await adapter.stop(); }
   });
 
@@ -341,7 +489,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     const responder: FauxResponseFactory = (context) => {
       if (scope === "root" || getCurrentSystemPrompt(context.messages).includes("search test role")) return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 unavailable" });
       if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
-        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original" }), { stopReason: "toolUse" });
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", description: "Original research task", prompt: "original" }), { stopReason: "toolUse" });
       }
       return h.ai.fauxAssistantMessage("Waiting");
     };
@@ -350,8 +498,13 @@ describe("Pinned Pi lifecycle ownership", () => {
     await adapter.start();
     try {
       await adapter.prompt("Start");
-      await vi.waitFor(() => expect(h.sessions[scope === "root" ? 0 : 1]
-        && adapter.getRetryState!(h.sessions[scope === "root" ? 0 : 1]!.sessionId)?.llmRecovery?.status).toBe("available"));
+      await vi.waitFor(() => {
+        const target = h.sessions[scope === "root" ? 0 : 1];
+        expect(target && adapter.getRetryState!(target.sessionId)?.llmRecovery?.status, JSON.stringify({
+          sessions: h.sessions.map((session) => ({ id: session.sessionId, idle: session.isIdle, last: session.messages.at(-1) })),
+          jobs: [...h.managed().coordinator.journal().jobs.values()],
+        })).toBe("available");
+      });
       const snapshot = await adapter.getContext!();
       expect(snapshot.busy).toBe(true);
       const bytes = readFileSync(h.sessions[0]!.sessionFile!);
@@ -506,7 +659,7 @@ describe("Pinned Pi lifecycle ownership", () => {
       const target = scope === "root" || getCurrentSystemPrompt(context.messages).includes("search test role");
       if (target) return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: manual ? "503 overloaded" : "400 invalid request" });
       if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
-        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original task" }), { stopReason: "toolUse" });
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", description: "Original research task", prompt: "original task" }), { stopReason: "toolUse" });
       }
       return h.ai.fauxAssistantMessage("waiting");
     };
@@ -521,10 +674,15 @@ describe("Pinned Pi lifecycle ownership", () => {
       manual = true;
       await adapter.retry!(target.sessionId, checkpoint.failureId);
       await vi.waitFor(() => expect(adapter.getRetryState!(target.sessionId)?.automaticRetry?.delayMs).toBe(60_000));
-      await adapter.abort();
+      if (scope === "root") await adapter.abort();
+      else {
+        const task = adapter.getBackgroundTasks!().find((task) => task.kind === "subagent" && task.sessionID === target.sessionId)!;
+        expect(task).toBeDefined();
+        await adapter.cancelBackground!(task.id);
+      }
       expect(adapter.getRetryState!(target.sessionId)?.llmRecovery ?? null).toBeNull();
       expect(adapter.getRetryState!(target.sessionId)?.automaticRetry ?? null).toBeNull();
-      expect(adapter.hasBackgroundWork()).toBe(false);
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
       h.provider.setResponses([h.ai.fauxAssistantMessage("new user task")]);
       await adapter.prompt("new task after Stop");
       await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
@@ -533,12 +691,14 @@ describe("Pinned Pi lifecycle ownership", () => {
 
   it.each(["root", "stage"] as const)("owns and cancels %s recovery configuration preflight without a late native wake", async (scope) => {
     const h = await harness({ dispatch: scope === "stage" });
+    let targetRequests = 0;
     const responder: FauxResponseFactory = (context) => {
       if (scope === "root" || getCurrentSystemPrompt(context.messages).includes("search test role")) {
+        targetRequests += 1;
         return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" });
       }
       if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
-        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original task" }), { stopReason: "toolUse" });
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", description: "Original research task", prompt: "original task" }), { stopReason: "toolUse" });
       }
       return h.ai.fauxAssistantMessage("waiting");
     };
@@ -554,28 +714,33 @@ describe("Pinned Pi lifecycle ownership", () => {
       const target = h.sessions[index]!;
       const checkpoint = adapter.getRetryState!(target.sessionId)!.llmRecovery!;
       vi.spyOn(h.bindings[index]!, "ensureCurrent").mockImplementationOnce(async () => { entered.resolve(); await release.promise; });
-      const attempts = h.provider.state.callCount;
+      const attempts = targetRequests;
       const request = adapter.retry!(target.sessionId, checkpoint.failureId);
       const rejected = expect(request).rejects.toThrow();
       await entered.promise;
-      const stop = adapter.abort();
+      const task = scope === "stage" ? adapter.getBackgroundTasks!().find((task) => task.kind === "subagent" && task.sessionID === target.sessionId) : undefined;
+      if (scope === "stage") expect(task).toBeDefined();
+      const stop = task ? adapter.cancelBackground!(task.id) : adapter.abort();
       expect(h.managed().coordinator.retryState(target.sessionId)?.llmRecovery ?? null).toBeNull();
       release.resolve();
       await rejected;
       await stop;
-      expect(h.provider.state.callCount).toBe(attempts);
-      expect(adapter.hasBackgroundWork()).toBe(false);
+      await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
+      expect(targetRequests).toBe(attempts);
       expect(target.sessionManager.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === LLM_RETRY_CONTROL_TYPE)).toBe(false);
     } finally { release.resolve(); await adapter.stop(); }
   });
 
   it("revalidates a parked stage's original caller authority and rotates failed admission", async () => {
     const h = await harness({ dispatch: true });
-    h.provider.setResponses([
-      h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original" }), { stopReason: "toolUse" }),
-      h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" }),
-      h.ai.fauxAssistantMessage("waiting"),
-    ]);
+    const response: FauxResponseFactory = (context) => {
+      if (getCurrentSystemPrompt(context.messages).includes("search test role")) return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" });
+      if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", description: "Original research task", prompt: "original" }), { stopReason: "toolUse" });
+      }
+      return h.ai.fauxAssistantMessage("waiting");
+    };
+    h.provider.setResponses(Array.from({ length: 12 }, () => response));
     const adapter = h.factory.create({ cwd: join(root, "project") });
     try {
       await adapter.start(); await adapter.prompt("start");
@@ -620,7 +785,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     } finally { await adapter.stop(); }
   });
 
-  it("parks a completion-woken stage after its original finish has begun waiting for quiescence", async () => {
+  it("parks a later stage period awakened by descendant completion", async () => {
     const releaseChild = deferred();
     const childEntered = deferred();
     let searchFailures = 0;
@@ -638,9 +803,13 @@ describe("Pinned Pi lifecycle ownership", () => {
       if (role === "reviewer") return h.ai.fauxAssistantMessage(toolDone("hold") ? "nested completed"
         : h.ai.fauxToolCall("hold", {}), { stopReason: toolDone("hold") ? "stop" : "toolUse" });
       if (!toolDone("subagent")) return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", {
-        agent: role === "research-assistant" ? "search" : "reviewer", task: "nested task",
+        agent: role === "research-assistant" ? "search" : "reviewer", description: "Nested research task", prompt: "nested task",
       }), { stopReason: "toolUse" });
-      if (role === "search" && JSON.stringify(context.messages).includes("<agent_status>")) {
+      const hasChildReport = context.messages.some((message) => message.role === "user" && (
+        typeof message.content === "string" ? message.content.startsWith('<background-result kind="subagent"')
+          : message.content.some((part) => part.type === "text" && part.text.startsWith('<background-result kind="subagent"'))
+      ));
+      if (role === "search" && hasChildReport) {
         searchFailures += 1;
         if (searchFailures <= 2) return h.ai.fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 overloaded" });
         return h.ai.fauxAssistantMessage("recovered completion wake");
@@ -657,15 +826,17 @@ describe("Pinned Pi lifecycle ownership", () => {
       const caller = h.sessions.find((session) => session.systemPrompt.includes("search test role"))!;
       releaseChild.resolve();
       await vi.waitFor(() => expect(adapter.getRetryState!(caller.sessionId)?.llmRecovery?.status).toBe("available"));
-      const job = [...h.managed().coordinator.journal().jobs.values()].find((job) => job.childSessionId === caller.sessionId)!;
-      expect(job.terminalStatus).toBeUndefined();
+      const job = [...h.managed().coordinator.journal().jobs.values()].reverse().find((job) => job.childSessionId === caller.sessionId)!;
+      expect(job.terminalStatus).toBe("error");
       expect(adapter.hasBackgroundWork()).toBe(true);
       const checkpoint = adapter.getRetryState!(caller.sessionId)!.llmRecovery!;
       await adapter.retry!(caller.sessionId, checkpoint.failureId);
       await vi.waitFor(() => expect(adapter.hasBackgroundWork()).toBe(false));
       expect(searchFailures).toBe(3);
-      expect([...h.managed().coordinator.journal().jobs.values()]).toHaveLength(2);
-      expect(h.managed().coordinator.journal().jobs.get(job.launchId)?.terminalStatus).toBe("complete");
+      const periods = [...h.managed().coordinator.journal().jobs.values()].filter((period) => period.childSessionId === caller.sessionId);
+      expect(periods.at(-1)?.terminalStatus).toBe("complete");
+      expect(periods.at(-1)?.launchId).not.toBe(job.launchId);
+      expect(h.managed().coordinator.journal().jobs.get(job.launchId)?.terminalStatus).toBe("error");
       expect(caller.sessionManager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user")).toHaveLength(1);
     } finally {
       releaseChild.resolve();
@@ -684,7 +855,7 @@ describe("Pinned Pi lifecycle ownership", () => {
       await vi.waitFor(() => expect(adapter.getRetryState!(rootSession.sessionId)?.llmRecovery?.status).toBe("available"));
       const { coordinator, supervisor } = h.managed();
       const checkpoint = adapter.getRetryState!(rootSession.sessionId)!.llmRecovery!;
-      coordinator.recordNotificationBatch({ batchId: "held-handoff", ownerSessionId: rootSession.sessionId,
+      h.recordNotificationBatch(coordinator, { batchId: "held-handoff", ownerSessionId: rootSession.sessionId,
         launchIds: ["finished-child"], content: "<agent_status>complete</agent_status>\n<agent_handoff>held handoff</agent_handoff>", triggerTurn: true });
       await supervisor.flushNotifications();
       h.publishConfiguration();
@@ -703,12 +874,12 @@ describe("Pinned Pi lifecycle ownership", () => {
     } finally { await adapter.stop(); }
   });
 
-  it.each(["abort", "stop"] as const)("%s releases a parked child and publishes one terminal outcome without another model turn", async (action) => {
+  it.each(["abort", "stop"] as const)("%s respects parked child ownership and terminal Stop publishes one outcome without another model turn", async (action) => {
     const h = await harness({ dispatch: true });
     const responder: FauxResponseFactory = (context) => {
       if (getCurrentSystemPrompt(context.messages).includes("search test role")) return h.ai.fauxAssistantMessage("partial", { stopReason: "error", errorMessage: "503 overloaded" });
       if (!context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent")) {
-        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", task: "original task" }), { stopReason: "toolUse" });
+        return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", { agent: "search", description: "Original research task", prompt: "original task" }), { stopReason: "toolUse" });
       }
       return h.ai.fauxAssistantMessage("owner waiting");
     };
@@ -719,10 +890,21 @@ describe("Pinned Pi lifecycle ownership", () => {
     try {
       await adapter.start(); await adapter.prompt("start");
       await vi.waitFor(() => expect(h.sessions[1] && adapter.getRetryState!(h.sessions[1]!.sessionId)?.llmRecovery?.status).toBe("available"));
+      const coordinator = h.managed().coordinator;
+      await vi.waitFor(() => expect(events.filter((event) => event.type === "subagent_supervisor" && event.status === "error")).toHaveLength(1));
+      await vi.waitFor(() => expect(coordinator.journal().pendingBatches).toEqual([]));
       await h.sessions[0]!.waitForIdle();
       const calls = h.provider.state.callCount;
-      const coordinator = h.managed().coordinator;
+      const reported = events.filter((event) => event.type === "subagent_supervisor" && event.status === "error");
+      const childRecovery = coordinator.retryState(h.sessions[1]!.sessionId)?.llmRecovery;
       await adapter[action]();
+      if (action === "abort") {
+        expect(coordinator.retryState(h.sessions[1]!.sessionId)?.llmRecovery).toEqual(childRecovery);
+        expect(adapter.hasBackgroundWork()).toBe(true);
+        expect(events.filter((event) => event.type === "subagent_supervisor" && event.status === "error")).toEqual(reported);
+        expect(h.provider.state.callCount).toBe(calls);
+        await adapter.stop();
+      }
       expect(h.provider.state.callCount).toBe(calls);
       expect(coordinator.journal().pendingBatches).toEqual([]);
       expect(events.filter((event) => event.type === "subagent_supervisor" && event.status === "error")).toHaveLength(1);
@@ -764,7 +946,7 @@ describe("Pinned Pi lifecycle ownership", () => {
             : h.ai.fauxAssistantMessage("recovered response");
         }
         if (!hasTool("subagent")) return h.ai.fauxAssistantMessage(h.ai.fauxToolCall("subagent", {
-          agent: role === "research-assistant" ? "search" : "reviewer", task: "finish the original task",
+          agent: role === "research-assistant" ? "search" : "reviewer", description: "Finish original research task", prompt: "finish the original task",
         }), { stopReason: "toolUse" });
         return h.ai.fauxAssistantMessage("owner accepted");
       };
@@ -784,9 +966,9 @@ describe("Pinned Pi lifecycle ownership", () => {
         const jobs = [...h.managed().coordinator.journal().jobs.values()];
         if (targetAgent !== "research-assistant") {
           const job = jobs.find((job) => job.childSessionId === target.sessionId)!;
-          expect(job.terminalStatus).toBeUndefined();
+          expect(job.terminalStatus).toBe("error");
           expect(job.launchAcknowledged).toBe(true);
-          expect(h.managed().coordinator.journal().acknowledgedNotificationLaunchIds.has(job.launchId)).toBe(false);
+          expect(checkpoint.targetSessionId).toBe(job.childSessionId);
           if (targetAgent === "reviewer") expect(job.ownerSessionId).not.toBe(h.sessions[0]!.sessionId);
         }
         expect(adapter.hasBackgroundWork()).toBe(true);
@@ -817,11 +999,16 @@ describe("Pinned Pi lifecycle ownership", () => {
         expect(JSON.stringify(events)).not.toContain(LLM_RETRY_CONTROL_TYPE);
         expect(adapter.getRetryState!(target.sessionId)?.llmRecovery ?? null).toBeNull();
         const finalJobs = [...h.managed().coordinator.journal().jobs.values()];
-        expect(finalJobs.map(({ launchId, childSessionId, ownerSessionId, sessionPath }) => ({ launchId, childSessionId, ownerSessionId, sessionPath })))
-          .toEqual(jobs.map(({ launchId, childSessionId, ownerSessionId, sessionPath }) => ({ launchId, childSessionId, ownerSessionId, sessionPath })));
+        for (const original of jobs) {
+          const periods = finalJobs.filter((job) => job.childSessionId === original.childSessionId);
+          expect(periods.length).toBeGreaterThan(0);
+          expect(periods.every((job) => job.ownerSessionId === original.ownerSessionId && job.sessionPath === original.sessionPath)).toBe(true);
+          expect(periods.at(-1)?.terminalStatus).toBe("complete");
+          if (original.terminalStatus) expect(h.managed().coordinator.journal().jobs.get(original.launchId)?.terminalStatus).toBe(original.terminalStatus);
+        }
         for (const job of finalJobs) {
-          expect(job.terminalStatus).toBe("complete");
-          const terminal = events.filter((event) => event.type === "subagent_supervisor" && event.launchId === job.launchId && event.status === "complete");
+          expect(["complete", "error"]).toContain(job.terminalStatus);
+          const terminal = events.filter((event) => event.type === "subagent_supervisor" && event.launchId === job.launchId && event.status === job.terminalStatus);
           expect(terminal).toHaveLength(1);
           expect(h.managed().coordinator.journal().acknowledgedNotificationLaunchIds.has(job.launchId)).toBe(true);
         }
@@ -1244,13 +1431,13 @@ describe("Pinned Pi lifecycle ownership", () => {
     }
     await entered.promise;
     const { coordinator, supervisor, session } = stage ?? h.managed();
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "completed-child", ownerSessionId: session.sessionId, launchIds: [],
       content: "<agent_handoff>verified evidence</agent_handoff>", triggerTurn: true,
     });
     try {
       await supervisor.flushNotifications();
-      coordinator.recordNotificationBatch({
+      h.recordNotificationBatch(coordinator, {
         batchId: "another-completed-child", ownerSessionId: session.sessionId, launchIds: [],
         content: "<agent_handoff>additional evidence</agent_handoff>", triggerTurn: true,
       });
@@ -1312,7 +1499,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     }
     await seedEnding.promise;
     const { coordinator, supervisor, session } = stage ?? h.managed();
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "wake-a", ownerSessionId: session.sessionId, launchIds: [],
       content: "<agent_handoff>FIRST_HANDOFF</agent_handoff>", triggerTurn: true,
     });
@@ -1320,7 +1507,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     await vi.waitFor(() => expect(session.isIdle).toBe(true));
     const firstSend = supervisor.flushNotifications();
     await wakeTool.promise;
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "steer-b", ownerSessionId: session.sessionId, launchIds: [],
       content: "<agent_handoff>SECOND_HANDOFF</agent_handoff>", triggerTurn: true,
     });
@@ -1377,14 +1564,14 @@ describe("Pinned Pi lifecycle ownership", () => {
     ]);
     const { handle, session, coordinator, supervisor } = await h.launch();
     await seedEnding.promise;
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "A", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_A", triggerTurn: true,
     });
     releaseSeed.resolve();
     await session.waitForIdle();
     await supervisor.flushNotifications();
     await toolEntered.promise;
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "B", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_B", triggerTurn: true,
     });
     const baseline = scheduled;
@@ -1449,7 +1636,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     if (!stage) { await adapter.start(); await adapter.prompt("seed"); }
     await seedEnding.promise;
     const { coordinator, supervisor, session } = stage ?? h.managed();
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "A", ownerSessionId: session.sessionId, launchIds: ["launch-A"], content: "HANDOFF_A", triggerTurn: true,
       outcomes: [{ launchId: "launch-A", agentId: "search_0", status: "complete", text: "frozen A" }],
     });
@@ -1458,7 +1645,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     const first = supervisor.flushNotifications();
     await ackEntered.promise;
     for (const batchId of ["B", "C"]) {
-      coordinator.recordNotificationBatch({
+      h.recordNotificationBatch(coordinator, {
         batchId, ownerSessionId: session.sessionId, launchIds: [`launch-${batchId}`], content: `HANDOFF_${batchId}`, triggerTurn: true,
         outcomes: [{ launchId: `launch-${batchId}`, agentId: "search_0", status: "complete", text: `frozen ${batchId}` }],
       });
@@ -1525,17 +1712,16 @@ describe("Pinned Pi lifecycle ownership", () => {
     await toolEntered.promise;
     const child = h.sessions.at(-1)!;
     const childSupervisor = h.supervisors.at(-1)!;
-    const nestedBatch = {
+    const nestedBatch = h.recordNotificationBatch(coordinator, {
       batchId: "nested", ownerSessionId: child.sessionId, launchIds: ["grandchild-launch"], triggerTurn: mode === "complete",
       content: `<agent_status>private ${child.sessionFile}</agent_status>\n<agent_handoff>nested model handoff</agent_handoff>`,
       outcomes: [{ launchId: "grandchild-launch", agentId: "search_1", status: "error" as const, text: "status: blocked\nFrozen nested body." }],
-    };
-    coordinator.recordNotificationBatch(nestedBatch);
+    });
     await childSupervisor.flushNotifications();
     let stopping: Promise<void> | undefined;
     try {
       if (mode === "stop") {
-        stopping = adapter.abort();
+        stopping = adapter.stop();
         await vi.waitFor(() => expect(child.agent.signal?.aborted).toBe(true));
       }
       releaseTool.resolve();
@@ -1549,7 +1735,8 @@ describe("Pinned Pi lifecycle ownership", () => {
       const rootCards = (events as TimelineEntryAppendedEventDto[]).filter((event) => event.type === "timeline_entry_appended" && event.entry.kind === "subagent-completion");
       expect(rootCards).toHaveLength(1);
       expect(rootCards[0]!.entry).toMatchObject({ outcomes: [{ launchId: reservation.launchId, status: mode === "stop" ? "error" : "complete" }] });
-      expect((await adapter.getTranscriptSnapshot()).timeline.filter((entry) => entry.kind === "subagent-completion")).toEqual(rootCards.map((event) => event.entry));
+      const rootTimeline = mode === "stop" ? projectSessionTimeline(caller.sessionManager.getBranch()) : (await adapter.getTranscriptSnapshot()).timeline;
+      expect(rootTimeline.filter((entry) => entry.kind === "subagent-completion")).toEqual(rootCards.map((event) => event.entry));
       expect(JSON.stringify(events)).not.toContain(AGENT_STATUS_TYPE);
       expect(JSON.stringify(events)).not.toContain(child.sessionFile!);
       if (mode === "stop") expect(contexts).toEqual([]);
@@ -1589,16 +1776,18 @@ describe("Pinned Pi lifecycle ownership", () => {
     const adapter = h.factory.create({ cwd: join(root, "project") });
     await adapter.start();
     const { coordinator, supervisor, session } = h.managed();
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "A", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_A", triggerTurn: true,
     });
     await supervisor.flushNotifications();
     await toolEntered.promise;
     const nativeSend = vi.spyOn(h.sessions[0]!, "sendCustomMessage");
+    // Admission precedes Stop; only the already-owned completion arrives later.
+    const laterBatch = h.prepareNotificationBatch(coordinator, {
+      batchId: "B", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_B", triggerTurn: true,
+    });
     const sendLaterHandoff = () => {
-      coordinator.recordNotificationBatch({
-        batchId: "B", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_B", triggerTurn: true,
-      });
+      coordinator.recordNotificationBatch(laterBatch);
       return supervisor.flushNotifications();
     };
     let sending = timing === "scheduled" ? sendLaterHandoff() : undefined;
@@ -1640,7 +1829,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     await preflightEntered.promise;
     const { coordinator, supervisor, session } = stage ?? h.managed();
     for (const batchId of ["A", "B"]) {
-      coordinator.recordNotificationBatch({
+      h.recordNotificationBatch(coordinator, {
         batchId, ownerSessionId: session.sessionId, launchIds: [], content: `HANDOFF_${batchId}`, triggerTurn: true,
       });
     }
@@ -1693,7 +1882,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     const command = adapter.prompt("/review-now");
     await commandEntered.promise;
     const { coordinator, supervisor, session } = h.managed();
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "B", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_B", triggerTurn: true,
     });
     const sending = supervisor.flushNotifications();
@@ -1751,7 +1940,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     const command = adapter.prompt("/wait-root current run").then(() => { commandSettled = true; });
     await commandEntered.promise;
     if (handoff) {
-      coordinator.recordNotificationBatch({
+      h.recordNotificationBatch(coordinator, {
         batchId: "B", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_B", triggerTurn: true,
       });
     }
@@ -1976,7 +2165,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     // Deliberately bypass the Web host's admission to exercise the upstream race.
     const user = session.prompt("RAW_SDK_USER", { streamingBehavior: "steer" }).catch((error: unknown) => error);
     await preflightEntered.promise;
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "A", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_A", triggerTurn: true,
     });
     await supervisor.flushNotifications();
@@ -1984,7 +2173,7 @@ describe("Pinned Pi lifecycle ownership", () => {
     await toolEntered.promise;
     expect(session.isStreaming).toBe(true);
     expect(session.agent.state.isStreaming).toBe(true);
-    coordinator.recordNotificationBatch({
+    h.recordNotificationBatch(coordinator, {
       batchId: "B", ownerSessionId: session.sessionId, launchIds: [], content: "HANDOFF_B", triggerTurn: true,
     });
     await supervisor.flushNotifications().catch(() => {});

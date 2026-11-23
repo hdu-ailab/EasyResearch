@@ -44,6 +44,9 @@ import type { SubagentProgressEvent } from "./contracts";
 import { createSessionMaterializationBarrier, type SessionMaterializationBarrier } from "./materialization";
 import { sessionNameFor } from "./session-links";
 import { createSubagentNotificationExtension, type SubagentSupervisor, type SupervisableAgentSession } from "./supervisor";
+import { CHILD_SELECTION, createStageBackgroundController, type StageBackgroundController } from "./stage-background";
+import type { BackgroundPeriodResult } from "./background-periods";
+import { isThinkingLevel } from "../thinking-levels";
 
 const SAFE_STAGE_AUTHORIZATION_ERROR =
   "The selected Agent is not available to this caller in the current valid configuration.";
@@ -77,6 +80,15 @@ export interface StageRunResult {
 }
 
 export interface StageLaunchOptions {
+  inputID?: string;
+  inputFingerprint?: string;
+  backgroundLifecycle?: {
+    started(): void;
+    settled(result: BackgroundPeriodResult): void;
+    activity?(): void;
+  };
+  resume?: boolean;
+  restoreIdle?: boolean;
   reservation: ReservedDispatch;
   agent: AgentConfig;
   callerAgent: string;
@@ -102,6 +114,7 @@ export interface StageLaunchOptions {
 }
 
 export interface StageLaunchHandle {
+  readonly background?: StageBackgroundController;
   readonly agentId: string;
   readonly childSessionId: string;
   readonly sessionPath: string;
@@ -127,7 +140,11 @@ export interface StageAgentSession extends RuntimeSteeringSession {
   readonly extensionRunner: {
     emit(event: { type: "session_shutdown"; reason: "quit" }): Promise<unknown>;
   };
-  readonly sessionManager: { getEntries(): readonly unknown[]; getBranch(): readonly unknown[] };
+  readonly sessionManager: {
+    getEntries(): readonly unknown[]; getBranch(): readonly unknown[];
+    appendMessage?(message: AgentMessage): string;
+    appendCustomEntry?(customType: string, data?: unknown): string;
+  };
   subscribe(listener: (event: unknown) => void): () => void;
   bindExtensions(bindings: unknown): Promise<void>;
   setSessionName(name: string): void;
@@ -160,6 +177,7 @@ interface OpenedStageSessionManager {
 }
 
 export interface StageExtensionRuntime {
+  owner(): { sessionID: string; cwd: string };
   binding: AgentRuntimeBinding;
   networkRouter?: AgentSessionNetworkRouter;
   liveConfiguration: Omit<Pick<
@@ -311,6 +329,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
     let setupSessionDisposed = false;
     let sessionShutdownComplete = false;
     let setupBindingDisposed = false;
+    let background: StageBackgroundController | undefined;
     const pendingTimelineEntries: unknown[] = [];
     let publishTimelineEntry: (entry: unknown) => void = (entry) => {
       pendingTimelineEntries.push(entry);
@@ -389,13 +408,52 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       } else {
         sessionManager = deps.createSessionManager(options.cwd);
       }
+      if (options.resume || options.restoreIdle) {
+        const repairs = options.coordinator.getShellService()?.recoveredCalls?.();
+        if (repairs?.length) {
+          const { repairRecoveredShellCalls } = await import("../background/shell-repair");
+          repairRecoveredShellCalls(sessionManager as Parameters<typeof repairRecoveredShellCalls>[0], repairs);
+        }
+      }
 
       const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
       retryPolicy = createLlmRetryPolicyBinding(settingsManager as SettingsManager);
       const automaticCompaction = createCompactionPolicyBinding(
         settingsManager as CompactionPolicySettingsManager,
       );
+      let childSelection: { agentName: string; model?: string; thinking?: ThinkingLevel } | undefined;
+      if (options.reservation.description !== undefined) {
+        childSelection = { agentName: options.agent.name, model: options.model,
+          ...(isThinkingLevel(options.thinking) ? { thinking: options.thinking } : {}) };
+        if (options.reservation.continuation && !options.resume) {
+          const manager = sessionManager as {
+            getEntries(): any[];
+            buildSessionContext(): { model: { provider: string; modelId: string } | null; thinkingLevel: string };
+            appendCustomEntry(type: string, data: unknown): string;
+          };
+          const saved = manager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === CHILD_SELECTION
+            && typeof entry.data?.selection?.agentName === "string").at(-1)?.data.selection;
+          const previous = [...options.coordinator.journal().jobs.values()].filter((job) => job.launchId !== options.reservation.launchId
+            && job.childSessionId === options.reservation.childSessionId && job.background).at(-1);
+          const context = manager.buildSessionContext();
+          const previousAgent = saved?.agentName ?? previous?.agent ?? options.agent.name;
+          const agentName = options.restoreIdle ? previousAgent : options.agent.name;
+          const savedModel = typeof saved?.model === "string" ? saved.model : undefined;
+          const nativeModel = context.model ? `${context.model.provider}/${context.model.modelId}` : undefined;
+          const inheritedModel = savedModel ?? nativeModel ?? previous?.background?.model;
+          const thinking = options.restoreIdle ? saved?.thinking ?? context.thinkingLevel ?? options.thinking
+            : options.thinking ?? saved?.thinking ?? context.thinkingLevel;
+          childSelection = { agentName,
+            // Recovery passes historical period defaults, not a new dispatch override.
+            model: options.restoreIdle ? savedModel ?? nativeModel ?? options.model ?? previous?.background?.model
+              : options.model ?? (agentName !== previousAgent ? options.agent.model : undefined) ?? inheritedModel,
+            ...(isThinkingLevel(thinking) ? { thinking } : {}),
+          };
+          manager.appendCustomEntry(CHILD_SELECTION, { selection: childSelection, pending: false });
+        }
+      }
       binding = createAgentRuntimeBinding({
+        ...(childSelection ? { childSelection } : {}),
         live: options.liveConfiguration,
         agentName: options.agent.name,
         cwd: options.cwd,
@@ -410,7 +468,10 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           settingsManager,
         }),
         compaction: automaticCompaction,
-        onRuntimeCoherent: () => supervisor?.runtimeBecameCoherent(),
+        onRuntimeCoherent: () => {
+          supervisor?.runtimeBecameCoherent();
+          if (session && background?.isStarted()) void options.coordinator.getShellService()?.flushNotifications?.(session.sessionId).catch(() => {});
+        },
       });
       await binding.ensureCurrent();
       const currentAgent = binding.current();
@@ -429,7 +490,13 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           { name: "file-write-recovery", factory: createFileWriteRecoveryExtension() },
           { name: "llm-retry-policy", factory: createLlmRetryPolicyExtension(retryPolicy) },
           createCompactionCancellationExtension(() => abortRequested, () => session!.abortCompaction()),
+          ...(options.reservation.description === undefined ? [] : [{ name: "background-period", factory: (api: import("@earendil-works/pi-coding-agent").ExtensionAPI) => {
+            api.on("before_agent_start", async () => { background?.begin(); await background?.drainPending(); });
+            api.on("context", (event) => ({ messages: event.messages.filter((message) =>
+              !(message.role === "custom" && message.customType === "easyresearch:subagent_wake" && message.content === "")) }));
+          } }]),
           ...deps.createExtensionFactories({
+            owner: () => ({ sessionID: session!.sessionId, cwd: options.cwd }),
             binding,
             networkRouter: deps.networkRouter,
             liveConfiguration: options.liveConfiguration,
@@ -448,6 +515,16 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });
       const model = binding.model();
+      if (options.reservation.description !== undefined && !options.resume && !options.restoreIdle) {
+        assertModelRequestReady(binding.modelRuntime(), model);
+        throwIfAuthorizationAborted(options.signal);
+        const manager = sessionManager as { appendMessage(message: AgentMessage): string; appendSessionInfo(name: string): string };
+        // The admitted input materializes JSONL before asynchronous Agent setup.
+        // Its native classifier must already be buffered, including on setup failure.
+        if (!options.reservation.continuation) manager.appendSessionInfo(sessionNameFor(currentAgent.name));
+        manager.appendMessage({ role: "user", content: [{ type: "text", text: options.reservation.continuation
+          ? options.task : `You are a subagent spawned by another session.\n${options.task}` }], timestamp: Date.now() });
+      }
       const created = await deps.createAgentSession({
         cwd: options.cwd,
         agentDir: deps.agentDir,
@@ -470,7 +547,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           throw new Error("Continued AgentSession identity does not match its reservation.");
         }
       } else {
-        barrier = createSessionMaterializationBarrier({ sessionPath, continuation: false });
+        barrier = createSessionMaterializationBarrier({ sessionPath, continuation: options.reservation.description !== undefined });
         void barrier.materialized.catch(() => {});
       }
 
@@ -598,7 +675,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       recovery.attach(session as Parameters<typeof recovery.attach>[0], retryPolicy, async (signal) => {
         const release = await supervisor!.acquirePromptAdmission();
         try {
-          const authorizationSignal = options.signal ? AbortSignal.any([options.signal, signal]) : signal;
+          const authorizationSignal = options.reservation.description === undefined && options.signal ? AbortSignal.any([options.signal, signal]) : signal;
           const generation = await authorizeOperation((currentGeneration) => currentGeneration, authorizationSignal);
           return {
             release,
@@ -625,9 +702,11 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       });
       unsubscribeRecovery = recovery.subscribe(() => publishOwnerEvent(recovery.state()));
       supervisor.attach(session as unknown as SupervisableAgentSession, async () => {
+        if (background) { await background.prepareWake(); background.begin(); return; }
         if (!session!.isIdle) await session!.waitForIdle();
         await binding!.ensureCurrent();
-      }, () => abortRequested, () => recovery.holdsAutomaticWake());
+      }, () => abortRequested, () => recovery.holdsAutomaticWake()
+        || (options.reservation.description !== undefined && !background?.isStarted()));
       await session.bindExtensions({
         mode: "rpc",
         commandContextActions: {
@@ -671,14 +750,16 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         },
         setThinkingLevel: (level) => session!.setThinkingLevel(level),
       });
-      session.setSessionName(sessionNameFor(currentAgent.name));
+      // Home and root lifecycle admission use this existing internal classifier.
+      // Human task descriptions live in the coordinator's task/report metadata.
+      if (!options.reservation.continuation && options.reservation.description === undefined) session.setSessionName(sessionNameFor(currentAgent.name));
 
       signalListener = () => {
         const signalReason = options.signal?.reason;
         void requestAbort(typeof signalReason === "string" ? signalReason : undefined);
       };
       if (options.signal?.aborted) signalListener();
-      else options.signal?.addEventListener("abort", signalListener, { once: true });
+      else if (options.reservation.description === undefined) options.signal?.addEventListener("abort", signalListener, { once: true });
 
       const authorizeOperation = async <T>(start: (generation: number) => T, signal = options.signal): Promise<T> => {
         let bindingMismatchRetries = 0;
@@ -690,7 +771,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
             options.cwd,
             ({ generation, agents }) => {
               const authorizedTarget = availableSubagentsForCaller(agents, options.callerAgent)
-                .find((candidate) => candidate.name === options.agent.name);
+                .find((candidate) => candidate.name === (options.reservation.description === undefined ? options.agent.name : binding!.current().name));
               if (!authorizedTarget) throw new Error(SAFE_STAGE_AUTHORIZATION_ERROR);
               if (binding!.generation() !== generation) {
                 bindingMismatch = true;
@@ -724,10 +805,18 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         }
       };
 
-      const releaseAdmission = await supervisor.acquirePromptAdmission();
+      if (options.reservation.description !== undefined) {
+        if (!options.restoreIdle) await authorizeOperation(() => undefined);
+        background = createStageBackgroundController({ session, binding, supervisor, coordinator: options.coordinator,
+          options, initialResult: result, disposeRecovery, recovery,
+          shell: () => ({ path: (settingsManager as SettingsManager).getShellPath(), commandPrefix: (settingsManager as SettingsManager).getShellCommandPrefix() }),
+          onResult: (period) => options.backgroundLifecycle?.settled(period) });
+      }
+      const releaseAdmission = background ? () => {} : await supervisor.acquirePromptAdmission();
       let prompt: Promise<void>;
       try {
-        ({ prompt } = await authorizeOperation(() => ({
+        if (background) prompt = background.firstPeriod;
+        else ({ prompt } = await authorizeOperation(() => ({
           prompt: session!.prompt(`Task: ${options.task}`, { preflightResult: releaseAdmission }),
         })));
       } catch (error) {
@@ -747,6 +836,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
               if (error !== undefined) throw error;
             },
             async () => {
+              if (background) return;
               let quiescence: Promise<void> | undefined;
               for (;;) {
                 await recovery.waitForResolution();
@@ -794,6 +884,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         sessionPath,
         materialized: barrier.materialized,
         completion,
+        ...(background ? { background } : {}),
         subscribe(listener) {
           listeners.add(listener);
           if (!ownerSubscribed) {
@@ -803,6 +894,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           return () => listeners.delete(listener);
         },
         abort(reason) {
+          if (background) return background.cancel(reason);
           return requestAbort(reason);
         },
         dispose() {
@@ -810,6 +902,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           const ownedAbort = abortRequested ? (abortOperation ?? attemptAbort()) : Promise.resolve();
           let tracked!: Promise<void>;
           tracked = runCleanupSteps([
+            () => background?.dispose(),
             async () => {
               if (completionAwaited) return;
               await completion;
@@ -900,6 +993,8 @@ export async function createDefaultStageSessionLauncher(
   const { createSubagentExtension } = await import("../extensions/subagent");
   const { createSshBashExtension } = await import("../extensions/ssh-bash");
   const { createSessionTimelineExtension } = await import("../extensions/session-timeline");
+  const { createManagedShellExtension } = await import("../extensions/managed-shell");
+  const { createModelsExtension } = await import("../extensions/models");
   const { SubagentSupervisor } = await import("./supervisor");
   const agentDir = getAgentDir();
   return createStageSessionLauncher({
@@ -938,10 +1033,19 @@ export async function createDefaultStageSessionLauncher(
       coordinator,
       supervisor,
       publishTimelineEntry,
+      owner,
     }) => [
-      ...(binding.current().name === "experiment"
-        ? [{ name: "ssh-bash", factory: createSshBashExtension({ allowConfigure: false }) }]
-        : []),
+      { name: "models", factory: createModelsExtension({ modelRuntime: () => binding.modelRuntime(), model: () => binding.model() }) },
+      ...(coordinator.getShellService()?.execute ? [{ name: "managed-shell", factory: createManagedShellExtension({
+        manager: coordinator.getShellService() as import("../background/shell").ManagedShellService, owner,
+      }) }] : []),
+      { name: "ssh-bash", factory: (api: import("@earendil-works/pi-coding-agent").ExtensionAPI) => {
+        if (binding.current().name === "experiment") return createSshBashExtension({
+          allowConfigure: false,
+          manager: coordinator.getShellService() as import("../background/shell").ManagedShellService | undefined,
+          owner,
+        })(api);
+      } },
       {
         name: "agent-definition",
         factory: createAgentDefinitionExtension(binding),

@@ -29,6 +29,7 @@ try {
         const errors: string[] = [];
         const unexpected: string[] = [];
         const reads: string[] = [];
+        let resolutionRequests = 0;
         const workers: string[] = [];
         page.on("pageerror", (error) => errors.push(error.message));
         page.on("request", (request) => {
@@ -41,7 +42,7 @@ try {
             kind: "message", entryId: "assistant",
             message: {
               role: "assistant", timestamp: 1,
-              content: 'Read results/table.txt, `/shared/report.txt`, and [notes](notes/my%20draft.txt). Missing: missing.txt.\n\n$e^{i\\pi}+1=0$\n\n```text\nresults/code.txt\n```',
+              content: 'Read results/table.txt, `/shared/report.txt`, and [notes](notes/my%20draft.txt). Missing: [missing.txt](missing.txt). Inert: `not-present.txt`.\n\n$e^{i\\pi}+1=0$\n\n```text\nresults/code.txt\n```',
             },
           }],
           subagents: [], runtimeConfigurationGeneration: 0,
@@ -50,6 +51,18 @@ try {
         await page.route("**/api/**", async (route) => {
           const url = new URL(route.request().url());
           const path = url.pathname;
+          if (path === "/api/sessions/file-smoke/file-references/resolve") {
+            assert.equal(route.request().method(), "POST");
+            const { references } = route.request().postDataJSON() as { references: string[] };
+            assert(Array.isArray(references));
+            resolutionRequests++;
+            const known = new Set(["/papers/results/table.txt", "/shared/report.txt", "/papers/notes/my draft.txt"]);
+            await route.fulfill({ json: { references: references.map((reference) => {
+              const file = reference.startsWith("/") ? reference : `/papers/${reference}`;
+              return { reference, paths: known.has(file) ? [file] : [], truncated: false };
+            }) } });
+            return;
+          }
           if (path.endsWith("/events")) {
             await route.fulfill({
               contentType: "text/event-stream",
@@ -91,14 +104,16 @@ try {
         await expect(relative).toBeVisible();
         await expect(chat.locator(".katex")).toBeVisible();
         await expect(chat.locator("[data-markdown-root] .katex")).toHaveCount(fallback ? 0 : 1);
-        assert.deepEqual(reads, [], "Recognition must not probe or read files");
+        assert.deepEqual(reads, [], "Recognition must not read file contents");
+        assert(resolutionRequests > 0, "Automatic paths require metadata resolution");
+        await expect(chat.getByRole("button", { name: "not-present.txt", exact: true })).toHaveCount(0);
         const draft = chat.getByRole("textbox", { name: /message/i });
         await draft.fill("preserved draft");
         if (!mobile) await expect(topbar.getByRole("button", { name: "Files browser", exact: true })).toHaveAttribute("aria-pressed", "false");
         await relative.focus();
         await relative.press("Enter");
         await expect(files).toBeVisible();
-        await expect(files.getByText("preview:/papers/results/table.txt", { exact: true })).toBeVisible();
+        await expect(files.getByRole("region", { name: "File source" })).toContainText("preview:/papers/results/table.txt");
         if (mobile) await expect(work.getByRole("tab", { name: "Files", exact: true })).toBeFocused();
         if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
         await relative.click();
@@ -106,15 +121,15 @@ try {
         await files.getByRole("button", { name: "Close table.txt", exact: true }).click();
         if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
         await relative.click();
-        await expect(files.getByText("preview:/papers/results/table.txt", { exact: true })).toBeVisible();
+        await expect(files.getByRole("region", { name: "File source" })).toContainText("preview:/papers/results/table.txt");
         if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
         else await topbar.getByRole("button", { name: "Agent list", exact: true }).click();
         await chat.getByRole("button", { name: "/shared/report.txt", exact: true }).click();
-        await expect(files.getByText("preview:/shared/report.txt", { exact: true })).toBeVisible();
+        await expect(files.getByRole("region", { name: "File source" })).toContainText("preview:/shared/report.txt");
         for (const [label, content] of [["notes", "preview:/papers/notes/my draft.txt"], ["missing.txt", "File not found"]] as const) {
           if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
           await chat.getByRole("button", { name: label, exact: true }).click();
-          await expect(files.getByText(content, { exact: label !== "missing.txt" })).toBeVisible();
+          await expect(files.getByRole("region", { name: "File source" })).toContainText(content);
         }
         if (mobile) await work.getByRole("tab", { name: "Chat", exact: true }).click();
         await expect(draft).toHaveValue("preserved draft");

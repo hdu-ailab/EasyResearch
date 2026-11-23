@@ -61,6 +61,7 @@ function mutableBinding(initial: AgentConfig): AgentRuntimeBinding & { set(agent
   let generation = 1;
   return {
     current: () => current,
+    thinking: () => current.thinking ?? "off",
     generation: () => generation,
     set: (next, nextGeneration) => {
       current = next;
@@ -150,7 +151,7 @@ describe("createSubagentDispatchExtension live supervised dispatch", () => {
     const runtime = runtimeHarness();
     const loaded = await loadExtension({ ...runtime, binding, liveConfiguration: live });
     await loaded.handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/paper" });
-    expect(loaded.tools.get("subagent")?.description).toContain("Available subagents: search.");
+    expect(loaded.tools.get("subagent")?.description).toContain("- search: search");
 
     live.onResolve = () => {
       live.onResolve = undefined;
@@ -158,12 +159,12 @@ describe("createSubagentDispatchExtension live supervised dispatch", () => {
     };
     await loaded.handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
     expect(loaded.activeTools()).toEqual(["read"]);
-    expect(loaded.tools.get("subagent")?.description).toContain("Available subagents: search.");
+    expect(loaded.tools.get("subagent")?.description).toContain("- search: search");
 
     binding.set(paperV2, live.generation);
     await loaded.handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
     expect(loaded.activeTools()).toEqual(["read", "subagent"]);
-    expect(loaded.tools.get("subagent")?.description).toContain("Available subagents: reviewer.");
+    expect(loaded.tools.get("subagent")?.description).toContain("- reviewer: reviewer");
   });
 
   it("authorizes and atomically reserves from the latest caller policy at execution", async () => {
@@ -182,13 +183,13 @@ describe("createSubagentDispatchExtension live supervised dispatch", () => {
     await loaded.handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
     const result = await loaded.tools.get("subagent")!.execute(
       "call-reviewer",
-      { agent: "reviewer", task: "review" },
+      { agent: "reviewer", description: "Review sources", prompt: "review" },
       undefined,
       undefined,
       context(runtime.manager),
     );
 
-    expect(result.content).toEqual([{ type: "text", text: "reviewer_0 is working." }]);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining("sessionID: child-reviewer_0") }]);
     expect(runtime.launch).toHaveBeenCalledWith(
       expect.objectContaining({ agent: "reviewer", agentId: "reviewer_0" }),
       expect.objectContaining({
@@ -210,10 +211,10 @@ describe("createSubagentDispatchExtension live supervised dispatch", () => {
     await second.handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
 
     await first.tools.get("subagent")!.execute(
-      "call-1", { agent: "search", task: "one" }, undefined, undefined, context(runtime.manager),
+      "call-1", { agent: "search", description: "Find sources", prompt: "one" }, undefined, undefined, context(runtime.manager),
     );
     await second.tools.get("subagent")!.execute(
-      "call-2", { agent: "search", task: "two" }, undefined, undefined, context(runtime.manager),
+      "call-2", { agent: "search", description: "Find sources", prompt: "two" }, undefined, undefined, context(runtime.manager),
     );
 
     expect(runtime.launches.map(({ agentId }) => agentId)).toEqual(["search_0", "search_1"]);
@@ -236,7 +237,7 @@ describe("createSubagentDispatchExtension live supervised dispatch", () => {
 
     expect(loaded.activeTools()).toEqual(["read"]);
     await expect(oldTool.execute(
-      "call-leaf", { agent: "reviewer", task: "review" }, undefined, undefined, context(runtime.manager),
+      "call-leaf", { agent: "reviewer", description: "Review sources", prompt: "review" }, undefined, undefined, context(runtime.manager),
     )).rejects.toThrow(/disabled|unavailable/i);
     expect(runtime.launch).not.toHaveBeenCalled();
   });

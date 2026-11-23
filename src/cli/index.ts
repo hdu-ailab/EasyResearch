@@ -18,10 +18,8 @@ import {
   serverLogFile,
   stopServerProcess,
 } from "./server-process";
-import { runServe } from "./commands/serve";
 import { performFirstRunSetup } from "./first-run";
 import { acquireTransitionLease, type RuntimeLease } from "./runtime-lease";
-import { consumeDesktopServeRequest, runDesktopServe } from "./desktop-entry";
 import {
   loadNetworkPolicy,
   reconstructChildEnvironment,
@@ -331,6 +329,8 @@ class DesktopOwnsRuntimeError extends Error {
 }
 
 async function runRuntimeEntry(args: string[]): Promise<void> {
+  const { consumeDesktopServeRequest, runDesktopServe } = await import("./desktop-entry");
+  const { runServe } = await import("./commands/serve");
   restoreBunSandboxEnvironment(process.env);
   let desktopRequest: ReturnType<typeof consumeDesktopServeRequest> | undefined;
   if (args[0] === "--desktop-serve") {
@@ -409,7 +409,10 @@ async function runRuntimeEntry(args: string[]): Promise<void> {
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  if (hasHelpFlag(args)) {
+  if (args.length === 1 && args[0] === "--shell-worker") {
+    const { runShellWorker } = await import("../background/shell/worker-entry");
+    await runShellWorker();
+  } else if (hasHelpFlag(args)) {
     writeHelpOutput();
   } else if (args[0] === "--version" || args[0] === "-v") {
     writeVersionOutput(embeddedPackageVersion());

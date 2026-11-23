@@ -1,7 +1,15 @@
 import type { Language } from "../preferences";
+import { backgroundTaskEn, backgroundTaskZh } from "./background-task-messages";
+import { filePreviewEn, filePreviewZh } from "./file-preview-messages";
+import { fileReferenceEn, fileReferenceZh } from "./file-reference-messages";
+import { officePreviewEn, officePreviewZh } from "./office-preview-messages";
 import { skillMarketEn, skillMarketZh } from "./skill-marketplace-messages";
 
 export const en = {
+  ...backgroundTaskEn,
+  ...fileReferenceEn,
+  ...filePreviewEn,
+  ...officePreviewEn,
   ...skillMarketEn,
   "context.title": "Context manager",
   "context.compactAll": "Compress whole session",
@@ -158,11 +166,12 @@ export const en = {
   "settings.restart.restarting": "Restarting…",
   "settings.restart.error": "Could not start the restart.",
   "settings.restart.retry": "Retry",
-  "settings.restart.busyTitle": "Stop active work and restart?",
-  "settings.restart.busySessions": "{n} active sessions will stop.",
+  "settings.restart.busyTitle": "Restart with active work?",
+  "settings.restart.busySessions":
+    "{n} active sessions will resume after restart. Commands that cannot be handed over will be interrupted.",
   "settings.restart.busyAuth": "The active provider login will be cancelled.",
   "settings.restart.cancel": "Cancel",
-  "settings.restart.force": "Stop work and restart",
+  "settings.restart.force": "Restart anyway",
   "settings.discard.title": "Discard network changes?",
   "settings.discard.description": "Your unsaved Network settings will be lost.",
   "settings.discard.cancel": "Keep editing",
@@ -726,6 +735,10 @@ export const en = {
 export type MessageKey = keyof typeof en;
 
 export const zhCN: Record<MessageKey, string> = {
+  ...backgroundTaskZh,
+  ...fileReferenceZh,
+  ...filePreviewZh,
+  ...officePreviewZh,
   ...skillMarketZh,
   "context.title": "上下文管理",
   "context.compactAll": "压缩整个会话",
@@ -876,11 +889,11 @@ export const zhCN: Record<MessageKey, string> = {
   "settings.restart.restarting": "正在重启…",
   "settings.restart.error": "无法启动重启。",
   "settings.restart.retry": "重试",
-  "settings.restart.busyTitle": "停止活动任务并重启？",
-  "settings.restart.busySessions": "将停止 {n} 个活动会话。",
+  "settings.restart.busyTitle": "有活动任务，仍要重启？",
+  "settings.restart.busySessions": "{n} 个活动会话将在重启后恢复。无法交接的命令将被中断。",
   "settings.restart.busyAuth": "活动的提供商登录将被取消。",
   "settings.restart.cancel": "取消",
-  "settings.restart.force": "停止任务并重启",
+  "settings.restart.force": "仍然重启",
   "settings.discard.title": "放弃网络更改？",
   "settings.discard.description": "未保存的网络设置将丢失。",
   "settings.discard.cancel": "继续编辑",

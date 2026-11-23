@@ -89,7 +89,12 @@ user action or corrected non-secret value. Never dispatch Experiment before
 configuration succeeds.
 
 After configuration, use unrestricted `ssh-bash` `run` with short explicit
-deadlines to create and inspect the selected remote project root. For a
+runtime limits to create and inspect the selected remote project root. Run
+timeouts are milliseconds: use `background: true, timeout: 30000` for a
+30-second runtime limit and await automatic completion before dependent checks.
+A foreground timeout only backgrounds the original command when its wait expires;
+it does not enforce a runtime deadline. Do not poll or duplicate pending preflight
+commands. Configure/test retain their own bounded connection probes. For a
 home-relative slug, address it as `$HOME/<slug>` in remote Bash; for an explicit
 absolute root, use that exact validated path. Create missing directories with an
 owner-private umask. If the final directory already exists, preserve its

@@ -12,12 +12,22 @@ export class RequestBudget {
   private slow = 0;
   private readonly waiting: Waiting[] = [];
 
-  run<T>(path: string, signal: AbortSignal | null | undefined, operation: () => Promise<T>): Promise<T> {
+  run<T>(
+    path: string,
+    signal: AbortSignal | null | undefined,
+    operation: () => Promise<T>,
+    method = "GET",
+  ): Promise<T> {
     if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
     if (this.waiting.length >= 128) return Promise.reject(new Error("Too many pending requests. Retry shortly."));
     const pathname = path.split("?")[0] ?? path;
-    const control =
-      /\/(?:abort|stop|messages|retry|respond|cancel)$/.test(pathname) || pathname === "/api/runtime/restart";
+    const backgroundAction = /^\/api\/sessions\/[^/]+\/background(?:\/[^/]+\/cancel)?$/.test(pathname);
+    const control = backgroundAction
+      ? method.toUpperCase() === "POST"
+      : (method.toUpperCase() === "PUT" &&
+          /^\/api\/sessions\/[^/]+\/background-output-watches\/[^/]+$/.test(pathname)) ||
+        /\/(?:abort|stop|messages|retry|respond|cancel)$/.test(pathname) ||
+        pathname === "/api/runtime/restart";
     const slow = /^\/api\/(?:entries|file|directories)(?:\/|$)/.test(pathname);
     return new Promise<T>((resolve, reject) => {
       const entry: Waiting = {

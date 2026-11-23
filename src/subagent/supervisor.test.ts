@@ -254,6 +254,19 @@ function reserve(coordinator: SubagentCoordinator, toolCallId: string, requested
   });
 }
 
+function archivedOwnedChild(coordinator: SubagentCoordinator, childSessionId?: string): string {
+  const reservation = coordinator.reserveDispatch({ ownerSessionId: coordinator.getRootSessionManager().getSessionId(),
+    toolCallId: "archived-child", requested: "search", catalog: { all: [searchAgent], available: [searchAgent] } });
+  const id = childSessionId ?? `archived-${reservation.launchId}`;
+  coordinator.recordMaterialized(reservation, { childSessionId: id, sessionPath: `/sessions/${id}.jsonl` });
+  coordinator.recordLaunchAcknowledged(reservation.launchId);
+  coordinator.recordTerminal({ launchId: reservation.launchId, status: "complete" });
+  coordinator.recordNotificationBatch({ batchId: `archived:${reservation.launchId}`, ownerSessionId: reservation.ownerSessionId,
+    launchIds: [reservation.launchId], content: "Previously delivered result", triggerTurn: false });
+  coordinator.acknowledgeNotification(`archived:${reservation.launchId}`);
+  return reservation.launchId;
+}
+
 const liveConfiguration = {
   generation: 1,
   synchronize: async () => {},
@@ -782,8 +795,7 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     expect(coordinator.journal().jobs.get(reservation.launchId)?.status).toBe("pre_materialization_failed");
   });
 
-  it("passes continuation identity and the exact cwd to the launcher", async () => {
-    const stage = new FakeStage("search_0", "saved-child", "/sessions/saved-child.jsonl");
+  it("does not infer continuation authority from an alias-only history reference", () => {
     const manager = new MemorySessionManager();
     manager.appendCustomEntry(AGENT_ALIAS_ENTRY, {
       id: "search_0",
@@ -792,6 +804,15 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
       sessionPath: "/sessions/saved-child.jsonl",
     });
     const coordinator = new SubagentCoordinator(manager);
+    expect(() => reserve(coordinator, "tool-1", "search_0")).toThrow(/owned immediate child/);
+    expect(readAgentAliases(manager.entries)).toHaveLength(1);
+    expect(coordinator.journal().jobs.size).toBe(0);
+  });
+
+  it("passes continuation identity and the exact cwd to the launcher", async () => {
+    const stage = new FakeStage("search_0", "saved-child", "/sessions/saved-child.jsonl");
+    const coordinator = new SubagentCoordinator(new MemorySessionManager());
+    archivedOwnedChild(coordinator, "saved-child");
     const parent = new FakeParentSession(true);
     const launchStage = vi.fn(async () => stage.handle);
     const supervisor = new SubagentSupervisor({ coordinator, launchStage });
@@ -858,6 +879,7 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
     });
     const events: SubagentSupervisorEvent[] = [];
     coordinator.subscribe((event) => events.push(event));
+    archivedOwnedChild(coordinator, "writing-child");
     const reservation = coordinator.reserveDispatch({
       ownerSessionId: "writing-child",
       toolCallId: "nested-tool",
@@ -990,6 +1012,18 @@ describe("SubagentSupervisor ownership and launch ordering", () => {
 });
 
 describe("SubagentSupervisor notification acknowledgement", () => {
+  it("leaves unknown-launch batches inert during live replay and disposal", async () => {
+    const { coordinator, parent, supervisor } = makeHarness({ launchStage: async () => { throw new Error("No launch expected"); }, autoAcknowledge: true });
+    coordinator.recordNotificationBatch({ batchId: "unknown-launch", ownerSessionId: parent.sessionId,
+      launchIds: ["not-a-recorded-child"], content: "Unowned historical notice", triggerTurn: true });
+    await supervisor.flushNotifications();
+    expect(parent.sent).toEqual([]);
+    expect(supervisor.isQuiescent()).toBe(true);
+    await supervisor.dispose();
+    expect(coordinator.journal().pendingBatches.map((batch) => batch.batchId)).toEqual(["unknown-launch"]);
+    expect(coordinator.journal().acknowledgedBatchIds.has("unknown-launch")).toBe(false);
+  });
+
   it.each([false, true])("bounds failed native sends before persistence and retries on recovery (admitted: %s)", async (admitted) => {
     const scheduled: Array<() => void> = [];
     const { coordinator, parent, supervisor } = makeHarness({
@@ -1005,7 +1039,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
       throw new Error("Native run rejected before persistence");
     };
     coordinator.recordNotificationBatch({
-      batchId: "retained", ownerSessionId: parent.sessionId, launchIds: [], content: "HANDOFF", triggerTurn: true,
+      batchId: "retained", ownerSessionId: parent.sessionId, launchIds: [archivedOwnedChild(coordinator)], content: "HANDOFF", triggerTurn: true,
     });
     await supervisor.flushNotifications().catch(() => {});
     await turn();
@@ -1041,7 +1075,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
       if (index === 0) await wakeRun.promise;
     };
     coordinator.recordNotificationBatch({
-      batchId: "wake-a", ownerSessionId: parent.sessionId, launchIds: [], content: "handoff A", triggerTurn: true,
+      batchId: "wake-a", ownerSessionId: parent.sessionId, launchIds: [archivedOwnedChild(coordinator)], content: "handoff A", triggerTurn: true,
     });
     const firstAdmission = supervisor.flushNotifications();
     void firstAdmission.catch(() => {});
@@ -1050,7 +1084,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     parent.acknowledgeMessage(0);
     await turn();
     coordinator.recordNotificationBatch({
-      batchId: "steer-b", ownerSessionId: parent.sessionId, launchIds: [], content: "handoff B", triggerTurn: true,
+      batchId: "steer-b", ownerSessionId: parent.sessionId, launchIds: [archivedOwnedChild(coordinator)], content: "handoff B", triggerTurn: true,
     });
     const secondAdmission = supervisor.flushNotifications();
     void secondAdmission.catch(() => {});
@@ -1081,7 +1115,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     });
     parent.sendImpl = async () => wakeRun.promise;
     coordinator.recordNotificationBatch({
-      batchId: "wake", ownerSessionId: parent.sessionId, launchIds: [], content: "handoff", triggerTurn: true,
+      batchId: "wake", ownerSessionId: parent.sessionId, launchIds: [archivedOwnedChild(coordinator)], content: "handoff", triggerTurn: true,
     });
     let admitted = false;
     const sending = supervisor.flushNotifications().then(() => { admitted = true; });
@@ -1178,7 +1212,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
       expect.objectContaining({
         message: expect.objectContaining({
           content: expect.stringContaining("Complete subagent:search_0"),
-          details: { batchId: "batch-0", outcomes: [
+          details: { batchId: "batch-0", inputID: "batch-0", ownerSessionID: "parent", outcomes: [
             { launchId: firstReservation.launchId, agentId: "search_0", status: "complete", text: "first" },
           ] },
         }),
@@ -1197,7 +1231,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     expect(parent.sent[1]).toEqual(expect.objectContaining({
       message: expect.objectContaining({
         content: expect.stringContaining("Complete subagent:search_1"),
-        details: { batchId: "batch-1", outcomes: [
+        details: { batchId: "batch-1", inputID: "batch-1", ownerSessionID: "parent", outcomes: [
           { launchId: secondReservation.launchId, agentId: "search_1", status: "complete", text: "second" },
         ] },
       }),
@@ -1337,7 +1371,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     coordinator.recordNotificationBatch({
       batchId: "recovery-batch",
       ownerSessionId: "parent",
-      launchIds: ["recovered-launch"],
+      launchIds: [archivedOwnedChild(coordinator)],
       content: "recovered hidden handoff",
       triggerTurn: false,
     });
@@ -1400,7 +1434,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
     ]);
     expect(parent.sent[0]?.message.content).toContain("Working subagent:search_2");
     expect(parent.sent[0]?.message.content).toContain("Complete subagent:search_0\nComplete subagent:search_1");
-    expect(parent.sent[0]?.message.details).toEqual({ batchId: "batch-0", outcomes: [
+    expect(parent.sent[0]?.message.details).toEqual({ batchId: "batch-0", inputID: "batch-0", ownerSessionID: "parent", outcomes: [
       { launchId: reservations[0]!.launchId, agentId: "search_0", status: "complete", text: "first" },
       { launchId: reservations[1]!.launchId, agentId: "search_1", status: "complete", text: "second" },
     ] });
@@ -1624,7 +1658,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
 
     await expect(supervisor.flushNotifications()).rejects.toThrow("send failed");
     expect(supervisor.hasPendingNotifications()).toBe(true);
-    const expectedDetails = { batchId: "batch-0", outcomes: [
+    const expectedDetails = { batchId: "batch-0", inputID: "batch-0", ownerSessionID: "parent", outcomes: [
       { launchId: reservation.launchId, agentId: "search_0", status: "complete", text: body },
     ] };
     expect(parent.sent[0]?.message.details).toEqual(expectedDetails);
@@ -1650,7 +1684,7 @@ describe("SubagentSupervisor notification acknowledgement", () => {
       exitCode: 1, errorMessage: "private diagnostic", stopReason: "error",
     }));
     await supervisor.waitForQuiescence();
-    expect(parent.sent[0]?.message.details).toEqual({ batchId: "batch-0", outcomes: [
+    expect(parent.sent[0]?.message.details).toEqual({ batchId: "batch-0", inputID: "batch-0", ownerSessionID: "parent", outcomes: [
       { launchId: reservation.launchId, agentId: "search_0", status: "error" },
     ] });
     expect(parent.sent[0]?.message.content).toContain('"session_path":"/sessions/child-0.jsonl"');

@@ -115,7 +115,15 @@ export type {
   ProjectWatchReplacement,
   ProjectWatchReplacementResult,
 } from "../../web/configuration-project-watches";
+export {
+  cancelBackgroundTask,
+  getBackgroundTasks,
+  getShellOutput,
+  promoteBackgroundTasks,
+  replaceBackgroundOutputWatches,
+} from "./api/background";
 export { applyContextEdits, getContextItemText, getSessionContext, previewContextEdits } from "./api/context";
+export { resolveFileReferences } from "./api/file-references";
 export {
   createHtmlPreview,
   HTML_SOURCE_MAX_BYTES,

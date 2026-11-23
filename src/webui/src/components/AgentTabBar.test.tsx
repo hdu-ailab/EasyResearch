@@ -41,7 +41,7 @@ describe("AgentTabBar", () => {
     expect(select.contains(stop)).toBe(false);
     expect(select.parentElement).toBe(stop.parentElement);
     await userEvent.setup().click(stop);
-    expect(props.onStop).toHaveBeenCalledWith("call-1");
+    expect(props.onStop).toHaveBeenCalledWith("tool:root:call-1");
     expect(props.onSelect).not.toHaveBeenCalled();
   });
 
@@ -63,7 +63,7 @@ describe("AgentTabBar", () => {
 
     const user = userEvent.setup();
     await user.click(action);
-    expect(props.onStop).toHaveBeenCalledWith("call-1");
+    expect(props.onStop).toHaveBeenCalledWith("session:child-uuid");
     expect(props.onClose).toHaveBeenCalledWith("session:child-uuid");
   });
 
@@ -147,7 +147,7 @@ describe("AgentTabBar", () => {
         researchAssistantStatus="idle"
         onSelect={() => {}}
         onClose={() => {}}
-        onStop={() => {}}
+        onStop={() => undefined}
         trailing={<span>meter</span>}
       />,
     );

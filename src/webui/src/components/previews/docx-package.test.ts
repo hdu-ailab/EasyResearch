@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DocxPackageError, type DocxPackageLimits, inspectDocxPackage } from "./docx-package";
+import { DocxPackageError, type DocxPackageLimits, inspectDocxPackage, inspectOfficePackage } from "./docx-package";
 
 interface ZipEntrySpec {
   name: string;
@@ -203,5 +203,41 @@ describe("inspectDocxPackage", () => {
 
   it("uses one typed error for package validation failures", () => {
     expect(() => inspectDocxPackage(new Uint8Array([1]).buffer, generousLimits)).toThrow(DocxPackageError);
+  });
+});
+
+describe.each([
+  ["docx", "word/document.xml"],
+  ["xlsx", "xl/workbook.xml"],
+  ["pptx", "ppt/presentation.xml"],
+] as const)("OOXML %s preflight", (kind, entry) => {
+  const required = [{ name: "[Content_Types].xml" }, { name: entry }];
+  it("accepts only its required root entries", () => {
+    expect(inspectOfficePackage(zipWithCentralDirectory(required), kind, generousLimits).entryCount).toBe(2);
+    expect(() =>
+      inspectOfficePackage(zipWithCentralDirectory([{ name: "[Content_Types].xml" }]), kind, generousLimits),
+    ).toThrowError(expect.objectContaining({ code: `not-${kind}` }));
+  });
+  it("retains encryption and expanded-size guards across formats", () => {
+    expect(() =>
+      inspectOfficePackage(
+        zipWithCentralDirectory([{ ...required[0]!, flags: 1 }, required[1]!]),
+        kind,
+        generousLimits,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "encrypted" }));
+    expect(() =>
+      inspectOfficePackage(
+        zipWithCentralDirectory([...required, { name: "payload", uncompressedSize: 101 }]),
+        kind,
+        generousLimits,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "entry-too-large" }));
+  });
+  it.each(["duplicate", "../escape", "/absolute", "a/../b", "a\\b"])("rejects ambiguous member names: %s", (name) => {
+    const entries = name === "duplicate" ? [...required, required[1]!] : [...required, { name }];
+    expect(() => inspectOfficePackage(zipWithCentralDirectory(entries), kind, generousLimits)).toThrowError(
+      expect.objectContaining({ code: "malformed" }),
+    );
   });
 });

@@ -896,7 +896,7 @@ describe("web routes", () => {
       expect(readFileSync(root.path, "utf8")).toBe(bytes);
     });
 
-    async function startProductionRoutes() {
+    async function startProductionRoutes(managedHost?: boolean) {
       const resolveFactory = vi.spyOn(PiSessionFactory, "resolve").mockResolvedValue(factory as never);
       const createLive = vi.spyOn(liveConfigurationModule, "createLiveConfiguration").mockReturnValue(fakeConfiguration().live);
       onTestFinished(() => { resolveFactory.mockRestore(); createLive.mockRestore(); vi.unstubAllGlobals(); });
@@ -907,9 +907,23 @@ describe("web routes", () => {
           return { port: 43210, stop: () => {} };
         },
       });
-      const server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy() });
+      const server = await startServer({ host: "127.0.0.1", port: 0, networkPolicy: directNetworkPolicy(),
+        ...(managedHost === undefined ? {} : { ownsExclusiveServerLease: managedHost,
+          daemonControl: { token: "fixture-control", runtimeId: "fixture-runtime", requestShutdown() {} } }),
+      });
       return { server, productionHandler };
     }
+
+    it.each([false, true])("requires exclusive managed-host custody before recovering root inventory (%s)", async (managedHost) => {
+      const { root } = await persistentFixture();
+      root.manager.appendCustomEntry("easyresearch:background-owner", { version: 1, sessionId: root.id, active: true });
+      const { server, productionHandler } = await startProductionRoutes(managedHost);
+      try {
+        const response = await productionHandler(new Request("http://localhost/api/active-sessions"));
+        const body = await response.json() as { sessions: Array<{ id: string }> };
+        expect(body.sessions.map((session) => session.id)).toEqual(managedHost ? [root.id] : []);
+      } finally { await server.stop(); }
+    });
 
     it("wires production startServer to the native store, registry cleanup and removal", async () => {
       const { root, child, other } = await persistentFixture();
@@ -4604,7 +4618,7 @@ describe("web routes", () => {
       expect(createDaemonAuthRuntimeMock).toHaveBeenCalledTimes(1);
       expect(injected).toBeDefined();
       expect(injected?.generation).toBe(1);
-      expect(resolveFactory).toHaveBeenCalledWith(injected, expect.any(Object));
+      expect(resolveFactory).toHaveBeenCalledWith(injected, expect.any(Object), false);
       const daemonOptions = createDaemonAuthRuntimeMock.mock.calls[0]![0];
       await daemonOptions.createModelRuntime();
       expect(createModelRuntime).toHaveBeenCalledWith({

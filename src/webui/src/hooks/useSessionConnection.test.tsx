@@ -148,6 +148,82 @@ describe("useSessionConnection", () => {
     vi.mocked(api.navigateSessionTree).mockReset().mockResolvedValue({ cancelled: false, leafId: null });
   });
 
+  it("uses the snapshot barrier for full background replacements and ignores malformed or superseded events", async () => {
+    const stale = deferred<SessionSnapshotDto>();
+    vi.mocked(api.getSnapshot).mockReturnValueOnce(stale.promise);
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    const task = {
+      id: "shell",
+      kind: "shell",
+      sessionID: "s1",
+      description: "Train",
+      status: "running",
+      blocking: false,
+    };
+    emit({ ...initialSnapshot, type: "snapshot", backgroundTasks: [task] });
+    expect(result.current.view.backgroundTasks).toEqual([task]);
+    emit({ type: "background_tasks_changed", tasks: [] });
+    await act(async () => stale.resolve({ ...initialSnapshot, backgroundTasks: [task] } as never));
+    expect(result.current.view.backgroundTasks).toEqual([]);
+    emit({ type: "background_tasks_changed", tasks: [{ ...task, blocking: "yes" }] });
+    expect(result.current.view.backgroundTasks).toEqual([]);
+    emit({ ...initialSnapshot, type: "snapshot", backgroundTasks: [task] });
+    act(() => result.current.refresh());
+    await waitFor(() => expect(handlers.length).toBe(2));
+    emit({ ...initialSnapshot, type: "snapshot", backgroundTasks: [] });
+    emit({ type: "background_tasks_changed", tasks: [task] }, 0);
+    expect(result.current.view.backgroundTasks).toEqual([]);
+  });
+
+  it("delivers output invalidations through the current root stream after settlement without changing history", async () => {
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const invalidate = vi.fn();
+    const unsubscribe = result.current.subscribeBackgroundOutput(invalidate);
+    const messages = result.current.view.messages;
+    emit({ type: "agent_settled" });
+    emit({ type: "background_output_changed", taskId: "shell-a" });
+    expect(invalidate).toHaveBeenCalledWith("shell-a");
+    emit({ type: "background_output_changed", taskId: "" });
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    act(() => result.current.refresh());
+    await waitFor(() => expect(handlers).toHaveLength(2));
+    emit({ type: "background_output_changed", taskId: "old-root-shell" }, 0);
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(result.current.view.messages.map((message) => message.text)).toEqual(
+      messages.map((message) => message.text),
+    );
+    unsubscribe();
+    emit({ type: "background_output_changed", taskId: "shell-a" });
+    expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not roll back background events while a navigation snapshot is in flight", async () => {
+    const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const pending = deferred<SessionSnapshotDto>();
+    vi.mocked(api.getSnapshot).mockReturnValueOnce(pending.promise);
+    let navigation!: ReturnType<typeof result.current.navigateTree>;
+    act(() => {
+      navigation = result.current.navigateTree("entry");
+    });
+    await waitFor(() => expect(api.getSnapshot).toHaveBeenCalledTimes(2));
+    const task = {
+      id: "shell",
+      kind: "shell",
+      sessionID: "s1",
+      description: "Train",
+      status: "running",
+      blocking: false,
+    };
+    emit({ type: "background_tasks_changed", tasks: [task] });
+    await act(async () => {
+      pending.resolve({ ...initialSnapshot, backgroundTasks: [] });
+      await navigation;
+    });
+    expect(result.current.view.backgroundTasks).toEqual([task]);
+  });
+
   it("hydrates the parent session and lets reconnect snapshots replace ordinary transcript state", async () => {
     const { result } = renderHook(() => useSessionConnection({ initialSessionId: "s1", cwd: "/paper" }));
 

@@ -13,6 +13,7 @@ afterEach(() => { vi.useRealTimers(); });
 
 describe("keyless HTTP client", () => {
   it("sends honest anonymous headers and keeps body consumption inside the injected scope", async () => {
+    vi.useFakeTimers({ now: 1000 });
     const scope = new AsyncLocalStorage<string>();
     const observations: Array<string | undefined> = [];
     const fetch = fetcher(async (_url, init) => {

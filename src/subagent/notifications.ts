@@ -1,4 +1,6 @@
 export const AGENT_STATUS_TYPE = "easyresearch:agent_status";
+const PRIVATE_BACKGROUND_TYPES = new Set([AGENT_STATUS_TYPE, "easyresearch:background_result", "easyresearch:subagent_wake",
+  "easyresearch:subagent_input", "easyresearch:background_inbox", "easyresearch:child_selection", "easyresearch:subagent_cancelled_inputs"]);
 
 export interface TerminalNotificationOutcome {
   launchId: string;
@@ -110,7 +112,7 @@ export function privateSubagentEventDataReason(
   }
   const source = value as Record<string, unknown>;
   if ("sessionPath" in source || "session_path" in source) return "session path";
-  if (source.customType === AGENT_STATUS_TYPE) return "hidden supervisor status";
+  if (typeof source.customType === "string" && PRIVATE_BACKGROUND_TYPES.has(source.customType)) return "hidden supervisor status";
   for (const item of Object.values(source)) {
     const reason = privateSubagentEventDataReason(item, seen);
     if (reason) return reason;

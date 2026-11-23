@@ -13,12 +13,20 @@ import {
 
 export const THIRD_PARTY_NOTICES_FILE = "THIRD_PARTY_NOTICES.txt";
 export const THIRD_PARTY_NOTICE_ROOTS = [
+  { name: "@betteroffice/fonts", version: "0.4.0" },
+  { name: "@betteroffice/pptx", version: "0.2.0" },
+  { name: "@betteroffice/xlsx", version: "0.3.0" },
   { name: "axios", version: "1.19.0" },
   { name: "google-auth-library", version: "10.9.1" },
   { name: "open-websearch", version: "2.1.11" },
   { name: "ssh2", version: "1.17.0" },
   { name: "undici", version: "8.9.0" },
 ] as const;
+
+const FONT_LICENSE_FILES = [
+  "Caladea", "Carlito", "ComicRelief", "DMSans", "DMSerifDisplay", "Gelasio", "Heebo", "Inter",
+  "Liberation", "Montserrat", "NotoArabic", "NotoSansHebrew", "OpenSans", "Oswald", "Poppins", "Roboto", "SourceSans3",
+].map((family) => `LICENSES/OFL-${family}.txt`);
 
 const THIRD_PARTY_NOTICE_LICENSE_OVERRIDES: Readonly<
   Record<string, ThirdPartyLicenseOverride>
@@ -393,6 +401,9 @@ function collectPackageEntry(
   }
   const license = declaredLicense ?? override!.license;
   let licenseTexts = readRootLegalFiles(resolution.packageDir, isLicenseFile);
+  if (lockPackage.identity === "@betteroffice/fonts@0.4.0") {
+    licenseTexts.push(...FONT_LICENSE_FILES.map((file) => readRequiredLicenseFile(resolution.packageDir, lockPackage.identity, file)));
+  }
   let requiredLicenseText: ThirdPartyTextFile | undefined;
   if (override && "requiredLicenseFile" in override) {
     requiredLicenseText = readRequiredLicenseFile(
@@ -612,6 +623,14 @@ export function collectThirdPartyNoticeEntries(
     for (const entry of collectAdaptedSkillNoticeEntries(projectRoot)) {
       entries.set(`${entry.name}@${entry.version}`, entry);
     }
+    const name = "anomalyco/opencode (file-reference, artifact-view and background-execution adaptations)";
+    entries.set(name, {
+      name,
+      version: "ee5fe34e136488a1839ac73bcca8321c51a31b75",
+      license: "MIT",
+      licenseTexts: [readRequiredLicenseFile(projectRoot, name, "scripts/licenses/file-view-reference.txt")],
+      noticeTexts: [{ fileName: "SOURCE", text: "File-reference, artifact-view, background-execution behavior and tool instructions adapted from https://github.com/anomalyco/opencode/tree/ee5fe34e136488a1839ac73bcca8321c51a31b75\n" }],
+    });
   }
 
   return [...entries.values()].sort((left, right) => {

@@ -229,6 +229,47 @@ export async function smokeWorkFileOperations(base: string, pi: Pi, root: string
   const video = await upload(directory, "range fixture.MP4", videoBytes);
   const fullVideo = await fullRead(video.path, videoBytes);
   assert.equal(fullVideo.headers.get("content-type"), "video/mp4");
+  const formatNames: string[] = [];
+  for (const [extension, mime] of [
+    ["mp3", "audio/mpeg"], ["opus", "audio/ogg"], ["weba", "audio/webm"],
+    ["webm", "video/webm"], ["mov", "video/quicktime"], ["mkv", "video/x-matroska"],
+    ["tiff", "image/tiff"], ["heic", "image/heic"], ["otf", "font/otf"],
+    ["xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    ["pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  ]) {
+    const entry = await upload(directory, `format fixture.${extension}`, videoBytes);
+    formatNames.push(entry.name);
+    const raw = await fullRead(entry.path, videoBytes);
+    assert.equal(raw.headers.get("content-type"), mime);
+    const range = await request("/api/file/raw", { path: entry.path }, { headers: { Range: "bytes=7-29" } });
+    assertStatus(range, 206, `${extension} range`);
+    assert.equal(range.headers.get("content-type"), mime);
+    assert.deepEqual(range.bytes, videoBytes.subarray(7, 30));
+  }
+
+  mkdirSync(join(cwd, "references", "first"), { recursive: true });
+  mkdirSync(join(cwd, "references", "second"), { recursive: true });
+  const duplicatePaths = [join(cwd, "references", "first", "results.csv"), join(cwd, "references", "second", "results.csv")];
+  for (const file of duplicatePaths) writeFileSync(file, "label,value\nfixture,1\n");
+  const uniquePath = join(cwd, "references", "first", "唯一 workbook.xlsx");
+  writeFileSync(uniquePath, videoBytes);
+  const referenceSession = jsonValue<{ id: string }>(await request("/api/sessions", {}, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd }),
+  }), 200, "file-reference session");
+  try {
+    const references = jsonValue<{ references: Array<{ reference: string; paths: string[]; truncated: boolean }> }>(
+      await request(`/api/sessions/${referenceSession.id}/file-references/resolve`, {}, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ references: ["references/first/results.csv", "results.csv", "唯一 workbook.xlsx", "absent.txt"] }),
+      }), 200, "compiled file-reference resolution");
+    assert.deepEqual(references.references.find((entry) => entry.reference === "references/first/results.csv")?.paths, [duplicatePaths[0]]);
+    assert.deepEqual(references.references.find((entry) => entry.reference === "results.csv")?.paths.sort(), duplicatePaths.sort());
+    assert.deepEqual(references.references.find((entry) => entry.reference === "唯一 workbook.xlsx")?.paths, [uniquePath]);
+    assert.deepEqual(references.references.find((entry) => entry.reference === "absent.txt")?.paths, []);
+    assert(references.references.every((entry) => entry.truncated === false));
+  } finally {
+    assertStatus(await request(`/api/sessions/${referenceSession.id}/stop`, {}, { method: "POST" }), 200, "file-reference cleanup");
+  }
   for (const range of [
     { value: "bytes=7-29", start: 7, end: 29 },
     { value: "bytes=-17", start: videoBytes.length - 17, end: videoBytes.length - 1 },
@@ -287,8 +328,8 @@ export async function smokeWorkFileOperations(base: string, pi: Pi, root: string
   assert.equal(released.bytes.length, 0);
   assertStatus(await request(resourcePath), 404, "released scope cannot read resources");
 
-  assert.deepEqual(readdirSync(directory).sort(), [original.name, renamedName, video.name].sort(), "Success and rejection must remove owned staging");
-  assert.deepEqual(readdirSync(cwd).sort(), [basename(directory), basename(cancelledDirectory), basename(previewDirectory), empty.name].sort());
+  assert.deepEqual(readdirSync(directory).sort(), [original.name, renamedName, video.name, ...formatNames].sort(), "Success and rejection must remove owned staging");
+  assert.deepEqual(readdirSync(cwd).sort(), [basename(directory), basename(cancelledDirectory), basename(previewDirectory), empty.name, "references"].sort());
   assert.deepEqual(readFileSync(sessionPath), historyBytes, "File operations must not mutate native session history");
   assert(deadline > Date.now(), "Work file smoke exceeded its overall deadline");
   console.log("[smoke] work files: binary/empty/Unicode upload, no-clobber rename/read identity, attachment bytes, MP4 ranges, canceled-upload cleanup and scoped HTML resources passed");

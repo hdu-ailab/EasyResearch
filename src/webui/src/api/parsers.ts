@@ -68,6 +68,7 @@ import type {
   WorkspaceMutationResultDto,
 } from "../../../web/contracts";
 import type { ConfigFileDto, ConfigProjectsDto } from "../types";
+import { parseBackgroundTasks } from "./background";
 
 export interface ModelOption {
   provider: string;
@@ -1112,6 +1113,7 @@ export function parseSessionSnapshot(value: unknown): SessionSnapshotDto {
     timeline: parseTimeline(source.timeline),
     ...(source.history === undefined ? {} : { history: parseHistory(source.history) }),
     subagents: arrayOf(source.subagents, "subagents", parseSubagentSummary),
+    ...(source.backgroundTasks === undefined ? {} : { backgroundTasks: parseBackgroundTasks(source.backgroundTasks) }),
     ...(inlineUsage === undefined
       ? {}
       : { inlineUsage: arrayOf(inlineUsage, "inline API usage", parseApiUsageRecord) }),

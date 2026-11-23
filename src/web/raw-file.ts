@@ -1,3 +1,5 @@
+import { fileFormatFor } from "./file-formats";
+
 /**
  * Pure helpers for MIME-correct ranged raw file responses.
  *
@@ -36,17 +38,9 @@ export interface RawFileDescriptor {
 }
 
 const EXTENSION_MIME: Record<string, string> = {
-  ".pdf": "application/pdf",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".md": "text/markdown; charset=utf-8",
-  ".markdown": "text/markdown; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
   ".text": "text/plain; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".htm": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
-  ".csv": "text/csv; charset=utf-8",
-  ".tsv": "text/tab-separated-values; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".xml": "application/xml; charset=utf-8",
   ".yaml": "text/yaml; charset=utf-8",
@@ -59,18 +53,6 @@ const EXTENSION_MIME: Record<string, string> = {
   ".ts": "text/typescript; charset=utf-8",
   ".tsx": "text/typescript; charset=utf-8",
   ".ipynb": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".avif": "image/avif",
-  ".mp4": "video/mp4",
-  ".bmp": "image/bmp",
-  ".tif": "image/tiff",
-  ".tiff": "image/tiff",
-  ".ico": "image/x-icon",
   ".wasm": "application/wasm",
   ".zip": "application/zip",
   ".gz": "application/gzip",
@@ -78,15 +60,14 @@ const EXTENSION_MIME: Record<string, string> = {
   ".rar": "application/vnd.rar",
   ".7z": "application/x-7z-compressed",
   ".epub": "application/epub+zip",
-  ".ttf": "font/ttf",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
 };
 
 const DEFAULT_MIME_TYPE = "application/octet-stream";
 
 /** Maps a file name to a conservative MIME type, falling back to octet-stream. */
 export function mimeTypeFor(file: string): string {
+  const format = fileFormatFor(file);
+  if (format) return format.mimeType;
   const dot = file.lastIndexOf(".");
   if (dot === -1 || dot === file.length - 1) return DEFAULT_MIME_TYPE;
   return EXTENSION_MIME[file.slice(dot).toLowerCase()] ?? DEFAULT_MIME_TYPE;

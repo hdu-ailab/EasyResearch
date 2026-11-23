@@ -2,9 +2,10 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import ReactMarkdown from "react-markdown";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownBlock } from "../MarkdownBlock";
+import { FileReferenceBatch } from "./file-reference-batch";
 import { parseMarkdownBlocks } from "./parse";
 import { clearCompletedMarkdownCacheForTests, prepareMarkdownBlocks } from "./render";
-import { TranscriptFileContext } from "./TranscriptFileLink";
+import { FileReferenceResolutionContext, TranscriptFileContext } from "./TranscriptFileLink";
 
 vi.mock("mermaid", () => ({
   default: {
@@ -20,13 +21,18 @@ describe("prepareMarkdownBlocks", () => {
     const source = "`python experiments/train.py` · `/skill:paper-search` · `results/my report.md`";
     const blocks = prepareMarkdownBlocks(await parseMarkdownBlocks(source));
     const open = vi.fn();
+    const batch = new FileReferenceBatch(async (paths) => ({
+      references: paths.map((reference) => ({ reference, paths: [`/p/${reference}`], truncated: false })),
+    }));
     const { container } = render(
-      <TranscriptFileContext value={open}>
-        <section data-testid="worker-kinds">{blocks.map((block) => block.node)}</section>
-        <section data-testid="fallback-kinds">
-          <MarkdownBlock text={source} />
-        </section>
-      </TranscriptFileContext>,
+      <FileReferenceResolutionContext value={batch}>
+        <TranscriptFileContext value={open}>
+          <section data-testid="worker-kinds">{blocks.map((block) => block.node)}</section>
+          <section data-testid="fallback-kinds">
+            <MarkdownBlock text={source} />
+          </section>
+        </TranscriptFileContext>
+      </FileReferenceResolutionContext>,
     );
     for (const id of ["worker-kinds", "fallback-kinds"]) {
       const section = screen.getByTestId(id);
@@ -34,11 +40,12 @@ describe("prepareMarkdownBlocks", () => {
         "python experiments/train.py",
       );
       expect(section.querySelector('code[data-inline-kind="skill"]')?.textContent).toBe("/skill:paper-search");
-      expect(within(section).getAllByRole("button")).toHaveLength(1);
+      expect(await within(section).findAllByRole("button")).toHaveLength(1);
       fireEvent.click(within(section).getByRole("button", { name: "results/my report.md" }));
     }
     expect(open.mock.calls).toEqual([["results/my report.md"], ["results/my report.md"]]);
     expect(container.querySelectorAll("code[data-inline-kind] svg")).toHaveLength(4);
+    batch.dispose();
   });
 
   it.each([
@@ -61,14 +68,14 @@ describe("prepareMarkdownBlocks", () => {
     expect(container.querySelector("script, img, placeholder")).toBeNull();
   });
 
-  it("renders safe GFM, KaTeX, inert links, and Mermaid", async () => {
+  it("renders safe GFM, KaTeX, external HTTP links, and Mermaid", async () => {
     const source =
       "|a|b|\n|-|-|\n|1|2|\n\n$e^{i\\pi}+1=0$\n\n[link](https://example.com)\n\n```mermaid\ngraph TD; A-->B\n```";
     const blocks = prepareMarkdownBlocks(await parseMarkdownBlocks(source));
     const { container } = render(<div>{blocks.map((block) => block.node)}</div>);
     expect(screen.getByRole("table")).toBeTruthy();
     expect(container.querySelector(".katex")).toBeTruthy();
-    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByRole("link")).toHaveAttribute("href", "https://example.com");
     expect(container.querySelector("script")).toBeNull();
     expect(await screen.findByTestId("mermaid-svg")).toBeTruthy();
   });

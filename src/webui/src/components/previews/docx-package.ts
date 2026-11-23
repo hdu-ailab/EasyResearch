@@ -9,6 +9,8 @@ export type DocxPackageErrorCode =
   | "encrypted"
   | "zip64"
   | "not-docx"
+  | "not-xlsx"
+  | "not-pptx"
   | "too-many-entries"
   | "entry-too-large"
   | "archive-too-large";
@@ -35,7 +37,12 @@ const ZIP64_EXTRA_FIELD = 0x0001;
 const ZIP64_SENTINEL_16 = 0xffff;
 const ZIP64_SENTINEL_32 = 0xffffffff;
 const MAX_ZIP_COMMENT_BYTES = 0xffff;
-const REQUIRED_DOCX_ENTRIES = new Set(["[Content_Types].xml", "word/document.xml"]);
+export type OfficePackageKind = "docx" | "xlsx" | "pptx";
+const REQUIRED_ENTRIES: Record<OfficePackageKind, readonly string[]> = {
+  docx: ["[Content_Types].xml", "word/document.xml"],
+  xlsx: ["[Content_Types].xml", "xl/workbook.xml"],
+  pptx: ["[Content_Types].xml", "ppt/presentation.xml"],
+};
 
 function fail(code: DocxPackageErrorCode): never {
   throw new DocxPackageError(code);
@@ -81,6 +88,15 @@ function equalBytes(bytes: ArrayBuffer, left: number, right: number, length: num
 }
 
 export function inspectDocxPackage(bytes: ArrayBuffer, limits: DocxPackageLimits): DocxPackageSummary {
+  return inspectOfficePackage(bytes, "docx", limits);
+}
+
+/** Shared OOXML envelope check; parsing and CRC/inflate validation remain engine-owned. */
+export function inspectOfficePackage(
+  bytes: ArrayBuffer,
+  kind: OfficePackageKind,
+  limits: DocxPackageLimits,
+): DocxPackageSummary {
   const view = new DataView(bytes);
   const eocdOffset = findEndOfCentralDirectory(view);
   const disk = view.getUint16(eocdOffset + 4, true);
@@ -183,7 +199,19 @@ export function inspectDocxPackage(bytes: ArrayBuffer, limits: DocxPackageLimits
     localRanges.push({ start: localOffset, end: checkedEnd(localDataOffset, compressedSize, centralOffset) });
 
     try {
-      names.add(decoder.decode(new Uint8Array(bytes, centralNameOffset, nameLength)));
+      const name = decoder.decode(new Uint8Array(bytes, centralNameOffset, nameLength));
+      if (
+        names.has(name) ||
+        name.includes("\\") ||
+        name.startsWith("/") ||
+        name.includes("\0") ||
+        name
+          .split("/")
+          .some((part, index, parts) => part === ".." || part === "." || (!part && index < parts.length - 1))
+      ) {
+        fail("malformed");
+      }
+      names.add(name);
     } catch {
       fail("malformed");
     }
@@ -197,8 +225,8 @@ export function inspectDocxPackage(bytes: ArrayBuffer, limits: DocxPackageLimits
     if (range.start < previousLocalEnd) fail("malformed");
     previousLocalEnd = range.end;
   }
-  for (const required of REQUIRED_DOCX_ENTRIES) {
-    if (!names.has(required)) fail("not-docx");
+  for (const required of REQUIRED_ENTRIES[kind]) {
+    if (!names.has(required)) fail(`not-${kind}`);
   }
   return { entryCount, totalUncompressedBytes };
 }

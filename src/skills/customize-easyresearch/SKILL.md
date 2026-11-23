@@ -76,7 +76,7 @@ and provide a meaningful description. Example custom leaf Agent:
 name: literature-helper
 description: Retrieve and verify paper metadata
 enable: true
-tools: [read, write, bash, web-search, webfetch]
+tools: [read, write, shell, web-search, webfetch]
 skills: [paper-search, arxiv]
 subagents: []
 ---
@@ -93,12 +93,31 @@ source URLs, unresolved gaps, and complete, partial, or blocked status.
 | `subagents` | Omitted: all eligible enabled Agents; `[]`: leaf; non-empty: allowlist |
 | `model`, `thinking` | Ignored in Markdown; do not migrate these fields into settings |
 
-Only one local shell is exposed: `powershell` on Windows, `bash` on Linux/macOS.
-Exact `bash`/`powershell` allowlist entries normalize to that native name;
-`ssh-bash` is a separate remote tool. Use native shell syntax.
+The sole local command tool is `shell`. Existing exact `bash`/`powershell`
+allowlist entries normalize to `shell`; new definitions should name `shell`.
+Use the selected platform's native command syntax; `ssh-bash` remains a separate
+remote tool with its own API. Local `shell` accepts `command`, optional `workdir`,
+`timeout` in milliseconds, and `background`. Foreground omitted/zero timeout waits
+two minutes, then backgrounds the original process. Explicit background commands
+return early; positive timeout stops them, omitted/zero is unlimited. Completion
+is automatically reported; do not teach polling or duplicate launches.
 Unresolved Skills are skipped at runtime and diagnosed only in Settings.
 For bundled Agents, retain role boundaries, inputs, procedure, dispatch targets,
 completion criteria, and the specialist handoff contract.
+
+Dispatch-capable strict definitions need `subagent` and `models` when their
+instructions support user-requested model selection. `subagent` takes `agent`,
+`description`, `prompt`, optional `sessionID`, and optional `model`; it always
+backgrounds work and returns the native child session ID after durable admission.
+Only the immediate caller can follow up with that ID, whether the child is running
+or idle. Preserve the specialist nesting graph and exact-cwd artifact ownership.
+Per-busy-period background reports may include outstanding work; idle is not task
+completion. Treat `<background-result>` messages as harness input, not human
+speech, and never fabricate or reproduce their XML. Do independent useful work
+or finish the response for automatic wakeup rather than sleeping, polling,
+checking progress, or duplicating pending work. Composer Stop interrupts the
+current run; selected-task cancellation owns its tree, and terminal Exit owns all
+work.
 
 ### Agent runtime defaults
 
@@ -115,9 +134,13 @@ Settings and Work both edit this sparse global settings object:
 }
 ```
 
-No project/session Agent overrides or Follow global mode exist. With no model,
-the Research Assistant uses Pi's native resolution without persisting a default;
-other Agents inherit its effective model. With no thinking setting, the
+There is no project Agent-default override or Follow global mode. An explicit
+user model/variant request may set `subagent.model` for that child session only;
+discover its exact chat-model reference with `models` first and never change
+global defaults to implement a one-child request. Without that dispatch override,
+use global Agent model defaults. When no model is configured, the Research
+Assistant uses Pi's native resolution without persisting a default and other
+Agents inherit its effective model. With no thinking setting, the
 Research Assistant uses its model's highest supported level; other Agents
 inherit that level, constrained by their model. Remove a property to restore
 fallback; preserve entries for currently absent custom Agent ids.
@@ -168,8 +191,10 @@ claim, not proof that a real request honors it.
   within its selected root; do not bypass its path boundary.
 - Valid global Agent definitions, `agentDefaults`, `models.json`, and controlled
   mutable Skill descriptor edits refresh Settings/Work automatically. Idle
-  runtimes reload; running Agents finish the current response/tool batch and
-  apply changes before the next LLM request. Use Settings Refresh for recovery,
+  runtimes reload; running Agents retain their accepted configuration through the
+  whole run, including tool turns, retries and summaries, then apply pending changes
+  after native settlement while idle or before the next run. A child model
+  override follows the same idle-safe application boundary. Use Settings Refresh for recovery,
   not a routine restart. This covers global, enabled home, and owned exact-cwd
   project Skills, not automatic re-reading of every auxiliary reference file.
 - Other settings/resources retain their documented new-session/restart behavior;

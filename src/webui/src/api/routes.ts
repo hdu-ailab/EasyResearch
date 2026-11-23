@@ -51,6 +51,17 @@ export const routes = {
   createSession: () => `${API_ROOT}/sessions`,
   openSession: () => `${API_ROOT}/sessions/open`,
   snapshot: (id: string) => `${session(id)}/snapshot`,
+  background: (id: string) => `${session(id)}/background`,
+  backgroundOutput: (id: string, taskId: string, cursor?: number, limit = 65536) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor !== undefined) query.set("cursor", String(cursor));
+    return `${session(id)}/background/${encodeURIComponent(taskId)}/output?${query}`;
+  },
+  backgroundOutputWatches: (id: string, leaseId: string) =>
+    `${session(id)}/background-output-watches/${encodeURIComponent(leaseId)}`,
+  cancelBackgroundTask: (id: string, taskId: string) =>
+    `${session(id)}/background/${encodeURIComponent(taskId)}/cancel`,
+  fileReferences: (id: string) => `${session(id)}/file-references/resolve`,
   history: (id: string, childId?: string, cursor?: string) =>
     `${session(id)}${childId === undefined ? "" : `/subagents/${encodeURIComponent(childId)}`}/history${cursor === undefined ? "" : `?cursor=${encodeURIComponent(cursor)}`}`,
   transcriptEntry: (id: string, entryId: string, childId?: string) =>

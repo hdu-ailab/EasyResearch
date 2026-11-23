@@ -1,12 +1,12 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import type { LlmRecoveryDto, SessionSnapshotDto } from "../web/contracts";
 import { createLlmRetryFixture, llmRetryFixtureResponse, RetryFixtureLane } from "../../scripts/smoke-llm-retry-fixture";
-import { assertCounterOnce, captureRetryEvidence, retryStateInFrame } from "../../scripts/smoke-llm-retry";
-import type { SmokeAgentRequest } from "../../scripts/smoke-agent-scenario";
+import { assertCounterOnce, captureRetryEvidence, preserveRetryFailureEvidence, retryStateInFrame } from "../../scripts/smoke-llm-retry";
+import { SmokeAgentLane, type SmokeAgentRequest } from "../../scripts/smoke-agent-scenario";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -21,6 +21,84 @@ function completedContext(lane: RetryFixtureLane): SmokeAgentRequest {
 }
 
 describe("LLM retry acceptance provider", () => {
+  it("waits through only scripted error periods and accepts a later success without redispatching the child", async () => {
+    const fixture = createLlmRetryFixture({ runId: "periods", directory: directory(), platform: "linux" });
+    const item = fixture.addCase("direct", 1);
+    const parent = item.dispatcher!;
+    const tools = [{ function: { name: "subagent" } }];
+    const launch = parent.select({ tools, messages: [{ role: "user", content: item.prompt }] });
+    if (launch.kind !== "tool") throw new Error("Missing child launch");
+    const childContext: SmokeAgentRequest = { tools: [{ function: { name: "shell" } }], messages: [
+      { role: "user", content: "original child task" },
+      { role: "tool", tool_call_id: item.leaf.callId, content: item.leaf.marker },
+    ] };
+    await item.leaf.select({ tools: childContext.tools, messages: childContext.messages!.slice(0, 1) });
+    const sessionID = "62dcdf07-3e6c-4a0a-a2af-b7594efad8ca";
+    const messages: NonNullable<SmokeAgentRequest["messages"]> = [{ role: "user", content: item.prompt },
+      { role: "tool", tool_call_id: launch.id, content: "admitted", details: { sessionID } }];
+    const report = (state: string, text: string) => ({ role: "user", content: `<background-result kind="subagent" sessionID="${sessionID}" state="${state}">\n${text}\n</background-result>` });
+    for (const period of [1, 2]) {
+      await item.leaf.select(childContext);
+      const failed = await item.leaf.select(childContext);
+      if (failed.kind !== "failure") throw new Error("Missing controlled failure");
+      messages.push(report("error", failed.message));
+      expect(parent.select({ tools, messages }).kind).toBe("text");
+      expect(parent.complete).toBe(false);
+      expect(parent.calls).toHaveLength(1);
+      expect(item.leaf.failures).toBe(period * 2);
+    }
+    expect(() => parent.select({ tools, messages: [...messages,
+      report("error", "503 service unavailable: controlled LLM retry direct_leaf failure 200"),
+    ] })).toThrow(/Unexpected Retry/);
+    await item.leaf.select(childContext);
+    const recovered = await item.leaf.select(childContext);
+    expect(recovered).toEqual({ kind: "text", text: item.leaf.final });
+    messages.push(report("completed", item.leaf.final));
+    expect(parent.select({ tools, messages })).toEqual({ kind: "text", text: item.final });
+    expect(parent.calls).toHaveLength(1);
+    expect(parent.dispatches).toEqual([{ callId: launch.id, sessionID, terminal: item.leaf.final }]);
+    expect(item.leaf.requests).toHaveLength(7);
+  });
+
+  it("keeps ordinary dispatch strict and does not accept unrelated failures in Retry dispatch", () => {
+    const fixture = createLlmRetryFixture({ runId: "strict", directory: directory() });
+    const retry = fixture.addCase("direct", 1).dispatcher!;
+    const ordinary = new SmokeAgentLane("ordinary", [{ name: "subagent", args: () => ({}), terminal: () => "done" }], () => "done");
+    for (const lane of [ordinary, retry]) {
+      const tools = [{ function: { name: "subagent" } }];
+      const call = lane.select({ tools });
+      if (call.kind !== "tool") throw new Error("Missing dispatch");
+      const sessionID = "62dcdf07-3e6c-4a0a-a2af-b7594efad8ca";
+      expect(() => lane.select({ tools, messages: [
+        { role: "tool", tool_call_id: call.id, content: "admitted", details: { sessionID } },
+        { role: "user", content: `<background-result kind="subagent" sessionID="${sessionID}" state="error">\npermission denied\n</background-result>` },
+      ] })).toThrow(/failed|unexpected/i);
+    }
+  });
+
+  it("allows explicitly requested cancellation after a verified Retry error period", async () => {
+    const fixture = createLlmRetryFixture({ runId: "cancel-period", directory: directory(), platform: "linux" });
+    const item = fixture.addCase("direct", 1);
+    const parent = item.dispatcher!;
+    const tools = [{ function: { name: "subagent" } }];
+    const launch = parent.select({ tools });
+    if (launch.kind !== "tool") throw new Error("Missing dispatch");
+    const child: SmokeAgentRequest = { tools: [{ function: { name: "shell" } }], messages: [
+      { role: "user", content: "original task" }, { role: "tool", tool_call_id: item.leaf.callId, content: item.leaf.marker },
+    ] };
+    await item.leaf.select({ tools: child.tools, messages: child.messages!.slice(0, 1) });
+    const failure = await item.leaf.select(child);
+    if (failure.kind !== "failure") throw new Error("Missing fixture failure");
+    const sessionID = "62dcdf07-3e6c-4a0a-a2af-b7594efad8ca";
+    parent.expectCancellation();
+    const result = parent.select({ tools, messages: [
+      { role: "tool", tool_call_id: launch.id, content: "admitted", details: { sessionID } },
+      { role: "user", content: `<background-result kind="subagent" sessionID="${sessionID}" state="error">\n${failure.message}\n</background-result>` },
+      { role: "user", content: `<background-result kind="subagent" sessionID="${sessionID}" state="cancelled">\nCancelled\n</background-result>` },
+    ] });
+    expect(result).toEqual({ kind: "text", text: "Acceptance task cancellation observed." });
+    expect(parent.dispatches).toEqual([]);
+  });
   it("requires a completed tool result on every automatic/manual request and owns a held response", async () => {
     const lane = new RetryFixtureLane("root", "done", "counter", { name: "bash", command: "append-counter" }, 5);
     const request = completedContext(lane);
@@ -62,7 +140,7 @@ describe("LLM retry acceptance provider", () => {
     const failure = llmRetryFixtureResponse({ kind: "failure", message: "503 service unavailable" });
     expect(failure.status).toBe(503);
     expect(await failure.json()).toMatchObject({ error: { message: "503 service unavailable" } });
-    const tool = llmRetryFixtureResponse({ kind: "tool", id: "append", name: "bash", arguments: '{"command":"append"}' });
+    const tool = llmRetryFixtureResponse({ kind: "tool", id: "append", name: "shell", arguments: '{"command":"append"}' });
     const body = await tool.text();
     expect(body).toContain('"tool_calls"');
     expect(body).toContain('"id":"append"');
@@ -83,7 +161,7 @@ describe("LLM retry acceptance provider", () => {
   it.skipIf(process.platform === "win32")("executes the browser counter as a real non-idempotent shell append", async () => {
     const fixture = createLlmRetryFixture({ runId: "test", directory: directory(), platform: "linux" });
     const item = fixture.addCase("counter", 0);
-    const response = await fixture.respond({ tools: [{ function: { name: "bash" } }], messages: [{ role: "user", content: item.prompt }] });
+    const response = await fixture.respond({ tools: [{ function: { name: "shell" } }], messages: [{ role: "user", content: item.prompt }] });
     const firstLine = (await response.text()).split("\n")[0]!;
     const chunk = JSON.parse(firstLine.slice("data: ".length));
     const command = JSON.parse(chunk.choices[0].delta.tool_calls[0].function.arguments).command;
@@ -116,7 +194,7 @@ describe("LLM retry acceptance wire and native evidence", () => {
     const rootPath = join(root, "root.jsonl");
     const childPath = join(root, "child.jsonl");
     const rows: any[] = [{ type: "session", id: "root" }, { type: "message", id: "root-user", message: { role: "user" } }];
-    const record = (data: unknown) => ({ type: "custom", customType: "easyresearch:subagent_job", data });
+    const record = <T>(data: T) => ({ type: "custom", customType: "easyresearch:subagent_job", data });
     rows.push(...[
       { kind: "reserved", launchId: "launch", ownerSessionId: "root", toolCallId: "tool", agent: fixture.leafAgent, agentId: "leaf_0", continuation: false, createdAt: "now" },
       { kind: "created", launchId: "launch", childSessionId: "leaf", sessionPath: childPath },
@@ -126,7 +204,7 @@ describe("LLM retry acceptance wire and native evidence", () => {
     const write = () => writeFileSync(rootPath, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
     write();
     writeFileSync(childPath, [{ type: "session", id: "leaf" }, { type: "message", id: "leaf-user", message: { role: "user" } },
-      { type: "message", id: "failed", message: { role: "assistant", stopReason: "error" } }].map(row => JSON.stringify(row)).join("\n") + "\n");
+      { type: "message", id: "failed", message: { role: "assistant", stopReason: "error", errorMessage: "503 service unavailable: controlled LLM retry direct_leaf failure 2" } }].map(row => JSON.stringify(row)).join("\n") + "\n");
     const recovery: LlmRecoveryDto = { targetSessionId: "leaf", failureId: "failure", failedEntryId: "failed", status: "available" };
     const snapshot: SessionSnapshotDto = { session: { id: "root", cwd: root, sessionFile: rootPath, status: "running", isStreaming: false },
       subagents: [{ ownerSessionId: "root", childSessionId: "leaf", toolCallId: "tool", launchId: "launch", agentId: "leaf_0",
@@ -134,6 +212,87 @@ describe("LLM retry acceptance wire and native evidence", () => {
       compactionPolicy: { enabled: false, triggerPercent: 70 } };
     return { root, item, snapshot, recovery, rows, write, record, rootPath, childPath };
   }
+
+  function settled(snapshot: SessionSnapshotDto): SessionSnapshotDto {
+    const next = structuredClone(snapshot);
+    next.llmRecovery = null;
+    for (const child of next.subagents) child.llmRecovery = null;
+    return next;
+  }
+
+  it("preserves bounded delivery metadata outside the cleaned fixture root without copying message or credential contents", () => {
+    const f = evidenceFixture();
+    f.rows.push(f.record({ kind: "background_report", launchId: "launch", result: { state: "cancelled", text: "PRIVATE_RESULT_SECRET", outstanding: [] },
+      batch: { batchId: "cancel-batch", ownerSessionId: "root", launchIds: ["launch"], content: "PRIVATE_RESULT_SECRET", triggerTurn: true, createdAt: "now" },
+      apiKey: "PRIVATE_AUTH_SECRET" }));
+    f.write();
+    const archive = preserveRetryFailureEvidence({ root: f.root, caseName: "native_stop_parked", phase: "cancel-check",
+      snapshots: [f.snapshot], parentDirectory: directory() });
+    rmSync(f.root, { recursive: true, force: true });
+    const serialized = readFileSync(archive, "utf8");
+    const evidence = JSON.parse(serialized);
+    expect(evidence).toMatchObject({ caseName: "native_stop_parked", phase: "cancel-check" });
+    expect(serialized).toContain("cancel-batch");
+    expect(serialized).toContain("contentSha256");
+    expect(serialized).not.toMatch(/PRIVATE_RESULT_SECRET|PRIVATE_AUTH_SECRET/);
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect(evidence.histories.some((history: { entries: unknown[] }) => history.entries.length > 0)).toBe(true);
+  });
+
+  function advancePeriod(f: ReturnType<typeof evidenceFixture>) {
+    f.rows.push(f.record({ kind: "background_admitted", launchId: "launch", admission: {
+      cwd: f.root, callerAgent: "research-assistant", description: "Retry child",
+    } }), f.record({ kind: "background_report", launchId: "launch",
+      result: { state: "completed", text: "Waiting for owned work", outstanding: [{ id: "shell", kind: "shell", sessionID: "leaf", status: "running" }] },
+      batch: { batchId: "first", ownerSessionId: "root", launchIds: ["launch"], content: "first report", triggerTurn: true, createdAt: "now" },
+    }), { type: "custom_message", customType: "easyresearch:agent_status", display: false,
+      details: { outcomes: [{ launchId: "launch", status: "complete" }] } });
+    f.rows.push(...[
+      { kind: "reserved", launchId: "later", ownerSessionId: "root", toolCallId: "wake", agent: f.snapshot.subagents[0]!.agent, agentId: "leaf_0", continuation: true, createdAt: "later" },
+      { kind: "created", launchId: "later", childSessionId: "leaf", sessionPath: f.childPath },
+      { kind: "materialized", launchId: "later" },
+      { kind: "launch_acknowledged", launchId: "later", acknowledgedAt: "later" },
+    ].map(f.record));
+    f.write();
+    const current = structuredClone(f.snapshot);
+    current.subagents.push({ ...current.subagents[0]!, launchId: "later", toolCallId: "wake" });
+    return current;
+  }
+
+  it("groups per-launch summaries into one logical child while validating every visible identity and journal path", () => {
+    const f = evidenceFixture();
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    const current = advancePeriod(f);
+    expect(audit.check(current).identities).toHaveLength(1);
+    expect(captureRetryEvidence(current, f.recovery, f.item, f.root).check(current).userRows).toBe(2);
+    for (const field of ["ownerSessionId", "agentId", "agent", "childSessionId"] as const) {
+      const changed = structuredClone(current);
+      changed.subagents[0]![field] = "foreign";
+      expect(() => audit.check(changed)).toThrow(/replaced|identity|logical/i);
+    }
+    const unknownLaunch = structuredClone(current);
+    unknownLaunch.subagents[0]!.launchId = "unknown";
+    expect(() => audit.check(unknownLaunch)).toThrow(/visible launch|journal/i);
+    const oldPath = f.rows.find(row => row.data?.kind === "created" && row.data.launchId === "launch");
+    oldPath.data.sessionPath = join(f.root, "foreign-child.jsonl");
+    f.write();
+    expect(() => audit.check(current)).toThrow(/identity|path/i);
+  });
+
+  it("allows active HTTP snapshots to precede a new journal period but requires the last visible period at terminal settlement", () => {
+    const f = evidenceFixture();
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    const current = advancePeriod(f);
+    // HTTP projection predates the newly appended native period.
+    expect(audit.check(f.snapshot).toolExecutions).toBe(1);
+    expect(() => audit.check(settled(f.snapshot), "complete")).toThrow(/visible launch|latest|period/i);
+    f.rows.push(f.record({ kind: "terminal", launchId: "later", status: "complete", finishedAt: "later" }),
+      { type: "custom_message", customType: "easyresearch:agent_status", display: false,
+        details: { outcomes: [{ launchId: "later", status: "complete" }] } });
+    f.write();
+    expect(audit.check(settled(current), "complete").terminalOutcomes).toBe(1);
+    expect(() => audit.check(settled(f.snapshot), "complete")).toThrow(/visible launch|latest|period/i);
+  });
 
   it("accepts one original-owner terminal/handoff and rejects a replacement launch, premature outcome and duplicated handoff", () => {
     const f = evidenceFixture();
@@ -148,9 +307,63 @@ describe("LLM retry acceptance wire and native evidence", () => {
     const handoff = { type: "custom_message", customType: "easyresearch:agent_status", display: false,
       details: { outcomes: [{ launchId: "launch", status: "complete" }] } };
     f.rows.push(handoff); f.write();
-    expect(audit.check(f.snapshot, "complete").terminalOutcomes).toBe(1);
+    expect(audit.check(settled(f.snapshot), "complete").terminalOutcomes).toBe(1);
     f.rows.push(handoff); f.write();
-    expect(() => audit.check(f.snapshot, "complete")).toThrow(/duplicate.*handoff/);
+    expect(() => audit.check(settled(f.snapshot), "complete")).toThrow(/duplicate.*handoff/);
+  });
+
+  it("audits durable busy-period reports without requiring the retired terminal journal record", () => {
+    const f = evidenceFixture();
+    f.rows.push(f.record({ kind: "background_admitted", launchId: "launch", admission: {
+      cwd: f.root, callerAgent: "research-assistant", description: "Retry fixture child",
+    } }));
+    f.write();
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    const report = f.record({ kind: "background_report", launchId: "launch",
+      result: { state: "completed", text: f.item.leaf.final, outstanding: [] },
+      batch: { batchId: "batch", ownerSessionId: "root", launchIds: ["launch"], content: "report", triggerTurn: true, createdAt: "now" },
+    });
+    f.rows.push(report, { type: "custom_message", customType: "easyresearch:agent_status", display: false,
+      details: { outcomes: [{ launchId: "launch", status: "complete" }] } });
+    f.write();
+    expect(() => audit.check(f.snapshot)).toThrow(/Premature/);
+    expect(audit.check(settled(f.snapshot), "complete").terminalOutcomes).toBe(1);
+    f.rows.push(report); f.write();
+    expect(() => audit.check(settled(f.snapshot), "complete")).toThrow(/duplicate/i);
+  });
+
+  it("allows a settled intermediate period to resume the same child while rejecting a concurrent replacement period", () => {
+    const f = evidenceFixture();
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    const appendPeriod = (launchId: string, outstanding: unknown[]) => {
+      f.rows.push(f.record({ kind: "background_admitted", launchId, admission: {
+        cwd: f.root, callerAgent: "research-assistant", description: "Retry fixture child",
+      } }), f.record({ kind: "background_report", launchId,
+        result: { state: "completed", text: "period outcome", outstanding },
+        batch: { batchId: `batch-${launchId}`, ownerSessionId: "root", launchIds: [launchId], content: "report", triggerTurn: true, createdAt: "now" },
+      }), { type: "custom_message", customType: "easyresearch:agent_status", display: false,
+        details: { outcomes: [{ launchId, status: "complete" }] } });
+    };
+    appendPeriod("launch", [{ id: "shell", kind: "shell", sessionID: "leaf", status: "running" }]);
+    f.write();
+    expect(audit.check(f.snapshot).terminalOutcomes).toBe(0);
+    f.rows.push(...[
+      { kind: "reserved", launchId: "later", ownerSessionId: "root", toolCallId: "wake", agent: f.snapshot.subagents[0]!.agent,
+        agentId: "leaf_0", continuation: true, createdAt: "later" },
+      { kind: "created", launchId: "later", childSessionId: "leaf", sessionPath: f.childPath },
+      { kind: "materialized", launchId: "later" },
+      { kind: "launch_acknowledged", launchId: "later", acknowledgedAt: "later" },
+    ].map(f.record));
+    appendPeriod("later", []);
+    f.write();
+    const current = structuredClone(f.snapshot);
+    current.subagents[0]!.launchId = "later";
+    current.subagents[0]!.toolCallId = "wake";
+    expect(audit.check(settled(current), "complete").terminalOutcomes).toBe(1);
+    const initialReport = f.rows.findIndex(row => row.data?.kind === "background_report" && row.data.launchId === "launch");
+    f.rows.splice(initialReport, 1);
+    f.write();
+    expect(() => audit.check(settled(current), "complete")).toThrow(/Premature|unsettled|changed|removed/i);
   });
 
   it("rejects new native user rows and refuses to audit histories outside the private root", () => {
@@ -161,5 +374,56 @@ describe("LLM retry acceptance wire and native evidence", () => {
     const other = directory();
     mkdirSync(join(other, "child"));
     expect(() => captureRetryEvidence(f.snapshot, f.recovery, f.item, join(other, "child"))).toThrow(/private fixture/);
+  });
+
+  it("accepts an error period only with a real live checkpoint, and preserves it through admitted recovery and success", () => {
+    const f = evidenceFixture();
+    const errorText = "503 service unavailable: controlled LLM retry direct_leaf failure 2";
+    const first = f.record({ kind: "background_report", launchId: "launch",
+      result: { state: "error", text: errorText, outstanding: [] },
+      batch: { batchId: "failed-period", ownerSessionId: "root", launchIds: ["launch"], content: "error report", triggerTurn: true, createdAt: "now" },
+    });
+    f.rows.push(f.record({ kind: "background_admitted", launchId: "launch", admission: {
+      cwd: f.root, callerAgent: "research-assistant", description: "Retry child",
+    } }), first, { type: "custom_message", customType: "easyresearch:agent_status", display: false,
+      details: { outcomes: [{ launchId: "launch", status: "error" }] } });
+    f.snapshot.subagents[0]!.status = "error";
+    f.write();
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    expect(audit.check(f.snapshot).terminalOutcomes).toBe(0);
+    const missing = structuredClone(f.snapshot);
+    missing.subagents[0]!.llmRecovery = null;
+    expect(() => audit.check(missing)).toThrow(/checkpoint|recovery/i);
+    const wrong = structuredClone(f.snapshot);
+    wrong.subagents[0]!.llmRecovery!.failedEntryId = "not-a-failed-message";
+    expect(() => audit.check(wrong)).toThrow(/checkpoint|persisted failure/i);
+    const wrongTarget = structuredClone(f.snapshot);
+    wrongTarget.subagents[0]!.llmRecovery!.targetSessionId = "different-child";
+    expect(() => audit.check(wrongTarget)).toThrow(/checkpoint/i);
+    appendFileSync(f.childPath, JSON.stringify({ type: "custom_message", customType: "easyresearch:llm-retry", display: false, content: "", details: { failedEntryId: "failed" } }) + "\n");
+    f.rows.push(...[
+      { kind: "reserved", launchId: "recovery", ownerSessionId: "root", toolCallId: "wake", agent: f.snapshot.subagents[0]!.agent, agentId: "leaf_0", continuation: true, createdAt: "later" },
+      { kind: "created", launchId: "recovery", childSessionId: "leaf", sessionPath: f.childPath },
+      { kind: "materialized", launchId: "recovery" },
+      { kind: "launch_acknowledged", launchId: "recovery", acknowledgedAt: "later" },
+      { kind: "background_admitted", launchId: "recovery", admission: { cwd: f.root, callerAgent: "research-assistant", description: "Retry child" } },
+    ].map(f.record));
+    f.write();
+    const active = structuredClone(missing);
+    Object.assign(active.subagents[0]!, { launchId: "recovery", toolCallId: "wake", status: "working" });
+    expect(audit.check(active).toolExecutions).toBe(1);
+    f.rows.push(f.record({ kind: "background_report", launchId: "recovery", result: { state: "completed", text: f.item.leaf.final, outstanding: [] },
+      batch: { batchId: "success-period", ownerSessionId: "root", launchIds: ["recovery"], content: "success report", triggerTurn: true, createdAt: "later" } }),
+      { type: "custom_message", customType: "easyresearch:agent_status", display: false, details: { outcomes: [{ launchId: "recovery", status: "complete" }] } });
+    f.write();
+    expect(audit.check(active, "complete").terminalOutcomes).toBe(1);
+    first.data.result.text = "rewritten error";
+    f.write();
+    expect(() => audit.check(active, "complete")).toThrow(/changed|overwrit|immutable/i);
+    first.data.result.text = errorText;
+    const originalPeriod = f.rows.filter(row => row.data?.launchId === "launch");
+    for (const row of originalPeriod) f.rows.splice(f.rows.indexOf(row), 1);
+    f.write();
+    expect(() => audit.check(active, "complete")).toThrow(/period disappeared/i);
   });
 });

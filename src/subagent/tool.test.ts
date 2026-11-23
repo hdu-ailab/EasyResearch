@@ -171,6 +171,8 @@ class FakeParentSession implements SupervisableAgentSession {
 }
 
 class FakeStage {
+  busy = false;
+  readonly followups: string[] = [];
   readonly materialization = deferred<void>();
   readonly completion = deferred<StageRunResult>();
   readonly listeners = new Set<(event: JsonAgentSessionEvent) => void>();
@@ -185,6 +187,21 @@ class FakeStage {
       sessionPath,
       materialized: this.materialization.promise,
       completion: this.completion.promise,
+      background: {
+        firstPeriod: this.completion.promise.then(() => {}),
+        isBusy: () => this.busy,
+        isStarted: () => true,
+        hasRecovery: () => false,
+        hasBackgroundWork: () => false,
+        selection: () => ({ agent: options.agent.name, model: options.model, thinking: "off" }),
+        prepareWake: async () => {},
+        drainPending: async () => {},
+        requestCancellation: () => {},
+        begin: () => {},
+        start: () => { this.busy = true; options.backgroundLifecycle?.started(); },
+        followUp: async (input) => { if (!this.busy) { options.backgroundLifecycle?.started(); this.busy = true; } this.followups.push(input.task); return true; },
+        notify: async () => {}, cancel: async () => { this.busy = false; }, suspend: async () => { this.busy = false; }, dispose: async () => {},
+      },
       subscribe: (listener) => {
         this.listeners.add(listener);
         return () => this.listeners.delete(listener);
@@ -199,6 +216,10 @@ class FakeStage {
       },
       dispose: async () => {},
     };
+    void this.completion.promise.then((result) => {
+      this.busy = false;
+      options.backgroundLifecycle?.settled({ state: result.exitCode ? "error" : "completed", text: "status: complete", outstanding: [] });
+    });
   }
 }
 
@@ -215,6 +236,16 @@ function toolHarness(options: ToolHarnessOptions = {}) {
     ? new MemorySessionManager(options.ownerSessionId)
     : rootManager;
   const coordinator = new SubagentCoordinator(rootManager);
+  if (ownerManager !== rootManager) {
+    const parentRole = agent("parent-role");
+    const parent = coordinator.reserveDispatch({ ownerSessionId: rootManager.getSessionId(), toolCallId: "parent-history", requested: parentRole.name,
+      catalog: { all: [parentRole], available: [parentRole] } });
+    coordinator.recordMaterialized(parent, { childSessionId: ownerManager.getSessionId(), sessionPath: ownerManager.getSessionFile() });
+    coordinator.recordLaunchAcknowledged(parent.launchId);
+    coordinator.recordTerminal({ launchId: parent.launchId, status: "complete" });
+    coordinator.recordNotificationBatch({ batchId: "parent-history-result", ownerSessionId: rootManager.getSessionId(), launchIds: [parent.launchId], content: "Previously delivered", triggerTurn: false });
+    coordinator.acknowledgeNotification("parent-history-result");
+  }
   const parent = new FakeParentSession(ownerManager.getSessionId());
   const all = (options.names ?? ["search"]).map((name) => agent(name));
   const availableNames = new Set(options.availableNames ?? all.map(({ name }) => name));
@@ -260,6 +291,7 @@ function toolHarness(options: ToolHarnessOptions = {}) {
   const context = {
     cwd,
     model: { provider: "stage-provider", id: "stage-model" },
+    modelRegistry: { getAvailable: () => [{ provider: "stage-provider", id: "stage-model", reasoning: true }] },
     thinkingLevel: "minimal",
     sessionManager: ownerManager,
   } as unknown as ExtensionToolContext;
@@ -348,13 +380,13 @@ function assistantWithPolicy(subagents: string[] | undefined, model = "openai/pa
 }
 
 describe("createSubagentTool asynchronous launch contract", () => {
-  it("returns only the exact Working acknowledgement after materialization", async () => {
+  it("returns the admitted native session identity and background instructions", async () => {
     const harness = toolHarness();
     const onUpdate = vi.fn();
 
     const resultPromise = harness.tool.execute(
       "t0",
-      { agent: "search", task: "collect" },
+      { agent: "search", description: "Collect sources", prompt: "collect" },
       undefined,
       onUpdate,
       harness.context,
@@ -363,10 +395,13 @@ describe("createSubagentTool asynchronous launch contract", () => {
     const result = await resultPromise;
 
     expect(result).toEqual({
-      content: [{ type: "text", text: "search_0 is working." }],
+      content: [{ type: "text", text: expect.stringContaining("sessionID: child-search_0") }],
       details: {
         mode: "single",
         background: true,
+        sessionID: "child-search_0",
+        status: "running",
+        output: expect.stringContaining("sessionID: child-search_0"),
         job: {
           launchId: expect.any(String),
           ownerSessionId: "root",
@@ -388,17 +423,17 @@ describe("createSubagentTool asynchronous launch contract", () => {
   it("does not impose an application concurrency cap", async () => {
     const harness = toolHarness();
     const calls = Array.from({ length: 12 }, (_, index) =>
-      harness.tool.execute(`t${index}`, { agent: "search", task: `task ${index}` }, undefined, undefined, harness.context));
+      harness.tool.execute(`t${index}`, { agent: "search", description: "Collect sources", prompt: `task ${index}` }, undefined, undefined, harness.context));
     harness.materializeAll();
 
     const results = await Promise.all(calls);
-    expect(results.map((result) => (result.content[0] as { text: string }).text)).toEqual(
-      Array.from({ length: 12 }, (_, index) => `search_${index} is working.`),
+    expect(results.map((result) => (result.details as { sessionID: string }).sessionID)).toEqual(
+      Array.from({ length: 12 }, (_, index) => `child-search_${index}`),
     );
     expect(harness.stages).toHaveLength(12);
   });
 
-  it("exposes only required agent and task parameters in parallel mode", () => {
+  it("exposes the required dispatch fields and optional continuation/model selectors", () => {
     const harness = toolHarness();
     const schema = harness.tool.parameters as unknown as {
       properties: Record<string, unknown>;
@@ -406,38 +441,39 @@ describe("createSubagentTool asynchronous launch contract", () => {
     };
 
     expect(harness.tool.executionMode).toBe("parallel");
-    expect(Object.keys(schema.properties)).toEqual(["agent", "task"]);
-    expect(schema.required).toEqual(["agent", "task"]);
+    expect(Object.keys(schema.properties)).toEqual(["agent", "description", "prompt", "model", "sessionID"]);
+    expect(schema.required).toEqual(["agent", "description", "prompt"]);
   });
 
   it("passes the caller's exact cwd through to the supervised stage", async () => {
     const harness = toolHarness({ cwd: "/projects/paper with spaces" });
-    const result = harness.tool.execute("t0", { agent: "search", task: "collect" }, undefined, undefined, harness.context);
+    const result = harness.tool.execute("t0", { agent: "search", description: "Collect sources", prompt: "collect" }, undefined, undefined, harness.context);
     harness.materializeAll();
     await result;
 
     expect(harness.stages[0]?.options.cwd).toBe("/projects/paper with spaces");
   });
 
-  it("rejects a running exact alias without starting another child", async () => {
+  it("joins a running native session without starting another child", async () => {
     const harness = toolHarness();
-    const first = harness.tool.execute("t0", { agent: "search", task: "collect" }, undefined, undefined, harness.context);
+    const first = harness.tool.execute("t0", { agent: "search", description: "Collect sources", prompt: "collect" }, undefined, undefined, harness.context);
     harness.materializeAll();
     await first;
 
     await expect(harness.tool.execute(
       "t1",
-      { agent: "search_0", task: "continue" },
+      { agent: "search", sessionID: "child-search_0", description: "Follow up", prompt: "continue" },
       undefined,
       undefined,
       harness.context,
-    )).rejects.toThrow(/still running/i);
+    )).resolves.toMatchObject({ details: { sessionID: "child-search_0" } });
+    expect(harness.stages[0]!.followups).toEqual(["continue"]);
     expect(harness.stages).toHaveLength(1);
   });
 
-  it("continues a completed exact alias on its mapped child", async () => {
+  it("continues an idle native session in its owned runtime", async () => {
     const harness = toolHarness();
-    const first = harness.tool.execute("t0", { agent: "search", task: "collect" }, undefined, undefined, harness.context);
+    const first = harness.tool.execute("t0", { agent: "search", description: "Collect sources", prompt: "collect" }, undefined, undefined, harness.context);
     harness.materializeAll();
     await first;
     harness.parent.acknowledgeLaunch("t0");
@@ -446,24 +482,21 @@ describe("createSubagentTool asynchronous launch contract", () => {
 
     const continued = harness.tool.execute(
       "t1",
-      { agent: "search_0", task: "continue" },
+      { agent: "search", sessionID: "child-search_0", description: "Follow up", prompt: "continue" },
       undefined,
       undefined,
       harness.context,
     );
     harness.materializeAll();
 
-    await expect(continued).resolves.toMatchObject({ content: [{ text: "search_0 is working." }] });
-    expect(harness.stages[1]?.options.reservation).toMatchObject({
-      continuation: true,
-      childSessionId: "child-search_0",
-      sessionPath: "/sessions/child-search_0.jsonl",
-    });
+    await expect(continued).resolves.toMatchObject({ details: { sessionID: "child-search_0" } });
+    expect(harness.stages).toHaveLength(1);
+    expect(harness.stages[0]!.followups).toEqual(["continue"]);
   });
 
-  it("rejects an exact alias/name ambiguity", async () => {
+  it("keeps legacy aliases inert when a real Agent has that name", async () => {
     const harness = toolHarness();
-    const first = harness.tool.execute("t0", { agent: "search", task: "collect" }, undefined, undefined, harness.context);
+    const first = harness.tool.execute("t0", { agent: "search", description: "Collect sources", prompt: "collect" }, undefined, undefined, harness.context);
     harness.materializeAll();
     await first;
     harness.parent.acknowledgeLaunch("t0");
@@ -479,27 +512,27 @@ describe("createSubagentTool asynchronous launch contract", () => {
 
     await expect(harness.tool.execute(
       "t1",
-      { agent: "search_0", task: "ambiguous" },
+      { agent: "search_0", description: "Collect sources", prompt: "fresh role" },
       undefined,
       undefined,
       harness.context,
-    )).rejects.toThrow(/ambiguous/i);
+    )).resolves.toMatchObject({ details: { job: { agent: "search_0" } } });
   });
 
   it.each(["审稿人", "review.agent", "review agent", "review-agent", "review_0", "review2"])(
     "keeps the exact Agent name %s opaque",
     async (name) => {
       const harness = toolHarness({ names: [name] });
-      const result = harness.tool.execute("t0", { agent: name, task: "review" }, undefined, undefined, harness.context);
+      const result = harness.tool.execute("t0", { agent: name, description: "Review evidence", prompt: "review" }, undefined, undefined, harness.context);
       harness.materializeAll();
-      await expect(result).resolves.toMatchObject({ content: [{ text: `${name}_0 is working.` }] });
+      await expect(result).resolves.toMatchObject({ details: { job: { agent: name } } });
       expect(harness.stages[0]?.options.reservation).toMatchObject({ agent: name, continuation: false });
     },
   );
 
   it("throws before acknowledgement when materialization fails", async () => {
     const harness = toolHarness();
-    const result = harness.tool.execute("t0", { agent: "search", task: "collect" }, undefined, undefined, harness.context);
+    const result = harness.tool.execute("t0", { agent: "search", description: "Collect sources", prompt: "collect" }, undefined, undefined, harness.context);
     harness.rejectMaterialization("search_0", new Error("provider failed before first output"));
 
     await expect(result).rejects.toThrow("provider failed before first output");
@@ -521,7 +554,7 @@ describe("createSubagentTool asynchronous launch contract", () => {
       const harness = toolHarness();
       const result = harness.tool.execute(
         "t0",
-        { agent: "search", task: "collect" },
+        { agent: "search", description: "Collect sources", prompt: "collect" },
         undefined,
         undefined,
         harness.context,
@@ -571,7 +604,7 @@ describe("createSubagentTool asynchronous launch contract", () => {
 
     const publicFailure = await harness.tool.execute(
       "t0",
-      { agent: "search", task: "collect" },
+      { agent: "search", description: "Collect sources", prompt: "collect" },
       undefined,
       undefined,
       harness.context,
@@ -611,7 +644,7 @@ describe("createSubagentTool asynchronous launch contract", () => {
 
     await expect(harness.tool.execute(
       "t0",
-      { agent: "search", task: "churn" },
+      { agent: "search", description: "Collect sources", prompt: "churn" },
       undefined,
       undefined,
       harness.context,
@@ -621,9 +654,9 @@ describe("createSubagentTool asynchronous launch contract", () => {
     expect(harness.rootManager.entries).toEqual([]);
 
     harness.live.onResolve = undefined;
-    const second = harness.tool.execute("t1", { agent: "search", task: "retry" }, undefined, undefined, harness.context);
+    const second = harness.tool.execute("t1", { agent: "search", description: "Collect sources", prompt: "retry" }, undefined, undefined, harness.context);
     harness.materializeAll();
-    await expect(second).resolves.toMatchObject({ content: [{ text: "search_0 is working." }] });
+    await expect(second).resolves.toMatchObject({ details: { sessionID: "child-search_0" } });
   });
 
   it("observes cancellation between bounded generation retries before reservation", async () => {
@@ -638,7 +671,7 @@ describe("createSubagentTool asynchronous launch contract", () => {
 
     await expect(harness.tool.execute(
       "t0",
-      { agent: "search", task: "cancel" },
+      { agent: "search", description: "Collect sources", prompt: "cancel" },
       controller.signal,
       undefined,
       harness.context,
@@ -658,25 +691,25 @@ describe("createSubagentTool asynchronous launch contract", () => {
     ]);
 
     const dispatched = harness.tool.execute(
-      "t0", { agent: "reviewer", task: "review" }, undefined, undefined, harness.context,
+      "t0", { agent: "reviewer", description: "Review evidence", prompt: "review" }, undefined, undefined, harness.context,
     );
     harness.materializeAll();
-    await expect(dispatched).resolves.toMatchObject({ content: [{ text: "reviewer_0 is working." }] });
+    await expect(dispatched).resolves.toMatchObject({ details: { job: { agent: "reviewer" } } });
     expect(harness.stages[0]?.options).toMatchObject({
       agent: { name: "reviewer", source: "global" },
       callerAgent: "research-assistant",
-      model: "openai/paper-v2",
+      model: "stage-provider/stage-model",
       thinking: "high",
       liveConfiguration: harness.live,
     });
     await expect(harness.tool.execute(
-      "t1", { agent: "search", task: "no longer allowed" }, undefined, undefined, harness.context,
+      "t1", { agent: "search", description: "Collect sources", prompt: "no longer allowed" }, undefined, undefined, harness.context,
     )).rejects.toThrow(/disabled|unavailable/i);
   });
 
   it("rejects a continued child removed from the latest policy", async () => {
     const harness = toolHarness();
-    const first = harness.tool.execute("t0", { agent: "search", task: "collect" }, undefined, undefined, harness.context);
+    const first = harness.tool.execute("t0", { agent: "search", description: "Collect sources", prompt: "collect" }, undefined, undefined, harness.context);
     harness.materializeAll();
     await first;
     harness.parent.acknowledgeLaunch("t0");
@@ -685,7 +718,7 @@ describe("createSubagentTool asynchronous launch contract", () => {
     harness.live.publish([assistantWithPolicy([]), agent("search")]);
 
     await expect(harness.tool.execute(
-      "t1", { agent: "search_0", task: "continue" }, undefined, undefined, harness.context,
+      "t1", { agent: "search", sessionID: "child-search_0", description: "Follow up", prompt: "continue" }, undefined, undefined, harness.context,
     )).rejects.toThrow(/disabled|available/i);
     expect(harness.stages).toHaveLength(1);
   });
@@ -696,16 +729,16 @@ describe("createSubagentTool asynchronous launch contract", () => {
 
     await expect(harness.tool.execute(
       "t0",
-      { agent: "search", task: "first" },
+      { agent: "search", description: "Collect sources", prompt: "first" },
       undefined,
       undefined,
       harness.context,
     )).rejects.toThrow("stage setup failed");
     expect(readAgentAliases(harness.rootManager.entries)).toEqual([]);
 
-    const second = harness.tool.execute("t1", { agent: "search", task: "second" }, undefined, undefined, harness.context);
+    const second = harness.tool.execute("t1", { agent: "search", description: "Collect sources", prompt: "second" }, undefined, undefined, harness.context);
     harness.materializeAll();
-    await expect(second).resolves.toMatchObject({ content: [{ text: "search_1 is working." }] });
+    await expect(second).resolves.toMatchObject({ details: { sessionID: "child-search_1" } });
     expect(readAgentAliases(harness.rootManager.entries).map(({ id }) => id)).toEqual(["search_1"]);
   });
 
@@ -715,7 +748,7 @@ describe("createSubagentTool asynchronous launch contract", () => {
 
     await expect(harness.tool.execute(
       "t0",
-      { agent: "search", task: "first" },
+      { agent: "search", description: "Collect sources", prompt: "first" },
       undefined,
       undefined,
       harness.context,
@@ -733,41 +766,37 @@ describe("createSubagentTool asynchronous launch contract", () => {
     expect(next.agentId).toBe("search_1");
   });
 
-  it("uses each accepted generation's Agent model and thinking without session overrides", async () => {
+  it("inherits the immediate parent's model and current Agent thinking without global writes", async () => {
     const harness = toolHarness({ ownerSessionId: "nested-stage" });
     harness.live.publish([
       assistantWithPolicy(["search"], "paper/model-a"),
       agent("search", { thinking: "high" }),
     ]);
 
-    const first = harness.tool.execute("t0", { agent: "search", task: "one" }, undefined, undefined, harness.context);
+    const first = harness.tool.execute("t0", { agent: "search", description: "Collect sources", prompt: "one" }, undefined, undefined, harness.context);
     harness.materializeAll();
     await first;
     harness.live.publish([
       assistantWithPolicy(["search"], "paper/model-b"),
       agent("search", { thinking: "xhigh" }),
     ]);
-    const second = harness.tool.execute("t1", { agent: "search", task: "two" }, undefined, undefined, harness.context);
+    const second = harness.tool.execute("t1", { agent: "search", description: "Collect sources", prompt: "two" }, undefined, undefined, harness.context);
     await second;
 
     expect(harness.stages.map(({ options }) => ({ model: options.model, thinking: options.thinking }))).toEqual([
-      { model: "paper/model-a", thinking: "high" },
-      { model: "paper/model-b", thinking: "xhigh" },
+      { model: "stage-provider/stage-model", thinking: "high" },
+      { model: "stage-provider/stage-model", thinking: "xhigh" },
     ]);
   });
 });
 
 describe("formatSubagentDescription", () => {
-  it("keeps the exact three-line caller catalog", () => {
-    expect(formatSubagentDescription(["search", "experiment"])).toBe([
-      "Delegate tasks to specialized subagents with isolated context.",
-      "Sub agents run in the exact project directory.",
-      "Available subagents: search, experiment.",
-    ].join("\n"));
-    expect(formatSubagentDescription([])).toBe([
-      "Delegate tasks to specialized subagents with isolated context.",
-      "Sub agents run in the exact project directory.",
-      "Available subagents: none.",
-    ].join("\n"));
+  it("includes current role descriptions and the background/continuation contract", () => {
+    const description = formatSubagentDescription([{ name: "search", description: "Verify primary sources" }]);
+    expect(description).toContain("search: Verify primary sources");
+    expect(description).toContain("always run in the background");
+    expect(description).toContain("sessionID");
+    expect(description).toContain("Do not sleep, poll");
+    expect(formatSubagentDescription([])).not.toContain("- search");
   });
 });

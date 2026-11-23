@@ -131,6 +131,42 @@ async function recover(
 }
 
 describe("recoverSubagentTree", () => {
+  it.each(["unknown", "mixed", "wrong-recipient", "empty"] as const)("does not derive replay authority from a %s notification reference", async (kind) => {
+    const manager = new MemoryCoordinatorSessionManager();
+    const coordinator = new SubagentCoordinator(manager);
+    const job = reserve(coordinator);
+    materialize(coordinator, job, "child", "/sessions/child.jsonl");
+    coordinator.recordTerminal({ launchId: job.launchId, status: "complete" });
+    coordinator.recordNotificationBatch({ batchId: "legitimate", ownerSessionId: "root", launchIds: [job.launchId], content: "legitimate result", triggerTurn: false });
+    coordinator.acknowledgeNotification("legitimate");
+    coordinator.recordNotificationBatch({ batchId: "unowned", ownerSessionId: kind === "wrong-recipient" ? "child" : "root",
+      launchIds: kind === "empty" ? [] : kind === "mixed" ? [job.launchId, "missing-launch"] : kind === "wrong-recipient" ? [job.launchId] : ["missing-launch"],
+      content: "No verified reporting authority", triggerTurn: true });
+    const store = new MemoryRecoveryStore(new Map([
+      ["/sessions/root.jsonl", { readable: true, sessionId: "root", cwd: "/paper" }],
+      ["/sessions/child.jsonl", { readable: true, sessionId: "child", cwd: "/paper" }],
+    ]));
+    const before = structuredClone(manager.entries);
+    expect(await recover(coordinator, store)).toEqual({ interruptedLaunchIds: [], unmaterializedLaunchIds: [], acknowledgedBatchIds: [], notifications: [] });
+    expect(store.inspectCalls).toEqual([]);
+    expect(store.appendAttempts).toEqual([]);
+    expect(manager.entries).toEqual(before);
+    expect(coordinator.journal().pendingBatches.map((batch) => batch.batchId)).toEqual(["unowned"]);
+  });
+
+  it("does not traverse suppressed parents into an otherwise readable nested session", async () => {
+    const coordinator = new SubagentCoordinator(new MemoryCoordinatorSessionManager());
+    const parent = reserve(coordinator);
+    materialize(coordinator, parent, "parent-child", "/sessions/parent-child.jsonl");
+    const nested = reserve(coordinator, { ownerSessionId: "parent-child", toolCallId: "nested" });
+    materialize(coordinator, nested, "nested-child", "/sessions/nested-child.jsonl");
+    coordinator.recordLaunchSuppressed(parent.launchId);
+    const store = new MemoryRecoveryStore();
+    await recover(coordinator, store);
+    expect(store.inspectCalls).toEqual([]);
+    expect(coordinator.journal().jobs.get(nested.launchId)?.status).toBe("working");
+  });
+
   it("recovers a readable nonterminal launch as a no-trigger Error with available final text", async () => {
     const manager = new MemoryCoordinatorSessionManager();
     const coordinator = new SubagentCoordinator(manager);

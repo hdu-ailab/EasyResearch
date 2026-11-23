@@ -17,7 +17,7 @@ export interface AgentTabBarProps {
   researchAssistantStatus: AgentStatus;
   onSelect(key: string): void;
   onClose(key: string): void;
-  onStop(toolCallId: string): void;
+  onStop(key: string): undefined | boolean | Promise<boolean>;
   trailing?: ReactNode;
 }
 
@@ -139,9 +139,9 @@ export function AgentTabBar({
                   type="button"
                   aria-label={actionLabel}
                   title={actionLabel}
-                  onClick={() => {
+                  onClick={async () => {
                     if (!activity.current.interactive) return;
-                    if (tab.running) onStop(tab.toolCallId);
+                    if (tab.running && (await onStop(tab.key)) === false) return;
                     if (tab.retained) onClose(tab.key);
                   }}
                   onFocus={() => {

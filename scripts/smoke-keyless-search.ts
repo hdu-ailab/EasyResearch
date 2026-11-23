@@ -172,7 +172,7 @@ export function createKeylessSearchSmoke(runId: string, customAgent: string) {
   lanes.set("child", new SmokeAgentLane("keyless_child", positiveSteps("child"), () => final("child")));
   lanes.set("root", new SmokeAgentLane("keyless_root", [
     ...positiveSteps("root"),
-    { name: "subagent", args: () => ({ agent: customAgent, task: prompt("child") }), terminal: () => {
+    { name: "subagent", args: () => ({ agent: customAgent, description: "Verify native keyless tools", prompt: prompt("child") }), terminal: () => {
       assert(lanes.get("child")!.complete);
       return final("child");
     } },
@@ -318,7 +318,7 @@ export async function runKeylessSearchSmoke(options: SmokeOptions & { proxyRecor
   assertKeylessProvenance(root.snapshot);
   const dispatch = options.scenario.lanes.get("root")!.dispatches[0]!;
   assert(dispatch, "missing compiled child terminal handoff");
-  const child = root.snapshot.subagents.find(entry => entry.agentId === dispatch.agentId);
+  const child = root.snapshot.subagents.find(entry => entry.childSessionId === dispatch.sessionID);
   assert(child);
   const childSnapshot = await json(`/api/sessions/${root.id}/subagents/${child.childSessionId}/snapshot`) as ChildSessionSnapshotDto;
   assertKeylessProvenance(childSnapshot);

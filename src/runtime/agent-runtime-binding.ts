@@ -51,6 +51,8 @@ export interface EnsureCurrentOptions {
 }
 
 export interface AgentRuntimeBinding {
+  /** Child-local dispatch selection; never changes global defaults. */
+  setChildSelection?(selection: { agentName: string; model?: string; thinking?: ThinkingLevel }): Promise<void>;
   generation(): number;
   current(): AgentConfig;
   model(): Model<any> | undefined;
@@ -69,6 +71,7 @@ export interface AgentRuntimeBinding {
 }
 
 export interface AgentRuntimeBindingOptions {
+  childSelection?: { agentName: string; model?: string; thinking?: ThinkingLevel };
   live: Omit<Pick<
     LiveConfiguration,
     | "generation"
@@ -106,6 +109,7 @@ interface AppliedRuntimeState {
 
 interface PreparedRuntimeState extends AppliedRuntimeState {
   modelRuntimeCandidate: ModelRuntimeCandidate<AgentRuntimeModelRuntime>;
+  selectionRevision: number;
 }
 
 type RuntimeBindingStatus = "clean" | "applying" | "restoring" | "poisoned";
@@ -140,6 +144,9 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
   let projectedGeneration = 0;
   let disposed = false;
   let modelRuntimeDisposed = false;
+  let childSelection = options.childSelection && { ...options.childSelection };
+  let selectionRevision = 0;
+  let appliedSelectionRevision = -1;
 
   const requireApplied = (): AppliedRuntimeState => {
     if (runtimeStatus === "poisoned") throw new Error(SAFE_APPLY_ERROR);
@@ -209,17 +216,20 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         if (disposed || closing) throw new Error("Agent runtime binding has been closed.");
         const generation = options.live.generation;
         const availabilityEpoch = options.live.availabilityEpoch ?? 0;
+        const candidateSelectionRevision = selectionRevision;
+        const selectedChild = childSelection && { ...childSelection };
         if (
           applied &&
           generation <= applied.generation &&
           availabilityEpoch <= applied.availabilityEpoch &&
           pendingRuntimeGeneration === undefined &&
           runtimeStatus !== "poisoned"
+          && appliedSelectionRevision === candidateSelectionRevision
         ) return undefined;
 
         const agents = await options.live.resolveAgents(options.cwd);
-        if (generation !== options.live.generation) continue;
-        const definition = agents.find((agent) => agent.name === options.agentName);
+        if (generation !== options.live.generation || candidateSelectionRevision !== selectionRevision) continue;
+        const definition = agents.find((agent) => agent.name === (selectedChild?.agentName ?? options.agentName));
         if (!definition) throw new Error(SAFE_MISSING_AGENT);
         const researchAssistant = agents.find((agent) => agent.name === RESEARCH_ASSISTANT_AGENT);
 
@@ -231,7 +241,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           // Credential/availability refresh failures do not invalidate registered configuration.
         }
         if (disposed || closing) throw new Error("Agent runtime binding has been closed.");
-        if (generation !== options.live.generation) {
+        if (generation !== options.live.generation || candidateSelectionRevision !== selectionRevision) {
           await discardModelRuntimeCandidate();
           continue;
         }
@@ -246,10 +256,14 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           if (!model) throw new Error(SAFE_APPLY_ERROR);
           return model;
         };
-        const researchAssistantModel = researchAssistant?.model
+        const researchAssistantModel = selectedChild?.model
+          ? undefined
+          : researchAssistant?.model
           ? resolveExplicitModel(researchAssistant.model)
           : await options.resolveAutomaticModel(candidateRuntime);
-        const selectedModel = definition.name === RESEARCH_ASSISTANT_AGENT
+        const selectedModel = selectedChild?.model
+          ? resolveExplicitModel(selectedChild.model)
+          : definition.name === RESEARCH_ASSISTANT_AGENT
           ? researchAssistantModel
           : definition.model
             ? resolveExplicitModel(definition.model)
@@ -259,20 +273,22 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           undefined,
           researchAssistantModel,
         );
-        const selectedThinking = definition.name === RESEARCH_ASSISTANT_AGENT
+        const selectedThinking = selectedChild?.thinking
+          ? resolveConfiguredThinking({ thinking: selectedChild.thinking }, undefined, selectedModel)
+          : definition.name === RESEARCH_ASSISTANT_AGENT
           ? researchAssistantThinking
           : resolveConfiguredThinking(definition, researchAssistantThinking, selectedModel);
         if (disposed || closing) throw new Error("Agent runtime binding has been closed.");
-        if (generation !== options.live.generation) {
+        if (generation !== options.live.generation || candidateSelectionRevision !== selectionRevision) {
           await discardModelRuntimeCandidate();
           continue;
         }
 
         await options.live.synchronize({ projectCwds: [options.cwd] });
         if (disposed || closing) throw new Error("Agent runtime binding has been closed.");
-        if (!options.live.isCurrent(generation)) {
+        if (!options.live.isCurrent(generation) || candidateSelectionRevision !== selectionRevision) {
           await discardModelRuntimeCandidate();
-          if (generation !== options.live.generation) continue;
+          if (generation !== options.live.generation || candidateSelectionRevision !== selectionRevision) continue;
           throw new Error(SAFE_APPLY_ERROR);
         }
         return {
@@ -287,6 +303,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
             ...(options.live.compactionPolicy ?? DEFAULT_GLOBAL_COMPACTION_POLICY),
           },
           modelRuntimeCandidate,
+          selectionRevision: candidateSelectionRevision,
         };
       } catch (error) {
         try {
@@ -352,13 +369,13 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         await candidate.modelRuntimeCandidate.dispose();
         return false;
       }
-      if (!options.live.isCurrent(candidate.generation)) {
+      if (!options.live.isCurrent(candidate.generation) || candidate.selectionRevision !== selectionRevision) {
         try {
           await candidate.modelRuntimeCandidate.dispose();
         } catch {
           throw new Error(SAFE_APPLY_ERROR);
         }
-        if (candidate.generation !== options.live.generation) continue;
+        if (candidate.generation !== options.live.generation || candidate.selectionRevision !== selectionRevision) continue;
         throw new Error(SAFE_APPLY_ERROR);
       }
 
@@ -372,14 +389,17 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         return false;
       }
       const previous = applied;
-      const { modelRuntimeCandidate, ...next } = candidate;
-      const availabilityOnly = previous !== undefined && candidate.generation === previous.generation;
+      const { modelRuntimeCandidate, selectionRevision: candidateSelectionRevision, ...next } = candidate;
+      const availabilityOnly = previous !== undefined && candidate.generation === previous.generation
+        && appliedSelectionRevision === candidateSelectionRevision;
       modelRuntimeCandidate.activate();
       applied = next;
       runtimeStatus = "applying";
       if (!attached) {
         await modelRuntimeCandidate.commit();
         markRuntimeApplied(candidate.generation);
+        appliedSelectionRevision = candidateSelectionRevision;
+        if (candidateSelectionRevision !== selectionRevision) continue;
         return true;
       }
       const previousModel = attached.model;
@@ -390,6 +410,8 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
           if (previousThinking !== candidate.thinking) attached.setThinkingLevel(candidate.thinking);
           await modelRuntimeCandidate.commit();
           markRuntimeApplied(candidate.generation);
+          appliedSelectionRevision = candidateSelectionRevision;
+          if (candidateSelectionRevision !== selectionRevision && attached.isIdle) continue;
           return true;
         }
         await attached.reload();
@@ -405,6 +427,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         attached.setThinkingLevel(candidate.thinking);
         await modelRuntimeCandidate.commit();
         markRuntimeApplied(candidate.generation);
+        appliedSelectionRevision = candidateSelectionRevision;
       } catch {
         try {
           await modelRuntimeCandidate.rollback();
@@ -415,6 +438,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         markRuntimePending(candidate.generation);
         throw new Error(SAFE_APPLY_ERROR);
       }
+      if (candidateSelectionRevision !== selectionRevision && attached.isIdle) continue;
       return true;
     }
   };
@@ -461,6 +485,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
             activeBoundaryRequested ||
             recaptureCompactionBaseRequested ||
              (eventApplyRequested && (session === undefined || session.isIdle))
+             || (appliedSelectionRevision !== selectionRevision && (session === undefined || session.isIdle))
           )
         );
         abortOnActiveFailureRequested = false;
@@ -505,6 +530,19 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
   };
 
   return {
+    async setChildSelection(selection) {
+      if (!options.childSelection) throw new Error("Root runtime selection follows global Agent defaults.");
+      if (session && !session.isIdle) throw new Error("Child model and Agent changes require an idle session.");
+      const previous = childSelection;
+      childSelection = { ...selection };
+      selectionRevision += 1;
+      const requestedRevision = selectionRevision;
+      try { await ensureCurrent(); }
+      catch (error) {
+        if (selectionRevision === requestedRevision) { childSelection = previous; selectionRevision += 1; }
+        throw error;
+      }
+    },
     generation() {
       return requireApplied().generation;
     },

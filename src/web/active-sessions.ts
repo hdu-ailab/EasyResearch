@@ -34,6 +34,7 @@ import type { SessionHistoryTarget } from "./session-deletion";
 import { LlmRetryError } from "../runtime/llm-recovery";
 import { ContextManagementError } from "./context-management";
 import type { ContextEditRequestDto, ContextItemTextDto, ContextPreviewDto, ContextSnapshotDto } from "./context-contracts";
+import type { BackgroundTask } from "../background/contracts";
 
 const logger = createLogger("web-registry");
 
@@ -144,6 +145,7 @@ export class ActiveSessionRegistry {
   private readonly records = new Map<string, ActiveRecord>();
   private readonly opening = new Map<string, Promise<ActiveSessionDto>>();
   private readonly pendingLaunches = new Set<PendingLaunch>();
+  private readonly suspendedClients = new Set<SessionAdapter>();
   private readonly lifecycleOperations = new Set<LifecycleOperation>();
   private readonly subscriptions = new Map<string, Set<(event: unknown) => void>>();
   private readonly fileWatchLeases = new Map<string, { id: string; watcher: FileWatcher }>();
@@ -251,6 +253,7 @@ export class ActiveSessionRegistry {
     compactionState: CompactionStateDto;
     automaticRetry: AutomaticRetryDto | null;
     llmRecovery: LlmRecoveryDto | null;
+    backgroundTasks: BackgroundTask[];
   }> {
     return this.withRecord(id, async (record) => {
       await this.refreshFromClient(record);
@@ -267,6 +270,7 @@ export class ActiveSessionRegistry {
       onMessagesAcquired?.();
       return {
         session: { ...record.dto },
+        backgroundTasks: live ? record.client.getBackgroundTasks?.() ?? [] : [],
         timeline: transcript.timeline,
         inlineUsage: transcript.inlineUsage,
         steering: live ? [...record.client.getSteeringMessages()] : [],
@@ -305,6 +309,27 @@ export class ActiveSessionRegistry {
   async abort(id: string): Promise<void> {
     return this.withMutation(id, async (record) => {
       await record.client.abort();
+      await this.refreshFromClient(record);
+    });
+  }
+
+  backgroundTasks(id: string): Promise<BackgroundTask[]> {
+    return this.withRecord(id, async (record) => record.client.getBackgroundTasks?.() ?? []);
+  }
+
+  promoteBackground(id: string): Promise<void> {
+    return this.withMutation(id, async (record) => {
+      await record.client.promoteBackground?.();
+      await this.refreshFromClient(record);
+    });
+  }
+
+  cancelBackground(id: string, taskId: string): Promise<void> {
+    return this.withMutation(id, async (record) => {
+      if (!record.client.cancelBackground || !record.client.getBackgroundTasks?.().some((task) => task.id === taskId)) {
+        throw new UnknownSessionError("Unknown background task");
+      }
+      await record.client.cancelBackground(taskId);
       await this.refreshFromClient(record);
     });
   }
@@ -465,7 +490,7 @@ export class ActiveSessionRegistry {
     return this.stopRecord(record);
   }
 
-  private async stopRecord(record: ActiveRecord): Promise<void> {
+  private async stopRecord(record: ActiveRecord, restart = false): Promise<void> {
     const id = record.dto.id;
     record.closing = true;
     this.clearIdleTimer(record);
@@ -482,7 +507,11 @@ export class ActiveSessionRegistry {
           });
         }
         if (!record.clientStopped) {
-          await record.client.stop();
+          if (restart && record.client.suspend) {
+            await record.client.suspend();
+            this.suspendedClients.add(record.client);
+          }
+          else await record.client.stop();
           record.clientStopped = true;
         }
         // Native Stop cancels its writers; registry-owned calls must also settle.
@@ -665,12 +694,12 @@ export class ActiveSessionRegistry {
     lease.watcher.releaseLease(leaseId);
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(options?: { restart?: boolean }): Promise<void> {
     this.beginShutdown();
     const pending = [...this.pendingLaunches];
     const outcomes = await Promise.allSettled(
       [
-        ...[...this.records.values()].map((record) => this.stopRecord(record)),
+        ...[...this.records.values()].map((record) => this.stopRecord(record, options?.restart)),
         ...pending.map((launch) => this.settlePendingForShutdown(launch)),
         // Request errors belong to their callers; shutdown still owns settlement.
         ...[...this.lifecycleOperations].map((operation) => operation.promise.catch(() => {})),
@@ -682,6 +711,16 @@ export class ActiveSessionRegistry {
     );
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Active session shutdown failed");
+    if (!options?.restart) await this.cancelSuspended();
+  }
+
+  async cancelSuspended(): Promise<void> {
+    const outcomes = await Promise.allSettled([...this.suspendedClients].map(async (client) => {
+      await client.revokeSuspension?.();
+      this.suspendedClients.delete(client);
+    }));
+    const errors = outcomes.flatMap((outcome) => outcome.status === "rejected" ? [outcome.reason] : []);
+    if (errors.length) throw new AggregateError(errors, "Suspended session cancellation failed");
   }
 
   private reserveLaunch(options: LaunchOptions): PendingLaunch {

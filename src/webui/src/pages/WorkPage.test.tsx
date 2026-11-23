@@ -2,6 +2,7 @@ import { act, fireEvent, render as renderWithTestingLibrary, screen, waitFor, wi
 import userEvent from "@testing-library/user-event";
 import { type ComponentProps, createRef, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BackgroundTask } from "../../../background/contracts";
 import type { FileEntryDto, SubagentSessionSummaryDto, SubagentSupervisorEventDto } from "../../../web/contracts";
 import * as api from "../api";
 import { I18nProvider } from "../i18n/I18nProvider";
@@ -52,12 +53,17 @@ vi.mock("../api", async (importOriginal) => {
     openSession: vi.fn(),
     stopSession: vi.fn(),
     abortSession: vi.fn(),
+    cancelBackgroundTask: vi.fn(),
+    promoteBackgroundTasks: vi.fn(),
+    getShellOutput: vi.fn(),
+    replaceBackgroundOutputWatches: vi.fn(),
     listConfig: vi.fn().mockResolvedValue([]),
     readConfigFile: vi.fn(),
     writeConfigFile: vi.fn(),
     createConfigDirectory: vi.fn(),
     listEntries: vi.fn(),
     readFileContent: vi.fn(),
+    resolveFileReferences: vi.fn(),
     listAgents: vi.fn(),
     listModels: vi.fn(),
     patchAgent: vi.fn(),
@@ -295,8 +301,19 @@ describe("WorkPage", () => {
     vi.mocked(api.openSession).mockReset();
     vi.mocked(api.stopSession).mockReset();
     vi.mocked(api.abortSession).mockReset();
+    vi.mocked(api.cancelBackgroundTask).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(api.promoteBackgroundTasks).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(api.getShellOutput).mockReset();
+    vi.mocked(api.replaceBackgroundOutputWatches)
+      .mockReset()
+      .mockImplementation(async (_root, _lease, revision) => ({ applied: true, revision }));
     vi.mocked(api.listEntries).mockReset();
     vi.mocked(api.readFileContent).mockReset();
+    vi.mocked(api.resolveFileReferences)
+      .mockReset()
+      .mockImplementation(async (_id, references) => ({
+        references: references.map((reference) => ({ reference, paths: [], truncated: false })),
+      }));
     vi.mocked(api.listAgents).mockReset();
     vi.mocked(api.listModels).mockReset();
     vi.mocked(api.patchAgent).mockReset();
@@ -459,6 +476,209 @@ describe("WorkPage", () => {
     });
     vi.mocked(api.listEntries).mockResolvedValue([{ kind: "file", name: "notes.md", path: "/p/notes.md" }]);
     stubEvents();
+  });
+
+  it("shows flushed output through the existing stream while a shell runs and releases its watch on Escape", async () => {
+    const task: BackgroundTask = {
+      id: "live-shell",
+      kind: "shell",
+      sessionID: "s1",
+      description: "Training",
+      status: "running",
+      blocking: false,
+    };
+    const page = {
+      id: task.id,
+      sessionID: "s1",
+      command: "train",
+      status: "running" as const,
+      startedAt: 1,
+      exitCode: null,
+      output: "Phase 1\n",
+      cursor: 8,
+      size: 8,
+      truncated: false,
+      reset: false,
+    };
+    vi.mocked(api.getShellOutput)
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce({ ...page, output: "Phase 2\n", cursor: 16, size: 16 });
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      ...snapshotValue,
+      type: "snapshot",
+      subagents: [],
+      backgroundTasks: [task],
+      fileWatchLeaseId: "output-lease",
+    });
+    await user.click(screen.getByRole("button", { name: "Running tasks · 1" }));
+    await user.click(screen.getByRole("button", { name: "View command output: Training" }));
+    await screen.findByText("Phase 1");
+    expect(api.replaceBackgroundOutputWatches).toHaveBeenCalledWith("s1", "output-lease", 1, [task.id]);
+    expect(vi.mocked(api.replaceBackgroundOutputWatches).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(api.getShellOutput).mock.invocationCallOrder[0]!,
+    );
+    emitInAct({ type: "background_output_changed", taskId: "different" });
+    expect(api.getShellOutput).toHaveBeenCalledTimes(1);
+    emitInAct({ type: "background_output_changed", taskId: task.id });
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "Command output" })).toHaveTextContent("Phase 1 Phase 2"),
+    );
+    expect(screen.getByRole("button", { name: "Cancel command: Training" })).toBeEnabled();
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+    expect(api.connectSessionEvents).toHaveBeenCalledTimes(1);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: /message/i })).toHaveFocus());
+    expect(api.replaceBackgroundOutputWatches).toHaveBeenLastCalledWith("s1", "output-lease", 2, []);
+    expect(api.cancelBackgroundTask).not.toHaveBeenCalled();
+    emitInAct({ type: "background_output_changed", taskId: task.id });
+    expect(api.getShellOutput).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens a read-only child from its background admission identity before any assistant response", async () => {
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await screen.findByText("starting research");
+    emitInAct({
+      type: "tool_execution_start",
+      toolCallId: "early",
+      toolName: "subagent",
+      args: { agent: "search", description: "Find papers", prompt: "Inspect sources", model: "provider/model" },
+    });
+    emitInAct({
+      type: "tool_execution_end",
+      toolCallId: "early",
+      toolName: "subagent",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "Accepted" }],
+        details: { mode: "single", results: [], sessionID: "early-native-child", status: "running", output: "" },
+      },
+    });
+    expect(screen.getByText("Search · Find papers")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Agent Search" }));
+    await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledWith("s1", "early-native-child"));
+    expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("keeps background tasks through root Stop, settlement and disconnect and replaces them from events", async () => {
+    const tasks: BackgroundTask[] = [
+      { id: "shell-1", kind: "shell", sessionID: "s1", description: "Train model", status: "running", blocking: true },
+      {
+        id: "child-task",
+        kind: "subagent",
+        sessionID: "idle-child",
+        agent: "experiment",
+        description: "Experiment jobs",
+        status: "running",
+        blocking: false,
+      },
+      {
+        id: "nested-shell",
+        kind: "shell",
+        sessionID: "idle-child",
+        description: "Evaluate",
+        status: "running",
+        blocking: false,
+      },
+    ];
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      backgroundTasks: tasks,
+      session: { ...snapshotValue.session, isStreaming: true, status: "running" },
+    } as never);
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: /Running tasks/ }));
+    await screen.findByRole("button", { name: "Cancel command: Train model" });
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(api.abortSession).toHaveBeenCalledWith("s1");
+    expect(api.cancelBackgroundTask).not.toHaveBeenCalled();
+    emitInAct({ type: "agent_settled" });
+    act(() => latestHandlers?.onError());
+    await user.click(screen.getByRole("button", { name: /Running tasks/ }));
+    expect(screen.getByRole("button", { name: "Cancel agent tree: Experiment jobs" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Cancel command: Evaluate" })).toBeVisible();
+    emitInAct({ type: "error", error: "Root request failed" });
+    expect(screen.getByRole("button", { name: "Cancel agent tree: Experiment jobs" })).toBeEnabled();
+    emitInAct({ type: "background_tasks_changed", tasks: [tasks[1]] });
+    expect(screen.queryByRole("button", { name: "Cancel command: Train model" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Move command to background" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Cancel agent tree: Experiment jobs" }));
+    expect(api.cancelBackgroundTask).toHaveBeenCalledWith("s1", "child-task");
+    expect(screen.getByRole("button", { name: "Cancel agent tree: Experiment jobs" })).toBeVisible();
+    emitInAct({ type: "background_tasks_changed", tasks: [] });
+    expect(screen.queryByRole("list", { name: "Running tasks" })).toBeNull();
+    expect(api.connectSessionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("promotes root blocking commands with retryable failure and never promotes twice for a steer", async () => {
+    const root: BackgroundTask = {
+      id: "root-shell",
+      kind: "shell",
+      sessionID: "s1",
+      description: "Root command",
+      status: "running",
+      blocking: true,
+    };
+    const nested: BackgroundTask = { ...root, id: "child-shell", sessionID: "child", description: "Child command" };
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      backgroundTasks: [root, nested],
+      session: { ...snapshotValue.session, isStreaming: true, status: "running" },
+    } as never);
+    vi.mocked(api.promoteBackgroundTasks).mockRejectedValueOnce(new Error("failure"));
+    const user = userEvent.setup();
+    render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: "Move command to background" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Task action failed");
+    await user.click(screen.getByRole("button", { name: "Move command to background" }));
+    expect(api.promoteBackgroundTasks).toHaveBeenCalledTimes(2);
+    expect(api.promoteBackgroundTasks).toHaveBeenLastCalledWith("s1");
+    emitInAct({ type: "background_tasks_changed", tasks: [{ ...root, blocking: false }, nested] });
+    expect(screen.queryByRole("button", { name: "Move command to background" })).toBeNull();
+    await user.type(screen.getByRole("textbox"), "Continue{Enter}");
+    await waitFor(() => expect(api.sendPrompt).toHaveBeenCalledWith("s1", "Continue"));
+    expect(api.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(api.promoteBackgroundTasks).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps background cancellation retryable and rejects stale control completion after a root switch", async () => {
+    const task: BackgroundTask = {
+      id: "shell",
+      kind: "shell",
+      sessionID: "s1",
+      description: "Long command",
+      status: "running",
+      blocking: false,
+    };
+    vi.mocked(api.getSnapshot).mockResolvedValue({ ...snapshotValue, backgroundTasks: [task] } as never);
+    vi.mocked(api.cancelBackgroundTask).mockRejectedValueOnce(new Error("failed"));
+    const user = userEvent.setup();
+    const rendered = render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await user.click(await screen.findByRole("button", { name: /Running tasks/ }));
+    await user.click(await screen.findByRole("button", { name: "Cancel command: Long command" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Task action failed");
+    const pending = deferred<{ ok: true }>();
+    vi.mocked(api.cancelBackgroundTask).mockReturnValueOnce(pending.promise);
+    await user.click(screen.getByRole("button", { name: "Cancel command: Long command" }));
+    expect(screen.getByRole("button", { name: "Cancel command: Long command" })).toBeDisabled();
+    const old = latestHandlers;
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshotValue,
+      session: { ...snapshotValue.session, id: "s2" },
+      backgroundTasks: [],
+    } as never);
+    rendered.rerender(<WorkPage id="s2" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+    await act(async () => pending.resolve({ ok: true }));
+    act(() => old?.onEvent({ type: "background_tasks_changed", tasks: [task] }));
+    expect(screen.queryByRole("list", { name: "Running tasks" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(api.cancelBackgroundTask).toHaveBeenCalledTimes(2);
+    expect(api.abortSession).not.toHaveBeenCalled();
   });
 
   it("retains two actual Work owners' drafts, files, child disclosure and unpinned scroll while background events continue", async () => {
@@ -2905,8 +3125,22 @@ describe("WorkPage", () => {
       rows.findIndex((row) => row.includes("bash")),
     );
 
+    emitInAct({
+      type: "background_tasks_changed",
+      tasks: [
+        {
+          id: "task-live",
+          kind: "subagent",
+          sessionID: "child-live",
+          description: "Collect",
+          status: "running",
+          blocking: false,
+        },
+      ],
+    });
     await user.click(tabs.getByRole("button", { name: /Stop and close agent:/ }));
-    await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
+    await waitFor(() => expect(api.cancelBackgroundTask).toHaveBeenCalledWith("s1", "task-live"));
+    expect(api.abortSession).not.toHaveBeenCalled();
     expect(await conversation.findByRole("button", { name: "View details" })).toBeVisible();
     await user.click(conversation.getByRole("button", { name: "View details" }));
     expect(await screen.findByText("live tokens")).toBeVisible();
@@ -4102,8 +4336,22 @@ describe("WorkPage", () => {
     expect(select.parentElement).toBe(stop.parentElement);
     expect(select.parentElement).toHaveClass("rounded-full", "border");
 
+    emitInAct({
+      type: "background_tasks_changed",
+      tasks: [
+        {
+          id: "task-2",
+          kind: "subagent",
+          sessionID: "child-2",
+          description: "Collect",
+          status: "running",
+          blocking: false,
+        },
+      ],
+    });
     await user.click(stop);
-    await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
+    await waitFor(() => expect(api.cancelBackgroundTask).toHaveBeenCalledWith("s1", "task-2"));
+    expect(api.abortSession).not.toHaveBeenCalled();
     expect(assistant).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Agent search_0" })).toBeVisible();
     expect(
@@ -4557,6 +4805,9 @@ describe("WorkPage", () => {
 
   describe("chat file references", () => {
     beforeEach(() => {
+      vi.mocked(api.resolveFileReferences).mockImplementation(async (_id, references) => ({
+        references: references.map((reference) => ({ reference, paths: [`/p/${reference}`], truncated: false })),
+      }));
       vi.mocked(api.getSnapshot).mockResolvedValue({
         ...snapshotValue,
         timeline: [
@@ -4573,6 +4824,102 @@ describe("WorkPage", () => {
         if (content === undefined) throw new Error(`Unexpected file: ${path}`);
         return { path, content, byteCount: content.length, truncated: false, binary: false };
       });
+    });
+
+    it("rechecks a cached absence after Agent completion without a collapsed-directory watcher event", async () => {
+      const fs = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const { resolveFileReferences: readMetadata } = await import("../../../web/file-references");
+      const cwd = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "reference-lifecycle-")));
+      const collapsed = join(cwd, "results");
+      fs.mkdirSync(collapsed);
+      const rootEvents: unknown[] = [];
+      const watcher = fs.watch(cwd, { persistent: false }, (...event) => rootEvents.push(event));
+      let metadataRead: ReturnType<typeof readMetadata> | undefined;
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...snapshotValue,
+        session: { ...snapshotValue.session, cwd },
+        timeline: [
+          {
+            kind: "message",
+            entryId: "missing-reference",
+            message: { role: "user", content: "`results/new.txt`", timestamp: 1 },
+          },
+        ],
+      } as never);
+      vi.mocked(api.resolveFileReferences).mockImplementation((_id, references, signal) => {
+        metadataRead = readMetadata(cwd, references, signal);
+        return metadataRead;
+      });
+      // results already exists but is collapsed: creating its child produces no root/expanded-directory event.
+      vi.mocked(api.listEntries).mockResolvedValue([{ kind: "directory", path: collapsed, name: "results" }]);
+      const view = renderFiles(<WorkPage id="s1" cwd={cwd} onBack={() => {}} onOpenSettings={() => {}} />);
+      try {
+        await waitFor(() => expect(api.resolveFileReferences).toHaveBeenCalled());
+        await act(async () => {
+          expect((await metadataRead)?.references[0]?.paths).toEqual([]);
+        });
+        expect(screen.queryByRole("button", { name: "results/new.txt" })).toBeNull();
+        expect(api.listEntries).not.toHaveBeenCalledWith(collapsed);
+        fs.writeFileSync(join(collapsed, "new.txt"), "created in an existing collapsed directory");
+        await act(async () =>
+          emit({
+            type: "message_end",
+            message: { role: "assistant", content: [{ type: "text", text: "Created the file." }], timestamp: 2 },
+          }),
+        );
+        expect(await screen.findByRole("button", { name: "results/new.txt" })).toBeTruthy();
+        expect(api.listEntries).not.toHaveBeenCalledWith(collapsed);
+        expect(rootEvents).toEqual([]);
+      } finally {
+        view.unmount();
+        watcher.close();
+        fs.rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it("opens a retained child's shortened reference in the root browser at its selected lines", async () => {
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        session: { id: "s1", cwd: "/p", isStreaming: false, status: "ready" },
+        subagents: [subagentSummary("sub-files", "child-files", "search", { latestMessage: "See source" })],
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "sub-files", name: "subagent", arguments: { agent: "search" } }],
+          },
+          { role: "toolResult", toolCallId: "sub-files", toolName: "subagent", content: [], isError: false },
+        ],
+      } as never);
+      vi.mocked(api.getChildSnapshot).mockResolvedValue({
+        session: { id: "child-files", cwd: "/p", sessionName: "easyresearch:search" },
+        timeline: [
+          {
+            kind: "message",
+            entryId: "child-reference",
+            message: { role: "user", content: "[Selected source](draft.md#L2-L3)", timestamp: 1 },
+          },
+        ],
+        subagents: [],
+      });
+      vi.mocked(api.resolveFileReferences).mockImplementation(async (_id, references) => ({
+        references: references.map((reference) => ({ reference, paths: ["/p/manuscript/draft.md"], truncated: false })),
+      }));
+      vi.mocked(api.readFileContent).mockResolvedValue({
+        path: "/p/manuscript/draft.md",
+        content: "first\nsecond\nthird",
+        byteCount: 18,
+        truncated: false,
+        binary: false,
+      });
+      render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+      await userEvent.click(await screen.findByRole("button", { name: "View details" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Selected source" }));
+      await waitFor(() => expect(document.querySelector('[data-line="2"]')).toHaveFocus());
+      expect(document.querySelectorAll("mark")).toHaveLength(2);
+      expect(api.resolveFileReferences).toHaveBeenCalledWith("s1", ["draft.md"], expect.any(AbortSignal));
+      expect(screen.getAllByRole("tab", { name: "draft.md" })).toHaveLength(1);
+      expect(api.sendPrompt).not.toHaveBeenCalled();
     });
 
     it("selects Files from hidden and Agents panels, activates existing tabs, and reopens closed tabs", async () => {
@@ -4642,7 +4989,7 @@ describe("WorkPage", () => {
       await user.click(toggle);
       expect(within(files).getByRole("tree", { name: "Workspace files tree" })).toBeVisible();
       await user.click(screen.getByRole("tab", { name: "Chat" }));
-      reference.focus();
+      (await within(chat).findByRole("button", { name: "manuscript/draft.md" })).focus();
       await user.keyboard(" ");
 
       expect(files).toBeVisible();
@@ -5997,9 +6344,27 @@ describe("WorkPage", () => {
     const action = screen.getByRole("button", { name: "Stop and close agent: experiment_0" });
     expect(screen.queryByRole("button", { name: "Stop agent: experiment_0" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Close agent tab: experiment_0" })).toBeNull();
+    emitInAct({
+      type: "background_tasks_changed",
+      tasks: [
+        {
+          id: "task-combined",
+          kind: "subagent",
+          sessionID: "child-combined",
+          description: "Benchmark",
+          status: "running",
+          blocking: false,
+        },
+      ],
+    });
+    vi.mocked(api.cancelBackgroundTask).mockRejectedValueOnce(new Error("failed"));
+    await user.click(action);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Task action failed");
+    expect(screen.getByRole("button", { name: "Agent experiment_0" })).toHaveAttribute("aria-pressed", "true");
     await user.click(action);
 
-    await waitFor(() => expect(api.abortSession).toHaveBeenCalledWith("s1"));
+    await waitFor(() => expect(api.cancelBackgroundTask).toHaveBeenCalledWith("s1", "task-combined"));
+    expect(api.abortSession).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Agent experiment_0" })).toBeNull();
     expect(screen.getByRole("button", { name: /agent research assistant/i })).toHaveAttribute("aria-pressed", "true");
   });

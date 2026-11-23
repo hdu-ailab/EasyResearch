@@ -57,10 +57,11 @@ export const RESEARCH_ASSISTANT_AGENT = "research-assistant";
 
 export const CONTROLLED_TOOL_INVENTORY = [
   "read",
-  "bash",
+  "shell",
   "edit",
   "write",
   "subagent",
+  "models",
   "web-search",
   "webfetch",
 ] as const;

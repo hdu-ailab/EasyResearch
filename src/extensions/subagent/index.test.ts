@@ -66,6 +66,7 @@ function mutableBinding(initial: AgentConfig): AgentRuntimeBinding & { set(agent
   let generation = 1;
   return {
     current: () => current,
+    thinking: () => current.thinking ?? "off",
     generation: () => generation,
     set: (next, nextGeneration) => {
       current = next;
@@ -179,13 +180,13 @@ describe("createSubagentExtension nested supervised dispatch", () => {
 
     const result = await loaded.tools.get("subagent")!.execute(
       "tool-0",
-      { agent: "search", task: "collect" },
+      { agent: "search", description: "Collect sources", prompt: "collect" },
       undefined,
       undefined,
       context(runtime.ownerManager),
     );
 
-    expect(result.content).toEqual([{ type: "text", text: "search_0 is working." }]);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining("sessionID: child-search_0") }]);
     expect(runtime.launches[0]).toMatchObject({
       ownerSessionId: "writing-child",
       agent: "search",
@@ -210,12 +211,12 @@ describe("createSubagentExtension nested supervised dispatch", () => {
     await loaded.handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/paper" });
 
     const result = await loaded.tools.get("subagent")!.execute(
-      "tool-0", { agent: "search", task: "collect" }, undefined, undefined, context(runtime.ownerManager),
+      "tool-0", { agent: "search", description: "Collect sources", prompt: "collect" }, undefined, undefined, context(runtime.ownerManager),
     );
 
-    expect(result.content).toEqual([{ type: "text", text: "search_1 is working." }]);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining("sessionID: child-search_1") }]);
     await expect(loaded.tools.get("subagent")!.execute(
-      "tool-1", { agent: "search_0", task: "recurse" }, undefined, undefined, context(runtime.ownerManager),
+      "tool-1", { agent: "search_0", description: "Recurse", prompt: "recurse" }, undefined, undefined, context(runtime.ownerManager),
     )).rejects.toThrow(/ambiguous|disabled|unavailable/i);
   });
 
@@ -236,11 +237,28 @@ describe("createSubagentExtension nested supervised dispatch", () => {
     live.publish([agent("research-assistant"), writingV2, agent("reviewer")]);
     await loaded.handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
     expect(loaded.activeTools()).toEqual(["read"]);
-    expect(loaded.tools.get("subagent")?.description).toContain("Available subagents: search.");
+    expect(loaded.tools.get("subagent")?.description).toContain("- search: search");
 
     binding.set(writingV2, live.generation);
     await loaded.handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
     expect(loaded.activeTools()).toEqual(["read", "subagent"]);
-    expect(loaded.tools.get("subagent")?.description).toContain("Available subagents: reviewer.");
+    expect(loaded.tools.get("subagent")?.description).toContain("- reviewer: reviewer");
+  });
+
+  it("refreshes caller authority and full role descriptions after a child-local role reload", async () => {
+    const writing = agent("writing", { subagents: ["search"] });
+    const experiment = agent("experiment", { subagents: ["reviewer"] });
+    const reviewer = agent("reviewer", { description: "Independently verify experiment evidence" });
+    const binding = mutableBinding(writing);
+    const live = new FakeLiveConfiguration([writing, experiment, agent("search"), reviewer]);
+    const runtime = runtimeHarness();
+    const loaded = await loadExtension({ ...runtime, binding, liveConfiguration: live });
+    await loaded.handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/paper" });
+    binding.set(experiment, live.generation);
+    await loaded.handlers.get("session_start")?.({ reason: "reload" }, { cwd: "/paper" });
+    expect(loaded.tools.get("subagent")?.description).toContain("- reviewer: Independently verify experiment evidence");
+    expect(loaded.tools.get("subagent")?.description).not.toContain("- search:");
+    await loaded.tools.get("subagent")!.execute("verify", { agent: "reviewer", description: "Verify evidence", prompt: "Verify the experiments" }, undefined, undefined, context(runtime.ownerManager));
+    expect(runtime.launch).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ callerAgent: "experiment" }));
   });
 });

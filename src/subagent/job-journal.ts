@@ -1,9 +1,14 @@
 import { readCompletionOutcomes, type SubagentCompletionOutcome } from "./notifications";
+import type { BackgroundAdmission, BackgroundPeriodResult } from "./background-periods";
 
 export const SUBAGENT_JOB_ENTRY = "easyresearch:subagent_job";
 
 export type SubagentJobJournalRecord =
-  | { kind: "reserved"; launchId: string; ownerSessionId: string; toolCallId: string; agent: string; agentId: string; continuation: boolean; createdAt: string }
+  | { kind: "input_admitted"; launchId: string; inputID: string; fingerprint?: string }
+  | { kind: "background_admitted"; launchId: string; admission: BackgroundAdmission }
+  | { kind: "background_restart"; launchId: string; attempt: number }
+  | { kind: "background_report"; launchId: string; result: BackgroundPeriodResult; batch: NotificationBatchRecord }
+  | { kind: "reserved"; launchId: string; ownerSessionId: string; toolCallId: string; agent: string; agentId: string; continuation: boolean; createdAt: string; description?: string; inputID?: string; inputFingerprint?: string }
   | { kind: "created"; launchId: string; childSessionId: string; sessionPath: string }
   | { kind: "materialized"; launchId: string }
   | { kind: "launch_acknowledged"; launchId: string; acknowledgedAt: string }
@@ -15,6 +20,13 @@ export type SubagentJobJournalRecord =
   | { kind: "notification_superseded"; batchId: string; supersededAt: string };
 
 export interface InternalSubagentJob {
+  inputID?: string;
+  inputFingerprint?: string;
+  inputAdmissions?: Array<{ inputID: string; fingerprint?: string }>;
+  description?: string;
+  background?: BackgroundAdmission;
+  restartAttempts?: number;
+  backgroundResult?: BackgroundPeriodResult;
   launchId: string;
   ownerSessionId: string;
   toolCallId: string;
@@ -45,6 +57,7 @@ export interface NotificationBatchRecord {
 
 export interface SubagentJournalState {
   jobs: Map<string, InternalSubagentJob>;
+  notificationBatches: Map<string, NotificationBatchRecord>;
   pendingBatches: NotificationBatchRecord[];
   acknowledgedBatchIds: Set<string>;
   acknowledgedNotificationLaunchIds: Set<string>;
@@ -75,6 +88,28 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
   if (typeof data.kind !== "string") return undefined;
 
   switch (data.kind) {
+    case "input_admitted":
+      if (!isNonEmptyString(data.launchId) || !isNonEmptyString(data.inputID) || !isOptionalString(data.fingerprint)) return undefined;
+      return { kind: data.kind, launchId: data.launchId, inputID: data.inputID, ...(data.fingerprint === undefined ? {} : { fingerprint: data.fingerprint }) };
+    case "background_admitted":
+      if (!isNonEmptyString(data.launchId) || !isObject(data.admission)
+        || !isNonEmptyString(data.admission.cwd) || !isNonEmptyString(data.admission.callerAgent)
+        || !isNonEmptyString(data.admission.description) || !isOptionalString(data.admission.model)
+        || !isOptionalString(data.admission.thinking)) return undefined;
+      return { kind: data.kind, launchId: data.launchId, admission: data.admission as unknown as BackgroundAdmission };
+    case "background_restart":
+      if (!isNonEmptyString(data.launchId) || !Number.isInteger(data.attempt) || (data.attempt as number) < 1 || (data.attempt as number) > 10) return undefined;
+      return { kind: data.kind, launchId: data.launchId, attempt: data.attempt as number };
+    case "background_report": {
+      if (!isNonEmptyString(data.launchId) || !isObject(data.result)
+        || !["completed", "error", "cancelled"].includes(String(data.result.state))
+        || !isOptionalString(data.result.text) || !Array.isArray(data.result.outstanding)
+        || !isObject(data.batch)) return undefined;
+      const batch = readRecord({ type: "custom", customType: SUBAGENT_JOB_ENTRY, data: { ...data.batch, kind: "notification_batch" } });
+      if (!batch || batch.kind !== "notification_batch" || batch.launchIds.length !== 1 || batch.launchIds[0] !== data.launchId) return undefined;
+      return { kind: data.kind, launchId: data.launchId, result: data.result as unknown as BackgroundPeriodResult,
+        batch: { ...batch, triggerTurn: batch.triggerTurn ?? true } };
+    }
     case "reserved":
       if (
         !isNonEmptyString(data.launchId)
@@ -84,6 +119,8 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
         || !isNonEmptyString(data.agentId)
         || typeof data.continuation !== "boolean"
         || !isNonEmptyString(data.createdAt)
+        || !isOptionalString(data.description)
+        || !isOptionalString(data.inputID) || !isOptionalString(data.inputFingerprint)
       ) return undefined;
       return {
         kind: data.kind,
@@ -94,6 +131,9 @@ function readRecord(entry: unknown): SubagentJobJournalRecord | undefined {
         agentId: data.agentId,
         continuation: data.continuation,
         createdAt: data.createdAt,
+        ...(data.description === undefined ? {} : { description: data.description }),
+        ...(data.inputID === undefined ? {} : { inputID: data.inputID }),
+        ...(data.inputFingerprint === undefined ? {} : { inputFingerprint: data.inputFingerprint }),
       };
     case "created":
       if (!isNonEmptyString(data.launchId) || !isNonEmptyString(data.childSessionId) || !isNonEmptyString(data.sessionPath)) return undefined;
@@ -185,6 +225,9 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
         agentId: record.agentId,
         continuation: record.continuation,
         createdAt: record.createdAt,
+        ...(record.description === undefined ? {} : { description: record.description }),
+        ...(record.inputID === undefined ? {} : { inputID: record.inputID }),
+        ...(record.inputFingerprint === undefined ? {} : { inputFingerprint: record.inputFingerprint }),
         status: "reserved",
         launchAcknowledged: false,
       });
@@ -224,6 +267,25 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
     const job = jobs.get(record.launchId);
     if (!job) continue;
     switch (record.kind) {
+      case "input_admitted":
+        if (!job.inputAdmissions?.some((input) => input.inputID === record.inputID)) jobs.set(record.launchId, { ...job,
+          inputAdmissions: [...(job.inputAdmissions ?? []), { inputID: record.inputID, ...(record.fingerprint === undefined ? {} : { fingerprint: record.fingerprint }) }] });
+        break;
+      case "background_admitted":
+        jobs.set(record.launchId, { ...job, background: record.admission, restartAttempts: 0 });
+        break;
+      case "background_restart":
+        if (job.background && !job.terminalStatus && !job.terminalSuppressed) jobs.set(record.launchId, { ...job, restartAttempts: Math.max(job.restartAttempts ?? 0, record.attempt) });
+        break;
+      case "background_report": {
+        if (job.terminalStatus || !job.background || record.batch.ownerSessionId !== job.ownerSessionId) break;
+        const status = record.result.state === "completed" ? "complete" : "error";
+        jobs.set(record.launchId, { ...job, status, terminalStatus: status, backgroundResult: record.result,
+          latestAssistantText: record.result.text, restartAttempts: 0 });
+        notificationBatches.set(record.batch.batchId, record.batch);
+        pendingBatches.set(record.batch.batchId, record.batch);
+        break;
+      }
       case "created":
         jobs.set(record.launchId, {
           ...job,
@@ -276,6 +338,7 @@ export function readSubagentJournal(entries: readonly unknown[]): SubagentJourna
 
   return {
     jobs,
+    notificationBatches,
     pendingBatches: [...pendingBatches.values()],
     acknowledgedBatchIds,
     acknowledgedNotificationLaunchIds,

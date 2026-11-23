@@ -18,6 +18,7 @@ import {
   sendPrompt,
   workspaceMissingCwd,
 } from "../api";
+import { parseBackgroundOutputChanged, parseBackgroundTasksChanged } from "../api/background";
 import {
   parseApiUsageChangedEvent,
   parseCompactionStateChangedEvent,
@@ -63,6 +64,7 @@ export interface SessionConnection {
   notice: string | null;
   accepting: boolean;
   pendingOutput: boolean;
+  subscribeBackgroundOutput(listener: (taskId: string) => void): () => void;
   send(text: string): Promise<void>;
   abort(): Promise<void>;
   refresh(): void;
@@ -182,6 +184,14 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
   const sendOperationRef = useRef<GenerationToken | null>(null);
   const pendingStreamReadyRef = useRef<PendingStreamReady | null>(null);
   const runGenerationRef = useRef(0);
+  const backgroundRevisionRef = useRef(0);
+  const backgroundOutputListeners = useRef(new Set<(taskId: string) => void>());
+  const subscribeBackgroundOutput = useCallback((listener: (taskId: string) => void) => {
+    backgroundOutputListeners.current.add(listener);
+    return () => {
+      backgroundOutputListeners.current.delete(listener);
+    };
+  }, []);
 
   const nextGeneration = useCallback(() => {
     generationRef.current += 1;
@@ -318,6 +328,25 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
         setNotice((current) => (current === tRef.current("work.connectionLost") ? null : current));
         if (eventFrame.enqueue(event)) return;
         eventFrame.flush();
+        if (eventType(event) === "background_output_changed") {
+          try {
+            const changed = parseBackgroundOutputChanged(event);
+            for (const listener of backgroundOutputListeners.current) listener(changed.taskId);
+          } catch {
+            connectionToken.receivedStreamData = hadReceivedStreamData;
+          }
+          return;
+        }
+        if (eventType(event) === "background_tasks_changed") {
+          try {
+            const changed = parseBackgroundTasksChanged(event);
+            backgroundRevisionRef.current += 1;
+            setView((current) => ({ ...current, backgroundTasks: changed.tasks }));
+          } catch {
+            connectionToken.receivedStreamData = hadReceivedStreamData;
+          }
+          return;
+        }
         if (eventType(event) === "llm_retry_state") {
           try {
             const retry = parseLlmRetryState(event);
@@ -450,6 +479,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
           setFileWatchLeaseId(snapshot.fileWatchLeaseId ?? null);
           rootStreamingRef.current = snapshot.session.isStreaming;
           setStatus(snapshot.session.status);
+          backgroundRevisionRef.current += 1;
           setView((current) => mergeSnapshot(current, snapshot));
           return;
         }
@@ -642,12 +672,20 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
       try {
         const result = await navigateSessionTree(sessionIdRef.current, entryId, options);
         if (!current()) return cancelled;
+        const backgroundRevision = backgroundRevisionRef.current;
         const snapshot = await getSnapshot(sessionIdRef.current);
         if (!current()) return cancelled;
         updateSessionPath(snapshot.session.sessionFile ?? null);
         rootStreamingRef.current = snapshot.session.isStreaming;
         setStatus(snapshot.session.status);
-        setView((view) => mergeSnapshot(view, snapshot));
+        setView((view) =>
+          mergeSnapshot(
+            view,
+            backgroundRevisionRef.current === backgroundRevision
+              ? snapshot
+              : { ...snapshot, backgroundTasks: view.backgroundTasks },
+          ),
+        );
         return result;
       } catch (error: unknown) {
         if (!current()) return cancelled;
@@ -664,6 +702,7 @@ export function useSessionConnection(options: UseSessionConnectionOptions): Sess
 
   return {
     sessionId,
+    subscribeBackgroundOutput,
     sessionPath,
     fileWatchLeaseId,
     view,

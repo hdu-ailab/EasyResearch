@@ -97,7 +97,22 @@ External code environment rules:
 - Recreate virtual environments when changing the directory layout. Python virtual environments are often not safely relocatable.
 - If old layout directories exist, such as top-level `src/baselines/<name>/.venv` or `src/benchmarks/<name>/.venv`, treat them as legacy until the replacement under `external/` is created and a smoke test passes.
 
-When running experiment related script or shell command, extend tool timeout to 2 hours(or above if needed).
+For local commands use `shell` with `command`, optional `workdir`, `timeout` in
+milliseconds, and `background`. Long trials should use `background: true`; set a
+positive `timeout` matching the authorized runtime budget (for example, `7200000`
+for an approved two-hour trial). This stops the command at that limit. Omitted
+or zero background timeout is unlimited and does not authorize unlimited compute.
+Foreground omitted/zero timeout waits two minutes, then backgrounds the original
+process without stopping or restarting it; foreground timeout is not a trial
+runtime limit. Keep native platform command syntax and use `workdir` for the
+selected experiment directory.
+
+Managed shell completion arrives automatically with output. Do independent
+useful work or end the response with a brief pending-work summary for automatic
+wakeup. Do not sleep, poll logs for completion, proactively check progress, or
+duplicate a running trial. Do not publish a final handoff or claim complete while
+required work remains pending. Remote `ssh-bash` keeps its own API and timeout
+units; follow `ssh-experiment` for that transport.
 
 ## Execution Location
 

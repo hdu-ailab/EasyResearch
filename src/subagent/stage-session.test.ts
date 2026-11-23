@@ -765,10 +765,15 @@ describe("createStageSessionLauncher", () => {
       },
     };
     const notificationCoordinator = new SubagentCoordinator(notificationManager);
+    const completed = notificationCoordinator.reserveDispatch({ ownerSessionId: session.sessionId, toolCallId: "completed-child",
+      requested: stageAgent.name, catalog: { all: [stageAgent], available: [stageAgent] } });
+    notificationCoordinator.recordMaterialized(completed, { childSessionId: "completed-child", sessionPath: join(root, "completed-child.jsonl") });
+    notificationCoordinator.recordLaunchAcknowledged(completed.launchId);
+    notificationCoordinator.recordTerminal({ launchId: completed.launchId, status: "complete" });
     notificationCoordinator.recordNotificationBatch({
       batchId: "stage-triggered-batch",
       ownerSessionId: session.sessionId,
-      launchIds: [],
+      launchIds: [completed.launchId],
       content: "stage hidden handoff",
       triggerTurn: true,
     });

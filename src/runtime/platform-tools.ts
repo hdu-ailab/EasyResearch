@@ -1,11 +1,11 @@
-export type NativeLocalShellTool = "bash" | "powershell";
+export type NativeLocalShellTool = "shell";
 
-export function nativeLocalShellTool(platform: NodeJS.Platform): NativeLocalShellTool {
-  return platform === "win32" ? "powershell" : "bash";
+export function nativeLocalShellTool(_platform: NodeJS.Platform): NativeLocalShellTool {
+  return "shell";
 }
 
-export function excludedLocalShellTools(platform: NodeJS.Platform): NativeLocalShellTool[] {
-  return [platform === "win32" ? "bash" : "powershell"];
+export function excludedLocalShellTools(_platform: NodeJS.Platform): ("bash" | "powershell")[] {
+  return ["bash", "powershell"];
 }
 
 export function normalizeLocalShellTools(

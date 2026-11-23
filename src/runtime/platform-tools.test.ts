@@ -7,9 +7,9 @@ import {
 
 describe("platform local-shell policy", () => {
   it.each([
-    ["win32", "powershell", ["bash"]],
-    ["linux", "bash", ["powershell"]],
-    ["darwin", "bash", ["powershell"]],
+    ["win32", "shell", ["bash", "powershell"]],
+    ["linux", "shell", ["bash", "powershell"]],
+    ["darwin", "shell", ["bash", "powershell"]],
   ] as const)("selects one native shell on %s", (platform, native, excluded) => {
     expect(nativeLocalShellTool(platform)).toBe(native);
     expect(excludedLocalShellTools(platform)).toEqual(excluded);
@@ -19,7 +19,7 @@ describe("platform local-shell policy", () => {
     expect(normalizeLocalShellTools(
       ["read", "bash", "powershell", "ssh-bash", "bash"],
       "win32",
-    )).toEqual(["read", "powershell", "ssh-bash"]);
+    )).toEqual(["read", "shell", "ssh-bash"]);
   });
 
   it.each(["linux", "darwin"] as const)(
@@ -28,7 +28,7 @@ describe("platform local-shell policy", () => {
       expect(normalizeLocalShellTools(
         ["read", "powershell", "bash", "ssh-bash"],
         platform,
-      )).toEqual(["read", "bash", "ssh-bash"]);
+      )).toEqual(["read", "shell", "ssh-bash"]);
     },
   );
 });

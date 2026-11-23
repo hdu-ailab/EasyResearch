@@ -58,6 +58,8 @@ import type { NativeLocalShellTool } from "./platform-tools";
 import { acquireServerLease } from "../cli/runtime-lease";
 import { removeServerPid, writeServerProcess } from "../cli/server-process";
 import { DirectoryService } from "../web/directories";
+import { SmokeAgentLane, smokeSubagentSessionID, smokeBackgroundReports } from "../../scripts/smoke-agent-scenario";
+import { createBackgroundExecutionSmoke } from "../../scripts/smoke-background-execution";
 
 const tempDirs: string[] = [];
 const asyncCleanups: Array<() => void | Promise<void>> = [];
@@ -2316,11 +2318,13 @@ describe("selectSmokeModelAction", () => {
       skillPromptMarker,
     };
   }
-  const scenario = scenarioFor("bash");
+  const scenario = scenarioFor("shell");
+  const childSessionID = "ad5a25f4-bbbc-4c68-a45d-97ffca52a021";
+  const launchAcknowledgement = `The subagent is working in the background (sessionID: ${childSessionID}).`;
   const agentPromptMarker = scenario.agentPromptMarker;
   const childSystemPrompt = `${agentPromptMarker}\n${scenario.skillPromptMarker}`;
-  const oldSubagentDescription = "Available subagents: search, experiment, writing, figures, review.";
-  const refreshedSubagentDescription = `${oldSubagentDescription.slice(0, -1)}, smoke-reviewer.`;
+  const oldSubagentDescription = "Available subagents:\n- search: Search papers\n- experiment: Run experiments";
+  const refreshedSubagentDescription = `${oldSubagentDescription}\n- smoke-reviewer: Native custom fixture`;
   const tool = (name: string, description?: string) => ({
     function: { name, ...(description === undefined ? {} : { description }) },
   });
@@ -2388,14 +2392,9 @@ describe("selectSmokeModelAction", () => {
   const terminalNotice = (result = completedStage) => ({
     role: "user" as const,
     content: [
-      "<agent_status>",
-      "Current time: 2026-08-20T00:00:00.000Z",
-      "Complete subagent:smoke-reviewer_0",
-      "</agent_status>",
-      "<agent_handoff>",
-      "Agent: smoke-reviewer_0",
-      `Result: ${result}`,
-      "</agent_handoff>",
+      `<background-result kind="subagent" sessionID="${childSessionID}" state="completed" description="Native venv validation">`,
+      result,
+      "</background-result>",
     ].join("\n"),
   });
 
@@ -2407,7 +2406,7 @@ describe("selectSmokeModelAction", () => {
       .toThrow(/exactly one web-search tool/i);
   });
 
-  it.each(["bash", "powershell"] as const)(
+  it.each(["shell"] as const)(
     "completes the post-reload custom-stage chain with the %s venv tool and referenced Skill",
     (shellToolName) => {
       const modelScenario = scenarioFor(shellToolName);
@@ -2425,7 +2424,7 @@ describe("selectSmokeModelAction", () => {
         parentRequestFor(
           modelScenario,
           true,
-          toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+          toolResult("call_native_reviewer", launchAcknowledgement),
         ),
         modelScenario,
         current,
@@ -2446,7 +2445,7 @@ describe("selectSmokeModelAction", () => {
         parentRequestFor(
           modelScenario,
           true,
-          toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+          toolResult("call_native_reviewer", launchAcknowledgement),
           terminalNotice(),
         ),
         modelScenario,
@@ -2460,14 +2459,15 @@ describe("selectSmokeModelAction", () => {
         name: "subagent",
         arguments: JSON.stringify({
           agent: "smoke-reviewer",
-          task: `Run the native venv validation command with the ${shellToolName} tool and return a complete handoff.`,
+          description: "Validate native skill environment",
+          prompt: `Run the native venv validation command with the ${shellToolName} tool and return a complete handoff.`,
         }),
       });
       expect(shell.action).toEqual({
         kind: "tool",
         id: "call_native_venv",
         name: shellToolName,
-        arguments: JSON.stringify({ command: "validate-command", timeout: 60 }),
+        arguments: JSON.stringify({ command: "validate-command", timeout: 60_000 }),
       });
       expect(parentWaiting.action).toEqual({ kind: "text", text: "Parent waiting for supervised completion." });
       expect(shellResult).toMatchObject({
@@ -2481,6 +2481,7 @@ describe("selectSmokeModelAction", () => {
         acceptedConfigurationGeneration: 8,
         rootAppliedConfigurationGeneration: 8,
         customDispatchIssued: true,
+        childSessionID,
         parentWorkingObserved: true,
         childSkillObserved: true,
         stageShellIssued: true,
@@ -2499,7 +2500,7 @@ describe("selectSmokeModelAction", () => {
     current = selectSmokeModelAction(
       stageRequest(
         childSystemPrompt,
-        [tool("read"), tool("bash")],
+        [tool("read"), tool("shell")],
         toolResult("call_native_venv", "easyresearch-venv-ok\n"),
       ),
       scenario,
@@ -2509,7 +2510,7 @@ describe("selectSmokeModelAction", () => {
     const complete = selectSmokeModelAction(
       parentRequest(
         true,
-        toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+        toolResult("call_native_reviewer", launchAcknowledgement),
         terminalNotice(),
       ),
       scenario,
@@ -2526,6 +2527,19 @@ describe("selectSmokeModelAction", () => {
       complete: true,
       completedRequests: 4,
     });
+  });
+
+  it("accepts durable admission before any child assistant request and ignores intermediate or foreign reports", () => {
+    const dispatched = selectSmokeModelAction(parentRequest(true), scenario, initialState());
+    const admitted = selectSmokeModelAction(parentRequest(true, toolResult("call_native_reviewer", launchAcknowledgement)), scenario, dispatched.state);
+    expect(admitted.state).toMatchObject({ childSessionID, parentWorkingObserved: true, childSkillObserved: false, stageCompleted: false });
+    const pending = selectSmokeModelAction(parentRequest(true,
+      toolResult("call_native_reviewer", launchAcknowledgement),
+      { role: "user", content: terminalNotice("Waiting for shell work.").content.replace('state="completed"', 'state="running"') },
+      { role: "user", content: terminalNotice().content.replace(childSessionID, "b2370097-cd26-4687-baea-e6c7a83bcb59") },
+    ), scenario, admitted.state);
+    expect(pending.state.complete).toBe(false);
+    expect(pending.state.terminalHandoffObserved).toBe(false);
   });
 
   it("rejects the post-application parent request when its subagent schema is still stale", () => {
@@ -2562,7 +2576,7 @@ describe("selectSmokeModelAction", () => {
   });
 
   it.each([
-    ["extra tool", stageRequest(childSystemPrompt, [tool("read"), tool("bash"), tool("webfetch")])],
+    ["extra tool", stageRequest(childSystemPrompt, [tool("read"), tool("shell"), tool("webfetch")])],
     ["stale prompt", stageRequest("old bundled search prompt")],
     ["missing referenced Skill marker", stageRequest(agentPromptMarker)],
   ])("rejects a custom child with an %s", (_name, request) => {
@@ -2576,12 +2590,13 @@ describe("selectSmokeModelAction", () => {
     )).toThrow(/configured tools|current role prompt|referenced Skill/u);
   });
 
-  for (const shellToolName of ["bash", "powershell"] as const) {
+  for (const shellToolName of ["shell"] as const) {
     const modelScenario = scenarioFor(shellToolName);
-    const wrongShell = shellToolName === "bash" ? "powershell" : "bash";
+    const wrongShell = "bash";
     it.each([
       ["wrong shell", [tool("read"), tool(wrongShell)], /expected exactly one local shell tool/u],
       ["both shells", [tool("read"), tool("bash"), tool("powershell")], /expected exactly one local shell tool/u],
+      ["legacy shell leakage", [tool("read"), tool("shell"), tool("powershell")], /expected exactly one local shell tool/u],
       ["no shell", [tool("read")], /expected exactly one local shell tool/u],
       ["missing read", [tool(shellToolName)], /configured tools/u],
       ["extra strict child tool", [tool("read"), tool(shellToolName), tool("webfetch")], /configured tools/u],
@@ -2612,14 +2627,14 @@ describe("selectSmokeModelAction", () => {
   it.each([
     ["custom launch", parentRequest(
       true,
-      toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
-      toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+      toolResult("call_native_reviewer", launchAcknowledgement),
+      toolResult("call_native_reviewer", launchAcknowledgement),
     ), {
       customDispatchIssued: true,
     }],
     ["stage shell", stageRequest(
       childSystemPrompt,
-      [tool("read"), tool("bash")],
+      [tool("read"), tool("shell")],
       toolResult("call_native_venv", "easyresearch-venv-ok"),
       toolResult("call_native_venv", "easyresearch-venv-ok"),
     ), {
@@ -2642,7 +2657,7 @@ describe("selectSmokeModelAction", () => {
     "easyresearch-venv-ok\neasyresearch-venv-ok",
   ])("rejects a failed, inexact, or repeated local-shell sentinel: %s", (content) => {
     expect(() => selectSmokeModelAction(
-      stageRequest(childSystemPrompt, [tool("read"), tool("bash")], toolResult("call_native_venv", content)),
+      stageRequest(childSystemPrompt, [tool("read"), tool("shell")], toolResult("call_native_venv", content)),
       scenario,
       {
         ...initialState(),
@@ -2652,7 +2667,7 @@ describe("selectSmokeModelAction", () => {
     )).toThrow("easyresearch-venv-ok");
   });
 
-  it.each(["bash", "powershell"] as const)(
+  it.each(["shell"] as const)(
     "names %s in failed sentinel diagnostics",
     (shellToolName) => {
       const modelScenario = scenarioFor(shellToolName);
@@ -2673,7 +2688,7 @@ describe("selectSmokeModelAction", () => {
     },
   );
 
-  it.each(["bash", "powershell"] as const)(
+  it.each(["shell"] as const)(
     "rejects a terminal handoff before successful %s validation",
     (shellToolName) => {
       const modelScenario = scenarioFor(shellToolName);
@@ -2681,7 +2696,7 @@ describe("selectSmokeModelAction", () => {
         parentRequestFor(
           modelScenario,
           true,
-          toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+          toolResult("call_native_reviewer", launchAcknowledgement),
           terminalNotice(),
         ),
         modelScenario,
@@ -2709,26 +2724,25 @@ describe("selectSmokeModelAction", () => {
         ...initialState(),
         customDispatchIssued: true,
       },
-    )).toThrow("smoke-reviewer_0 is working.");
+    )).toThrow(/sessionID|admission/i);
   });
 
   it.each([
-    ["missing handoff", {
+    ["missing closing boundary", {
       role: "user" as const,
-      content: "<agent_status>\nComplete subagent:smoke-reviewer_0\n</agent_status>",
+      content: `<background-result kind="subagent" sessionID="${childSessionID}" state="completed">`,
     }],
-    ["handoff without Complete status", {
+    ["missing outcome state", {
       role: "user" as const,
-      content: `<agent_handoff>\nAgent: smoke-reviewer_0\nResult: ${completedStage}\n</agent_handoff>`,
+      content: `<background-result kind="subagent" sessionID="${childSessionID}">\n${completedStage}\n</background-result>`,
     }],
-    ["wrong handoff agent", terminalNotice().content.replace("Agent: smoke-reviewer_0", "Agent: search_0")],
     ["unsuccessful handoff", terminalNotice("blocked\nArtifacts: none\nGaps: validation failed\nNext action: retry")],
   ] as const)("rejects a malformed custom atomic terminal notification: %s", (_name, notice) => {
     const message = typeof notice === "string" ? { role: "user" as const, content: notice } : notice;
     expect(() => selectSmokeModelAction(
       parentRequest(
         true,
-        toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+        toolResult("call_native_reviewer", launchAcknowledgement),
         message,
       ),
       scenario,
@@ -2739,16 +2753,16 @@ describe("selectSmokeModelAction", () => {
         venvValidated: true,
         stageCompleted: true,
       },
-    )).toThrow("atomic terminal");
+    )).toThrow(/background|terminal/i);
   });
 
-  it("rejects custom status and handoff split across model-visible messages", () => {
+  it("rejects a background result split across model-visible messages", () => {
     expect(() => selectSmokeModelAction(
       parentRequest(
         true,
-        toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
-        { role: "user", content: "<agent_status>\nComplete subagent:smoke-reviewer_0\n</agent_status>" },
-        { role: "user", content: `<agent_handoff>\nAgent: smoke-reviewer_0\nResult: ${completedStage}\n</agent_handoff>` },
+        toolResult("call_native_reviewer", launchAcknowledgement),
+        { role: "user", content: `<background-result kind="subagent" sessionID="${childSessionID}" state="completed">` },
+        { role: "user", content: `${completedStage}\n</background-result>` },
       ),
       scenario,
       {
@@ -2758,14 +2772,14 @@ describe("selectSmokeModelAction", () => {
         venvValidated: true,
         stageCompleted: true,
       },
-    )).toThrow("atomic terminal");
+    )).toThrow(/background/i);
   });
 
   it("rejects duplicate custom terminal notifications", () => {
     expect(() => selectSmokeModelAction(
       parentRequest(
         true,
-        toolResult("call_native_reviewer", "smoke-reviewer_0 is working."),
+        toolResult("call_native_reviewer", launchAcknowledgement),
         terminalNotice(),
         terminalNotice(),
       ),
@@ -2777,7 +2791,7 @@ describe("selectSmokeModelAction", () => {
         venvValidated: true,
         stageCompleted: true,
       },
-    )).toThrow("exactly one atomic terminal");
+    )).toThrow(/duplicate|exactly one.*terminal/i);
   });
 
   it("rejects model requests after terminal completion", () => {
@@ -2786,5 +2800,118 @@ describe("selectSmokeModelAction", () => {
       scenario,
       { ...initialState(), complete: true },
     )).toThrow("already complete");
+  });
+});
+
+describe("native background smoke correlation", () => {
+  const sessionID = "b2370097-cd26-4687-baea-e6c7a83bcb59";
+  it("uses native sessionID details and legacy job metadata, never a legacy Agent alias", () => {
+    expect(smokeSubagentSessionID({ details: { sessionID }, content: "background admission" })).toBe(sessionID);
+    expect(smokeSubagentSessionID({ details: { job: { childSessionId: sessionID, agentId: "search_0" } } })).toBe(sessionID);
+    expect(smokeSubagentSessionID({ content: `The subagent is working in the background (sessionID: ${sessionID}).` })).toBe(sessionID);
+    expect(() => smokeSubagentSessionID({ content: "search_0 is working." })).toThrow(/sessionID/i);
+  });
+
+  it("does not mistake assistant speech or quoted XML for a harness result", () => {
+    const content = `<background-result kind="subagent" sessionID="${sessionID}" state="completed">\ncomplete\n</background-result>`;
+    expect(smokeBackgroundReports({ messages: [{ role: "assistant", content }, { role: "user", content: `Quoted evidence: ${content}` }] })).toEqual([]);
+    expect(smokeBackgroundReports({ messages: [{ role: "user", content }] })).toMatchObject([{ sessionID, kind: "subagent", state: "completed", text: "complete" }]);
+  });
+
+  it("keeps a scripted parent pending through intermediate idle and records only its child's completed period", () => {
+    const lane = new SmokeAgentLane("parent", [{ name: "subagent", args: () => ({ agent: "search", description: "Verify fixture source", prompt: "fixture" }), terminal: () => "child done" }], () => "root done");
+    const tools = [{ function: { name: "subagent" } }];
+    const call = lane.select({ tools });
+    expect(call.kind).toBe("tool");
+    if (call.kind !== "tool") throw new Error("Missing dispatch");
+    const result = { role: "tool", tool_call_id: call.id, details: { sessionID }, content: "durably admitted" };
+    const running = { role: "user", content: `<background-result kind="subagent" sessionID="${sessionID}" state="running">\nchild waiting\nOutstanding background work:\n- shell pending\n</background-result>` };
+    expect(lane.select({ tools, messages: [result, running] }).kind).toBe("text");
+    expect(lane.complete).toBe(false);
+    expect(lane.select({ tools, messages: [result, running, { role: "user", content: `<background-result kind="subagent" sessionID="${sessionID}" state="completed">\nchild done\n</background-result>` }] })).toEqual({ kind: "text", text: "root done" });
+    expect(lane.dispatches).toEqual([{ callId: call.id, sessionID, terminal: "child done" }]);
+  });
+
+  it("accepts task cancellation only when the fixture explicitly armed that outcome", () => {
+    const create = () => new SmokeAgentLane("cancel", [{ name: "subagent", args: () => ({ agent: "search", description: "Run fixture child", prompt: "fixture" }), terminal: () => "child done" }], () => "root done");
+    const tools = [{ function: { name: "subagent" } }];
+    const rejected = create();
+    const accepted = create();
+    const initial = rejected.select({ tools });
+    accepted.select({ tools });
+    if (initial.kind !== "tool") throw new Error("Missing dispatch");
+    const messages = [
+      { role: "tool", tool_call_id: initial.id, details: { sessionID }, content: "admitted" },
+      { role: "user", content: `<background-result kind="subagent" sessionID="${sessionID}" state="cancelled">\nCancelled\n</background-result>` },
+    ];
+    expect(() => rejected.select({ tools, messages })).toThrow(/failed/);
+    accepted.expectCancellation();
+    expect(accepted.select({ tools, messages })).toEqual({ kind: "text", text: "Acceptance task cancellation observed." });
+    expect(accepted.complete).toBe(true);
+    expect(accepted.dispatches).toEqual([]);
+  });
+});
+
+describe("deterministic background acceptance provider", () => {
+  it("gates first child inference behind admission/follow-up and releases each process only after a running-period report", async () => {
+    const scenario = createBackgroundExecutionSmoke({ runId: "unit", agentName: "smoke-reviewer", command: mode => `run-${mode}` });
+    const sessionID = "b2370097-cd26-4687-baea-e6c7a83bcb59";
+    const tools = (names: string[]) => names.map(name => ({ function: { name } }));
+    const root = (messages: any[] = []) => ({ tools: tools(["shell", "subagent"]), messages: [{ role: "user", content: scenario.prompt("root") }, ...messages] });
+    const child = (messages: any[] = []) => ({ tools: tools(["read", "shell"]), messages: [{ role: "user", content: scenario.prompt("child") }, ...messages] });
+    const admission = (id: string) => ({ role: "tool", tool_call_id: id, content: "admitted", details: { sessionID } });
+    const running = (text: string, shellID: string) => ({ role: "user", content: `<background-result kind="subagent" sessionID="${sessionID}" state="running">\n${text}\nBackground work still running:\n- shell (${shellID}): fixture\n</background-result>` });
+    const completed = (shellID: string, text: string) => ({ role: "user", content: `<background-result kind="shell" id="${shellID}" state="completed">\n${text}\n</background-result>` });
+    const shellResult = (id: string, shellID: string) => ({ role: "tool", tool_call_id: id, content: `Command moved to the background (shell ID: ${shellID}).`, details: { shellID } });
+    try {
+      const launch = await scenario.select(root());
+      if (launch.kind !== "tool") throw new Error("Missing launch");
+      expect(JSON.parse(launch.arguments)).toMatchObject({ agent: "smoke-reviewer", description: expect.any(String), prompt: scenario.prompt("child") });
+      let childReturned = false;
+      const childFirst = scenario.select(child()).then(action => { childReturned = true; return action; });
+      const followup = await scenario.select(root([admission(launch.id)]));
+      expect(childReturned).toBe(false);
+      if (followup.kind !== "tool") throw new Error("Missing running follow-up");
+      expect(JSON.parse(followup.arguments)).toMatchObject({ agent: "smoke-reviewer", sessionID, prompt: scenario.prompt("followup") });
+      await scenario.select(root([admission(launch.id), admission(followup.id)]));
+      const explicit = await childFirst;
+      if (explicit.kind !== "tool") throw new Error("Missing explicit background shell");
+      expect(JSON.parse(explicit.arguments)).toMatchObject({ command: "run-explicit", background: true, timeout: 30_000 });
+      const explicitGate = scenario.gate(scenario.gatePath("explicit"))!;
+      const steer = { role: "user", content: scenario.prompt("followup") };
+      const explicitAck = shellResult(explicit.id, "shell-explicit");
+      const waiting = await scenario.select(child([steer, explicitAck]));
+      if (waiting.kind !== "text") throw new Error("Expected idle child");
+      const firstReport = running(waiting.text, "shell-explicit");
+      await scenario.select(root([admission(launch.id), admission(followup.id), firstReport]));
+      expect((await explicitGate).status).toBe(200);
+      const explicitDone = completed("shell-explicit", scenario.marker("explicit"));
+      const promotion = await scenario.select(child([steer, explicitAck, explicitDone]));
+      if (promotion.kind !== "tool") throw new Error("Missing foreground command");
+      expect(JSON.parse(promotion.arguments)).toEqual({ command: "run-promotion", timeout: 1 });
+      const promotionGate = scenario.gate(scenario.gatePath("promotion"))!;
+      const promotionAck = shellResult(promotion.id, "shell-promotion");
+      const waitingAgain = await scenario.select(child([steer, explicitAck, explicitDone, promotionAck]));
+      if (waitingAgain.kind !== "text") throw new Error("Expected second idle child");
+      const secondReport = running(waitingAgain.text, "shell-promotion");
+      await scenario.select(root([admission(launch.id), admission(followup.id), firstReport, secondReport]));
+      expect((await promotionGate).status).toBe(200);
+      const childFinal = await scenario.select(child([steer, explicitAck, explicitDone, promotionAck, completed("shell-promotion", scenario.marker("promotion"))]));
+      expect(childFinal).toEqual({ kind: "text", text: scenario.final("child") });
+      const finish = await scenario.select(root([admission(launch.id), admission(followup.id), firstReport, secondReport,
+        { role: "user", content: `<background-result kind="subagent" sessionID="${sessionID}" state="completed">\n${scenario.final("child")}\n</background-result>` },
+      ]));
+      expect(finish).toEqual({ kind: "text", text: scenario.final("root") });
+      expect(scenario.evidence).toMatchObject({ earlyAdmission: true, runningFollowup: true, explicitCompletion: true, promotionCompletion: true, runningPeriods: 2, complete: true });
+    } finally { scenario.release(); }
+  });
+
+  it("rejects a child-owned shell notice delivered directly to the root", async () => {
+    const scenario = createBackgroundExecutionSmoke({ runId: "wrong-owner", agentName: "smoke-reviewer", command: () => "run" });
+    await expect(scenario.select({ tools: [{ function: { name: "subagent" } }], messages: [
+      { role: "user", content: scenario.prompt("root") },
+      { role: "user", content: '<background-result kind="shell" id="foreign" state="completed">\ndone\n</background-result>' },
+    ] })).rejects.toThrow(/owning child|root/i);
+    scenario.release();
   });
 });

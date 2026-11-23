@@ -19,7 +19,7 @@ metadata:
     - math
     - svg
 argument-hint: [figure-description-or-instruction]
-allowed-tools: Read, Write, Bash
+allowed-tools: read, write, shell
 ---
 
 # Draw.io Academic Overlay

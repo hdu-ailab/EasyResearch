@@ -1,6 +1,6 @@
 {
   "name": "easyresearch",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "description": "Local AI research workspace for literature, experiments, figures, and papers",
   "type": "module",
   "private": true,
@@ -49,6 +49,9 @@
     "dev:web": "vite --config src/webui/vite.config.ts"
   },
   "dependencies": {
+    "@betteroffice/fonts": "0.4.0",
+    "@betteroffice/pptx": "0.2.0",
+    "@betteroffice/xlsx": "0.3.0",
     "@earendil-works/pi-agent-core": "1.6.0",
     "@earendil-works/pi-ai": "1.6.0",
     "@earendil-works/pi-coding-agent": "1.6.0",

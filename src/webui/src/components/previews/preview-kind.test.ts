@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { previewKind } from "./preview-kind";
 
 describe("previewKind", () => {
-  it.each(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"])(
+  it.each(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "tif", "tiff", "heic"])(
     "classifies .%s as a native image independently of case or host path syntax",
     (extension) => {
       for (const path of [`/p/报告.${extension}`, `C:\\papers\\报告.${extension.toUpperCase()}`]) {
@@ -13,6 +13,7 @@ describe("previewKind", () => {
   );
 
   it.each([
+    ["diagram.SVG", "svg"],
     ["report.HTML", "html"],
     ["report.HtM", "html"],
     ["clip.MP4", "video"],

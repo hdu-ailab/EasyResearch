@@ -497,7 +497,31 @@ describe("SettingsModal", () => {
     expect(api.restartRuntime).toHaveBeenCalledWith(false);
   });
 
-  it("requires a stacked destructive confirmation before forcing a busy restart", async () => {
+  it.each([
+    {
+      language: "en",
+      network: "Network",
+      required: "Restart required",
+      choice: "Restart EasyResearch?",
+      now: "Restart now",
+      busy: "Restart with active work?",
+      sessions: "2 active sessions will resume after restart. Commands that cannot be handed over will be interrupted.",
+      auth: "The active provider login will be cancelled.",
+      confirm: "Restart anyway",
+    },
+    {
+      language: "zh-CN",
+      network: "网络",
+      required: "需要重启",
+      choice: "重启 EasyResearch？",
+      now: "立即重启",
+      busy: "有活动任务，仍要重启？",
+      sessions: "2 个活动会话将在重启后恢复。无法交接的命令将被中断。",
+      auth: "活动的提供商登录将被取消。",
+      confirm: "仍然重启",
+    },
+  ])("requires explicit busy restart confirmation with resumption consequences ($language)", async (copy) => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ language: copy.language }));
     vi.mocked(api.getNetworkProxySettings).mockResolvedValue({
       configured: { all: "http://saved.example" },
       appliedConfigured: {},
@@ -517,20 +541,22 @@ describe("SettingsModal", () => {
         </I18nProvider>
       </PreferencesProvider>,
     );
-    await user.click(screen.getByRole("tab", { name: "Network" }));
-    const panel = screen.getByRole("tabpanel", { name: "Network" });
-    await user.click(await within(panel).findByRole("button", { name: "Restart required" }));
-    const choice = screen.getByRole("dialog", { name: "Restart EasyResearch?" });
+    await user.click(screen.getByRole("tab", { name: copy.network }));
+    const panel = screen.getByRole("tabpanel", { name: copy.network });
+    await user.click(await within(panel).findByRole("button", { name: copy.required }));
+    const choice = screen.getByRole("dialog", { name: copy.choice });
 
-    await user.click(within(choice).getByRole("button", { name: "Restart now" }));
+    await user.click(within(choice).getByRole("button", { name: copy.now }));
 
-    const busy = await screen.findByRole("dialog", { name: "Stop active work and restart?" });
-    expect(busy).toHaveTextContent("2 active sessions will stop");
-    expect(busy).toHaveTextContent("The active provider login will be cancelled");
+    const busy = await screen.findByRole("dialog", { name: copy.busy });
+    expect(busy).toHaveTextContent(copy.sessions);
+    expect(busy).toHaveTextContent(copy.auth);
+    expect(api.restartRuntime).toHaveBeenCalledOnce();
+    expect(onRuntimeRestartAccepted).not.toHaveBeenCalled();
     expect(choice).toHaveAttribute("inert");
     expect(choice).toHaveAttribute("aria-hidden", "true");
 
-    await user.click(within(busy).getByRole("button", { name: "Stop work and restart" }));
+    await user.click(within(busy).getByRole("button", { name: copy.confirm }));
 
     await waitFor(() => expect(onRuntimeRestartAccepted).toHaveBeenCalledWith("boot-old"));
     expect(api.restartRuntime).toHaveBeenNthCalledWith(1, false);
@@ -555,11 +581,11 @@ describe("SettingsModal", () => {
     await user.click(await within(panel).findByRole("button", { name: "Restart required" }));
     const choice = screen.getByRole("dialog", { name: "Restart EasyResearch?" });
     await user.click(within(choice).getByRole("button", { name: "Restart now" }));
-    const busy = await screen.findByRole("dialog", { name: "Stop active work and restart?" });
+    const busy = await screen.findByRole("dialog", { name: "Restart with active work?" });
 
     await user.click(within(busy).getByRole("button", { name: "Cancel" }));
 
-    expect(screen.queryByRole("dialog", { name: "Stop active work and restart?" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Restart with active work?" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "Restart EasyResearch?" })).toHaveAttribute("aria-modal", "true");
     expect(api.restartRuntime).toHaveBeenCalledOnce();
   });
@@ -847,7 +873,7 @@ describe("SettingsModal", () => {
     expect(choice).not.toHaveClass("max-w-[420px]", "rounded-[10px]");
     await user.click(within(choice).getByRole("button", { name: "Restart now" }));
 
-    const busy = await screen.findByRole("dialog", { name: "Stop active work and restart?" });
+    const busy = await screen.findByRole("dialog", { name: "Restart with active work?" });
     expect(busy.parentElement).toHaveClass("p-0", "min-[820px]:p-4");
     expect(busy).toHaveClass(
       "h-full",
@@ -910,10 +936,10 @@ describe("SettingsModal", () => {
     expect(within(choice).getByRole("button", { name: "稍后" })).toBeVisible();
     await user.click(within(choice).getByRole("button", { name: "立即重启" }));
 
-    const busy = await screen.findByRole("dialog", { name: "停止活动任务并重启？" });
-    expect(busy).toHaveTextContent("将停止 3 个活动会话");
+    const busy = await screen.findByRole("dialog", { name: "有活动任务，仍要重启？" });
+    expect(busy).toHaveTextContent("3 个活动会话将在重启后恢复。无法交接的命令将被中断。");
     expect(busy).toHaveTextContent("活动的提供商登录将被取消");
-    expect(within(busy).getByRole("button", { name: "停止任务并重启" })).toBeVisible();
+    expect(within(busy).getByRole("button", { name: "仍然重启" })).toBeVisible();
   });
 
   it("uses an automatically activating vertical tablist on desktop", async () => {

@@ -1,5 +1,16 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
+import type { BackgroundTask } from "../background/contracts";
+import { ExecutionClaims, RESTART_NOTICE, RESTART_NOTICE_TYPE } from "../background/execution-claims";
+import { installExecutionClaimBoundary, type ExecutionClaimBoundary } from "../background/execution-boundary";
+import { BackgroundOwnerJournal } from "../background/root-recovery";
+import { BACKGROUND_WAKE_TYPE, createBackgroundWakeExtension } from "../background/wake";
+import { preserveBackgroundInputsWithoutWake, type BackgroundInboxJournal } from "../background/inbox";
+import type { ManagedShellService, ShellNotification } from "../background/shell";
+import { repairRecoveredShellCalls } from "../background/shell-repair";
+import { RootBackgroundDelivery } from "./background-delivery";
+import { RootSuspensionQueue } from "./root-suspension";
+import { createLogger } from "../runtime/logger";
 import type {
   AgentSessionEvent,
   SettingsManager,
@@ -217,12 +228,24 @@ export interface ManagedAgentSession {
   retryPolicy?: ReturnType<typeof createLlmRetryPolicyBinding>;
   disposeRecovery?: () => void;
   cancelSessionTitle?: () => void;
+  executionClaims?: ExecutionClaims;
+  executionBoundary?: ExecutionClaimBoundary;
+  resumeInterrupted?: boolean;
+  prepareBackgroundHandoff?: () => Promise<void>;
+  backgroundOwner?: BackgroundOwnerJournal;
+  shellManager?: ManagedShellService;
+  inboxJournal?: BackgroundInboxJournal;
+  recoverBackground?: () => Promise<void>;
+  finishBackgroundRecovery?: () => void;
+  cancelSuspendedExecution?: () => Promise<void>;
+  shellSettings?: () => { path?: string; commandPrefix?: string };
 }
 
 export type AgentSessionCreator = (
   options: StartSessionOptions,
   onApplied?: (generation: number) => void,
   publishTimelineEntry?: (entry: unknown) => void,
+  onRuntimeCoherent?: () => void,
 ) => Promise<ManagedAgentSession>;
 
 function createRuntimeSetupCleanup(
@@ -355,12 +378,15 @@ interface ResourceLoaderLike {
 }
 
 export interface PiRuntimeDependencies {
+  /** Only the managed server holding the exclusive daemon lease grants this. */
+  allowPreparedShellHandoff?: boolean;
   agentDir: string;
   liveConfiguration: LiveConfiguration;
   networkRouter?: AgentSessionNetworkRouter;
   createSessionManager(cwd: string): CoordinatorSessionManager;
   openSessionManager(path: string): CoordinatorSessionManager;
   createCoordinator(sessionManager: CoordinatorSessionManager): SubagentCoordinator;
+  createShellManager?(input: { sessionID: string; cwd: string }): ManagedShellService;
   recoverSubagentTree(options: { coordinator: SubagentCoordinator; expectedCwd: string }): Promise<void>;
   createDirectChildSupervisor(coordinator: SubagentCoordinator): SubagentSupervisor;
   createExtensionFactories(runtime: {
@@ -372,6 +398,8 @@ export interface PiRuntimeDependencies {
     stats: SessionStatsNotifier;
     publishTimelineEntry: (entry: unknown) => void;
     sessionTitleSignal?: AbortSignal;
+    shellManager?: ManagedShellService;
+    shellOwner?: () => { sessionID: string; cwd: string };
   }): unknown[];
   createSettingsManager(cwd: string, agentDir: string): unknown;
   createModelRuntime(agentDir: string): Promise<AgentRuntimeModelRuntime>;
@@ -396,11 +424,16 @@ export interface PiRuntimeDependencies {
 }
 
 export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentSessionCreator {
-  return async (options, onApplied, publishTimelineEntry = () => {}) => {
+  return async (options, onApplied, publishTimelineEntry = () => {}, onRuntimeCoherent) => {
     const sessionManager = options.sessionPath
       ? deps.openSessionManager(options.sessionPath)
       : deps.createSessionManager(options.cwd);
     const coordinator = deps.createCoordinator(sessionManager);
+    const shellManager = deps.createShellManager?.({ sessionID: sessionManager.getSessionId(), cwd: options.cwd });
+    if (shellManager) coordinator.setShellService(shellManager);
+    const executionClaims = new ExecutionClaims(sessionManager);
+    // Charge the root before any recovered child can wake it.
+    const resumeInterrupted = !!options.sessionPath && executionClaims.prepareResume();
     const settingsManager = deps.createSettingsManager(options.cwd, deps.agentDir);
     const automaticCompaction = createCompactionPolicyBinding(
       settingsManager as CompactionPolicySettingsManager,
@@ -424,18 +457,24 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       }),
       compaction: automaticCompaction,
       onCompactionPolicyChanged: stats.notify,
-      onRuntimeCoherent: () => supervisor?.runtimeBecameCoherent(),
+      onRuntimeCoherent: () => {
+        supervisor?.runtimeBecameCoherent();
+        onRuntimeCoherent?.();
+      },
       onApplied,
     });
     const retryPolicy = createLlmRetryPolicyBinding(settingsManager as SettingsManager);
     const recovery = new LlmRecoveryController();
+    let executionBoundary: ExecutionClaimBoundary | undefined;
     let releaseRecovery: (() => void) | undefined;
     const disposeRecovery = () => {
       disposeLlmRecoveryRuntime(recovery, retryPolicy, releaseRecovery);
+      executionBoundary?.dispose();
       releaseRecovery = undefined;
     };
     let supervisor: SubagentSupervisor | undefined;
     let session: BindableAgentSession | undefined;
+    let backgroundRecoveryPending = !!options.sessionPath;
     try {
       await binding.ensureCurrent();
       await deps.recoverSubagentTree({ coordinator, expectedCwd: options.cwd });
@@ -450,12 +489,15 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         stats,
         publishTimelineEntry,
         sessionTitleSignal: sessionTitleCancellation.signal,
+        shellManager,
+        shellOwner: () => ({ sessionID: session!.sessionId, cwd: options.cwd }),
       });
       const resourceLoader = deps.createResourceLoader({
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
         extensionFactories: [
+          { name: "background-wake", factory: createBackgroundWakeExtension() },
           createCompactionCancellationExtension(() => compaction.isCancelling(), () => session!.abortCompaction()),
           { name: "provider-timeout", factory: createProviderTimeoutExtension(settingsManager as SettingsManager, () => binding.providerTimeoutSettings()) },
           { name: "file-write-recovery", factory: createFileWriteRecoveryExtension() },
@@ -484,6 +526,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         excludeTools: excludedLocalShellTools(process.platform),
       };
       ({ session } = await deps.createAgentSession(createOptions));
+      executionBoundary = installExecutionClaimBoundary(session as unknown as Parameters<typeof installExecutionClaimBoundary>[0], executionClaims);
       retryPolicy.attach(session as Parameters<typeof retryPolicy.attach>[0]);
       recovery.attach(session, retryPolicy, async (signal) => {
         const release = await supervisor!.acquirePromptAdmission();
@@ -511,7 +554,8 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       supervisor.attach(session as unknown as SupervisableAgentSession, async () => {
         if (!session!.isIdle) await session!.waitForIdle();
         await binding.ensureCurrent();
-      }, () => compaction.isCancelling(), () => recovery.holdsAutomaticWake());
+      }, () => compaction.isCancelling(), () => recovery.holdsAutomaticWake()
+        || executionClaims.current()?.outcome === "exhausted" || backgroundRecoveryPending);
       await session.bindExtensions({
         mode: "rpc",
         commandContextActions: {
@@ -534,13 +578,49 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
       });
       await binding.attach(createBindingSession(session, recovery));
       return { session, coordinator, supervisor, binding, compaction, stats, recovery, retryPolicy, disposeRecovery,
+        executionClaims, executionBoundary, resumeInterrupted,
+        backgroundOwner: new BackgroundOwnerJournal(sessionManager),
+        inboxJournal: sessionManager,
+        shellManager,
+        shellSettings: () => ({
+          path: (settingsManager as SettingsManager).getShellPath?.(),
+          commandPrefix: (settingsManager as SettingsManager).getShellCommandPrefix?.(),
+        }),
+        prepareBackgroundHandoff: () => shellManager?.prepareHandoff() ?? Promise.resolve(),
+        recoverBackground: async () => {
+          if (!options.sessionPath) return;
+          await shellManager?.recover({ allowPreparedHandoff: deps.allowPreparedShellHandoff === true, verifyPriorOwner: async (owner) => {
+            if (owner.rootSessionID !== session!.sessionId) return false;
+            if (owner.pid === process.pid) return true; // Registry admission excludes a second live writer in this process.
+            try { process.kill(owner.pid, 0); return false; }
+            catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+          } });
+          if (shellManager) {
+            const repaired = repairRecoveredShellCalls(sessionManager as unknown as Parameters<typeof repairRecoveredShellCalls>[0], shellManager.recoveredCalls());
+            if (repaired) (session as unknown as { refreshContext(): void }).refreshContext();
+          }
+          await coordinator.prepareBackgroundRecovery(options.cwd, true);
+          await supervisor!.recoverBackground({ cwd: options.cwd, liveConfiguration: deps.liveConfiguration, verifiedPriorOwnerDead: true });
+        },
+        finishBackgroundRecovery: () => { backgroundRecoveryPending = false; supervisor!.runtimeBecameCoherent(); },
+        cancelSuspendedExecution: async () => {
+          const path = session!.sessionFile;
+          if (!path) return;
+          const current = deps.openSessionManager(path);
+          if (current.getSessionId() !== session!.sessionId || current.getSessionFile() !== path
+            || (current as typeof current & { getCwd(): string }).getCwd() !== options.cwd) throw new Error("Suspended root identity changed.");
+          await deps.createCoordinator(current).cancelSuspended();
+          preserveBackgroundInputsWithoutWake(current);
+          new ExecutionClaims(current).cancel();
+          new BackgroundOwnerJournal(current).update(false);
+        },
         cancelSessionTitle: () => sessionTitleCancellation.abort() };
     } catch (error) {
       recovery.cancel();
       const retryCleanup = createRuntimeSetupCleanup(session, compaction, supervisor, binding,
         undefined, undefined, undefined, undefined, disposeRecovery);
       try {
-        await retryCleanup();
+        await runCleanupSteps([retryCleanup, () => shellManager?.dispose()], "Agent setup cleanup failed.");
       } catch (cleanupError) {
         throw new RetryableAgentSessionCreationError(
           combineSetupErrors(error, cleanupError),
@@ -556,6 +636,8 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
 export interface SessionAdapter {
   start(): Promise<void>;
   stop(): Promise<void>;
+  suspend?(): Promise<void>;
+  revokeSuspension?(): Promise<void>;
   prompt(message: string, options?: SteerPromptOptions): Promise<void>;
   abort(): Promise<void>;
   retry?(targetSessionId: string, failureId: string): Promise<LlmRetryAcceptedDto>;
@@ -587,6 +669,9 @@ export interface SessionAdapter {
   getSteeringMessages(): readonly string[];
   isSupervisorActive(): boolean;
   hasBackgroundWork(): boolean;
+  getBackgroundTasks?(): BackgroundTask[];
+  promoteBackground?(): Promise<void>;
+  cancelBackground?(taskId: string): Promise<void>;
   onEvent(listener: (event: unknown) => void): () => void;
 }
 
@@ -613,6 +698,7 @@ export class PiSessionFactory implements SessionFactory {
   static async resolve(
     liveConfiguration?: LiveConfiguration,
     networkRouter?: AgentSessionNetworkRouter,
+    allowPreparedShellHandoff = false,
   ): Promise<PiSessionFactory> {
     if (!liveConfiguration) {
       return new PiSessionFactory(async () => {
@@ -630,15 +716,22 @@ export class PiSessionFactory implements SessionFactory {
     const { SubagentSupervisor } = await import("../subagent/supervisor");
     const { createDefaultStageSessionLauncher } = await import("../subagent/stage-session");
     const { createSubagentRecoverySessionStore } = await import("./subagent-sessions");
+    const { createManagedShellManager } = await import("../background/shell");
     const agentDir = getAgentDir();
+    const shellLogger = createLogger("background-shell");
     const launchStage = await createDefaultStageSessionLauncher(networkRouter);
     const creator = createPiAgentSessionCreator({
       agentDir,
       liveConfiguration,
       networkRouter,
+      allowPreparedShellHandoff,
       createSessionManager: (cwd) => pi.SessionManager.create(cwd),
       openSessionManager: (path) => pi.SessionManager.open(path),
       createCoordinator: (sessionManager) => new SubagentCoordinator(sessionManager),
+      createShellManager: ({ sessionID, cwd }) => createManagedShellManager({ agentDir, rootSessionID: sessionID, cwd,
+        // Exception messages may contain command output or third-party secrets.
+        onError: () => shellLogger.error("Managed shell persistence or notification delivery failed."),
+      }),
       recoverSubagentTree: async ({ coordinator, expectedCwd }) => {
         await recoverSubagentTree({
           coordinator,
@@ -709,12 +802,15 @@ class DirectSessionAdapter implements SessionAdapter {
   private compactionUnsubscribe: (() => void) | undefined;
   private startPending = false;
   private runCancellationPending = false;
+  private resumeSteeringAfterInterrupt = false;
   private treeCleanupPending = false;
   private stopPending = false;
   private runCancellationPromise: Promise<void> | undefined;
   private treeCleanupPromise: Promise<void> | undefined;
   private stopPromise: Promise<void> | undefined;
   private stopRequested = false;
+  private suspending = false;
+  private suspendedRuntime?: ManagedAgentSession;
   private stopped = false;
   private coordinatorClosingComplete = false;
   private queueClearComplete = false;
@@ -744,6 +840,16 @@ class DirectSessionAdapter implements SessionAdapter {
   private stopAbortSuccessSequence = 0;
   private stopAbortFailureSequence = 0;
   private runtimeConfigurationGeneration = 0;
+  private backgroundTasksSignature = "[]";
+  private backgroundDelivery?: RootBackgroundDelivery;
+  private shellUnsubscribe?: () => void;
+  private releaseShellOwner?: () => void;
+  private recoveringBackground = false;
+  private backgroundRetryOperation?: Promise<void>;
+  private readonly suspensionQueue = new RootSuspensionQueue();
+  private suspensionQueueComplete = false;
+  private handoffAttempted = false;
+  private handoffPrepared = false;
   private readonly listeners = new Set<(event: unknown) => void>();
 
   constructor(
@@ -767,6 +873,7 @@ class DirectSessionAdapter implements SessionAdapter {
           this.options,
           (generation) => this.applyRuntimeConfigurationGeneration(generation),
           (entry) => this.publishEvent({ type: "entry_appended", entry }),
+          () => this.retryBackgroundDelivery(),
         );
       } catch (error) {
         if (error instanceof RetryableAgentSessionCreationError) {
@@ -788,9 +895,11 @@ class DirectSessionAdapter implements SessionAdapter {
           () => this.runCancellationPending || this.stopRequested || created.compaction.isCancelling());
         coordinatorUnsubscribe = created.coordinator.subscribe((event) => {
           this.publishEvent(event);
+          if (!event.event || event.event.type === "agent_settled") this.publishBackgroundTasks();
         });
         activityUnsubscribe = created.supervisor.subscribeActivity((active) => {
           this.publishEvent({ type: "session_activity_changed", active });
+          this.publishBackgroundTasks();
         });
         sessionUnsubscribe = created.session.subscribe((event) => {
           const agentEvent = event as AgentSessionEvent;
@@ -798,6 +907,13 @@ class DirectSessionAdapter implements SessionAdapter {
           if (agentEvent.type === "compaction_end") created.compaction.observeNativeCompaction("end");
           if (agentEvent.type === "agent_start" && (this.runCancellationPending || this.stopRequested)) {
             this.requestStopAbort(created.session);
+          }
+          if (agentEvent.type === "queue_update" && this.runCancellationPending && agentEvent.steering.length > 0) {
+            this.resumeSteeringAfterInterrupt = true;
+          }
+          if (agentEvent.type === "message_end" && agentEvent.message.role === "custom") {
+            const details = agentEvent.message.details as { inputID?: unknown } | undefined;
+            if (typeof details?.inputID === "string") this.backgroundDelivery?.observe(details.inputID);
           }
           publishPersistedUsageEntry(agentEvent, created.session.sessionManager, (persistedEvent) => {
             if (isHiddenStatusEntry(persistedEvent.entry)) {
@@ -816,6 +932,9 @@ class DirectSessionAdapter implements SessionAdapter {
               ? { ...jsonEvent, steering: jsonEvent.steering.filter((message) => !isHiddenStatusContent(message)) }
               : jsonEvent;
           this.publishEvent(publicEvent);
+          if (agentEvent.type === "agent_settled" && created.executionBoundary?.failure()) {
+            this.publishEvent({ type: "error", error: "Execution history could not be persisted. Reopen the session to retry." });
+          }
         });
         const unsubscribeCompactionState = created.compaction.subscribe((state) => {
           this.publishEvent({ type: "compaction_state_changed", state });
@@ -833,6 +952,7 @@ class DirectSessionAdapter implements SessionAdapter {
         const unsubscribeRecovery = created.recovery?.subscribe(() => {
           this.publishEvent(created.recovery!.state());
           this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
+          if (!created.recovery!.holdsAutomaticWake()) this.retryBackgroundDelivery();
         });
         compactionUnsubscribe = () => {
           try {
@@ -869,17 +989,68 @@ class DirectSessionAdapter implements SessionAdapter {
       this.activityUnsubscribe = activityUnsubscribe;
       this.compactionUnsubscribe = compactionUnsubscribe;
       this.unsubscribe = sessionUnsubscribe;
+      if (created.inboxJournal) {
+        this.backgroundDelivery = new RootBackgroundDelivery({
+          journal: created.inboxJournal, session: created.session,
+          acquire: () => created.supervisor.acquirePromptAdmission(),
+          ready: async () => { await created.binding.ensureCurrent(); assertModelRequestReady(created.session.modelRuntime, created.session.model); },
+          canWake: () => !this.recoveringBackground && !this.runCancellationPending
+            && !created.recovery?.holdsAutomaticWake() && created.executionClaims?.current()?.outcome !== "exhausted",
+          stopped: () => this.stopRequested,
+          own: (operation) => this.ownBackgroundOperation(operation),
+          changed: () => this.publishBackgroundTasks(),
+          onError: (error) => this.publishEvent({ type: "error", error: error instanceof Error ? error.message : "Background notification delivery failed." }),
+        });
+      }
+      this.recoveringBackground = true;
+      try {
+        await created.recoverBackground?.();
+        if (created.shellManager) {
+          this.releaseShellOwner = created.shellManager.attachOwner({
+            sessionID: created.session.sessionId, cwd: this.options.cwd,
+            shell: created.shellSettings,
+            notify: (notice: ShellNotification) => this.backgroundDelivery!.admit({
+              id: notice.id, content: notice.content, customType: "easyresearch:background_result", wake: notice.wake,
+            }),
+          });
+          this.shellUnsubscribe = created.shellManager.subscribe(() => {
+            this.publishBackgroundTasks();
+            this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
+          });
+          await created.shellManager.flushNotifications(created.session.sessionId);
+        }
+      } finally { this.recoveringBackground = false; }
+      if (created.resumeInterrupted) this.resumeInterruptedRun(created);
+      created.finishBackgroundRecovery?.();
+      await this.backgroundDelivery?.drain();
+      this.publishBackgroundTasks();
     } finally {
       this.startPending = false;
     }
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> { return this.close(false); }
+
+  suspend(): Promise<void> { return this.close(true); }
+
+  async revokeSuspension(): Promise<void> {
+    const runtime = this.suspendedRuntime;
+    if (!runtime) return;
+    await runCleanupSteps([
+      () => runtime.shellManager?.revokeHandoff(),
+      () => runtime.cancelSuspendedExecution?.(),
+    ], "Suspended background cancellation failed.");
+    this.suspendedRuntime = undefined;
+  }
+
+  private async close(suspend: boolean): Promise<void> {
     if (this.stopped) return;
     if (this.stopPromise) return this.stopPromise;
+    this.suspending = suspend;
     this.stopRequested = true;
     this.managed?.cancelSessionTitle?.();
     this.managed?.recovery?.cancel();
+    if (suspend) this.managed?.executionClaims?.suspend();
     const session = this.session;
     const supervisor = this.managed?.supervisor;
     const compaction = this.managed?.compaction;
@@ -891,6 +1062,14 @@ class DirectSessionAdapter implements SessionAdapter {
     this.stopPending = true;
     let tracked!: Promise<void>;
     tracked = runCleanupSteps([
+      () => { if (!this.suspending) this.managed?.executionClaims?.cancel(); },
+      async () => {
+        if (this.suspending) {
+          this.handoffAttempted = true;
+          await this.managed?.prepareBackgroundHandoff?.();
+          this.handoffPrepared = true;
+        } else if (this.handoffAttempted) await this.managed?.shellManager?.revokeHandoff();
+      },
       async () => { await this.contextOperation?.catch(() => {}); },
       async () => {
         const activeCancellation = this.runCancellationPromise;
@@ -903,74 +1082,97 @@ class DirectSessionAdapter implements SessionAdapter {
       },
       () => session ? this.cleanupTree("Research Assistant session stopped.") : undefined,
       async () => {
-        if (!supervisor || this.supervisorDisposeComplete) return;
-        await supervisor.dispose();
-        this.supervisorDisposeComplete = true;
-      },
-      () => {
-        if (this.coordinatorUnsubscribeComplete) return;
-        this.coordinatorUnsubscribe?.();
-        this.coordinatorUnsubscribe = undefined;
-        this.coordinatorUnsubscribeComplete = true;
-      },
-      () => {
-        if (this.activityUnsubscribeComplete) return;
-        this.activityUnsubscribe?.();
-        this.activityUnsubscribe = undefined;
-        this.activityUnsubscribeComplete = true;
-      },
-      () => {
-        if (this.compactionUnsubscribeComplete) return;
-        this.compactionUnsubscribe?.();
-        this.compactionUnsubscribe = undefined;
-        this.compactionUnsubscribeComplete = true;
-      },
-      () => {
-        if (this.unsubscribeComplete) return;
-        this.unsubscribe?.();
-        this.unsubscribe = undefined;
-        this.unsubscribeComplete = true;
-      },
-      async () => {
-        if (!this.startCleanup) return;
-        await this.startCleanup();
-        this.startCleanup = undefined;
-      },
-      async () => {
-        if (!compaction || this.compactionDisposeComplete) return;
-        await compaction.dispose();
-        this.compactionDisposeComplete = true;
-      },
-      async () => {
-        if (!session || this.sessionDisposeComplete) return;
-        await binding?.close();
-        if (!this.sessionShutdownComplete) {
-          await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-          this.sessionShutdownComplete = true;
-        }
-        session.dispose();
-        this.sessionDisposeComplete = true;
-      },
-      async () => {
-        if (session && !this.sessionDisposeComplete) return;
-        if (!this.recoveryDisposeComplete) {
-          this.managed?.disposeRecovery?.();
-          this.recoveryDisposeComplete = true;
-        }
-      },
-      async () => {
-        if (this.bindingDisposeComplete) return;
-        if (!binding) {
-          this.bindingDisposeComplete = true;
-          return;
-        }
-        if (session && !this.sessionDisposeComplete) return;
-        await binding.dispose();
-        this.bindingDisposeComplete = true;
+        // A failed queue write must retain its native session and owned append
+        // progress. Other cancellation steps still run, but disposal waits for retry.
+        if (this.suspending && (!this.suspensionQueueComplete || !this.handoffPrepared)) return;
+        await runCleanupSteps([
+          () => this.backgroundDelivery?.close({ terminal: !this.suspending }),
+          async () => {
+            this.releaseShellOwner?.(); this.releaseShellOwner = undefined;
+            await this.managed?.shellManager?.dispose({ handoff: this.suspending });
+            this.shellUnsubscribe?.(); this.shellUnsubscribe = undefined;
+            if (!this.suspending) this.managed?.backgroundOwner?.update(false);
+          },
+          async () => {
+            if (!supervisor || this.supervisorDisposeComplete) return;
+            await supervisor.dispose();
+            this.supervisorDisposeComplete = true;
+          },
+          () => {
+            if (this.coordinatorUnsubscribeComplete) return;
+            this.coordinatorUnsubscribe?.();
+            this.coordinatorUnsubscribe = undefined;
+            this.coordinatorUnsubscribeComplete = true;
+          },
+          () => {
+            if (this.activityUnsubscribeComplete) return;
+            this.activityUnsubscribe?.();
+            this.activityUnsubscribe = undefined;
+            this.activityUnsubscribeComplete = true;
+          },
+          () => {
+            if (this.compactionUnsubscribeComplete) return;
+            this.compactionUnsubscribe?.();
+            this.compactionUnsubscribe = undefined;
+            this.compactionUnsubscribeComplete = true;
+          },
+          () => {
+            if (this.unsubscribeComplete) return;
+            this.unsubscribe?.();
+            this.unsubscribe = undefined;
+            this.unsubscribeComplete = true;
+          },
+          async () => {
+            if (!this.startCleanup) return;
+            await this.startCleanup();
+            this.startCleanup = undefined;
+          },
+          async () => {
+            if (!compaction || this.compactionDisposeComplete) return;
+            await compaction.dispose();
+            this.compactionDisposeComplete = true;
+          },
+          async () => {
+            if (!session || this.sessionDisposeComplete) return;
+            await binding?.close();
+            if (!this.sessionShutdownComplete) {
+              await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+              this.sessionShutdownComplete = true;
+            }
+            session.dispose();
+            this.sessionDisposeComplete = true;
+          },
+          () => {
+            if (session && !this.sessionDisposeComplete) return;
+            if (!this.recoveryDisposeComplete) {
+              this.managed?.disposeRecovery?.();
+              this.recoveryDisposeComplete = true;
+            }
+          },
+          async () => {
+            if (this.bindingDisposeComplete) return;
+            if (!binding) {
+              this.bindingDisposeComplete = true;
+              return;
+            }
+            if (session && !this.sessionDisposeComplete) return;
+            await binding.dispose();
+            this.bindingDisposeComplete = true;
+          },
+          async () => {
+            // A terminal retry after partial suspension must also revoke children
+            // already released from the live supervisor. This is the last writer:
+            // the callback reopens the root only after its old runtime has closed.
+            if (!this.suspending && this.handoffAttempted && this.sessionDisposeComplete) {
+              await this.managed?.cancelSuspendedExecution?.();
+            }
+          },
+        ], "Research Assistant disposal failed.");
       },
     ], "Research Assistant runtime cleanup failed.").then(
       () => {
         this.stopped = true;
+        if (this.suspending) this.suspendedRuntime = this.managed;
         this.session = undefined;
         this.binding = undefined;
         this.managed = undefined;
@@ -1050,17 +1252,20 @@ class DirectSessionAdapter implements SessionAdapter {
         // Commands may await this run's idle boundary. They cannot own the LLM
         // preflight gate that the boundary needs to drain completed handoffs.
         if (isRunningCommand(promptMessage)) releaseAdmission?.();
-        await session.prompt(promptMessage, {
+        const invoke = () => session.prompt(promptMessage, {
           streamingBehavior: "steer",
           ...options,
           preflightResult: (didSucceed) => {
             releaseAdmission?.();
             if (!accepted && didSucceed) {
               accepted = true;
+              void this.managed?.shellManager?.promote(session.sessionId).catch((error) => this.publishEvent({ type: "error", error: String(error) }));
+              this.retryBackgroundDelivery();
               resolveAccepted();
             }
           },
         });
+        await (this.managed?.executionBoundary ? this.managed.executionBoundary.observe(invoke) : invoke());
         // Defensive: a prompt that settles without a preflight callback (e.g.
         // an extension command) is treated as accepted rather than leaving the
         // HTTP request pending forever.
@@ -1072,6 +1277,8 @@ class DirectSessionAdapter implements SessionAdapter {
         if (!accepted) {
           accepted = true;
           rejectAccepted(error instanceof Error ? error : new Error(String(error)));
+        } else if (this.managed?.executionBoundary?.failure()) {
+          this.publishEvent({ type: "error", error: "Execution history could not be persisted. Reopen the session to retry." });
         }
       } finally {
         releaseAdmission?.();
@@ -1092,28 +1299,104 @@ class DirectSessionAdapter implements SessionAdapter {
     if (this.runCancellationPromise) return this.runCancellationPromise;
 
     this.runCancellationPending = true;
+    this.resumeSteeringAfterInterrupt = session.getSteeringMessages().length > 0
+      || managed.supervisor.hasPendingNotifications?.() === true || this.backgroundDelivery?.hasWakePending() === true;
     managed.cancelSessionTitle?.();
     managed.recovery?.cancel();
+    let interrupted = false;
     let tracked!: Promise<void>;
     tracked = runCleanupSteps([
-      () => managed.coordinator.beginCancellation(),
+      () => managed.executionClaims?.cancel(),
       () => managed.compaction.cancel(),
-      () => session.clearQueue(),
       () => this.abortSessionAndSettlePrompts(session),
-      () => managed.supervisor.cancelAll("Research Assistant stopped."),
     ], "Research Assistant run cancellation failed.")
       .then(() => {
-        managed.coordinator.finishCancellation();
         managed.compaction.finishCancellation();
         managed.recovery?.finishCancellation();
+        interrupted = true;
       })
       .finally(() => {
         if (this.runCancellationPromise === tracked) this.runCancellationPromise = undefined;
         this.runCancellationPending = false;
         this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
+        const resume = this.resumeSteeringAfterInterrupt || session.getSteeringMessages().length > 0
+          || managed.supervisor.hasPendingNotifications?.();
+        this.resumeSteeringAfterInterrupt = false;
+        if (interrupted && !this.stopRequested && resume) {
+          this.resumeInterruptedRun(managed, true);
+        }
+        if (interrupted && !this.stopRequested) {
+          this.retryBackgroundDelivery();
+          managed.supervisor.runtimeBecameCoherent?.();
+        }
       });
     this.runCancellationPromise = tracked;
     return tracked;
+  }
+
+  private resumeInterruptedRun(managed: ManagedAgentSession, steeringOnly = false): void {
+    const operation = (async () => {
+      const release = await managed.supervisor.acquirePromptAdmission();
+      let run: Promise<void> | undefined;
+      try {
+        await managed.binding.ensureCurrent();
+        if (this.stopRequested || this.runCancellationPending) return;
+        assertModelRequestReady(managed.session.modelRuntime, managed.session.model);
+        const invoke = () => managed.session.sendCustomMessage({
+          customType: steeringOnly ? BACKGROUND_WAKE_TYPE : RESTART_NOTICE_TYPE,
+          content: steeringOnly ? "" : RESTART_NOTICE,
+          display: false,
+          details: { periodId: managed.executionClaims?.current()?.periodId },
+        }, { deliverAs: "steer", triggerTurn: true });
+        run = managed.executionBoundary ? managed.executionBoundary.observe(invoke) : invoke();
+      } finally { release(); }
+      await run;
+    })().catch((error) => {
+      // Keep the claim when preflight cannot run; a later explicit prompt can recover.
+      this.publishEvent({ type: "error", error: error instanceof Error ? error.message : "Unable to resume interrupted work." });
+    });
+    this.promptOperations.add(operation);
+    void operation.finally(() => {
+      this.promptOperations.delete(operation);
+      this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
+    });
+  }
+
+  private retryBackgroundDelivery(): void {
+    const managed = this.managed;
+    const delivery = this.backgroundDelivery;
+    if (!managed || !delivery || this.stopRequested || this.startPending || this.recoveringBackground || this.backgroundRetryOperation) return;
+    try {
+      if (!managed.shellManager?.hasWork(managed.session.sessionId) && !delivery.hasPending()) return;
+    } catch {
+      this.publishEvent({ type: "error", error: "Background notification history is unavailable." });
+      return;
+    }
+    // Retry only at explicit user/runtime/recovery boundaries. An outbox record may
+    // still be pending before inbox admission, so draining the inbox alone is not enough.
+    const operation = Promise.resolve().then(async () => {
+      if (this.stopRequested) return;
+      await managed.shellManager?.flushNotifications(managed.session.sessionId);
+      if (!this.stopRequested) await delivery.drain();
+    }).catch(() => {
+      this.publishEvent({ type: "error", error: "Background notification delivery failed. Retry after the underlying error is resolved." });
+    });
+    this.backgroundRetryOperation = operation;
+    this.ownBackgroundOperation(operation);
+    void operation.finally(() => {
+      if (this.backgroundRetryOperation === operation) this.backgroundRetryOperation = undefined;
+    });
+  }
+
+  private ownBackgroundOperation(operation: Promise<void>): void {
+    if (this.managed?.executionBoundary) operation = this.managed.executionBoundary.observe(operation).catch(() => {
+      this.publishEvent({ type: "error", error: "Execution history could not be persisted. Reopen the session to retry." });
+    });
+    this.promptOperations.add(operation);
+    void operation.finally(() => {
+      this.promptOperations.delete(operation);
+      this.publishEvent({ type: "session_activity_changed", active: this.isSupervisorActive() });
+    }).catch(() => {});
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
@@ -1382,6 +1665,7 @@ class DirectSessionAdapter implements SessionAdapter {
   }
 
   isSupervisorActive(): boolean {
+    if (this.managed?.shellManager?.hasWork() || this.backgroundDelivery?.hasPending()) return true;
     const supervisor = this.managed?.supervisor;
     if (!supervisor) return false;
     try {
@@ -1424,6 +1708,40 @@ class DirectSessionAdapter implements SessionAdapter {
     }
   }
 
+  private publishBackgroundTasks(): void {
+    const tasks = this.getBackgroundTasks();
+    // Suspension leaves the last durable owner hint intact for the successor.
+    // Prompt/context admission itself is not background work and must not move the
+    // native branch while a context-edit revision is being validated.
+    if (!this.suspending) this.managed?.backgroundOwner?.update(tasks.some((task) => task.status === "running")
+      || this.managed?.supervisor.hasPendingNotifications?.() === true || this.managed?.shellManager?.hasWork() === true
+      || this.backgroundDelivery?.hasPending() === true);
+    const signature = JSON.stringify(tasks);
+    if (signature === this.backgroundTasksSignature) return;
+    this.backgroundTasksSignature = signature;
+    this.publishEvent({ type: "background_tasks_changed", tasks });
+  }
+
+  getBackgroundTasks(): BackgroundTask[] {
+    return [...this.managed?.coordinator.backgroundTasks?.() ?? [],
+      ...this.managed?.shellManager?.tasks().filter((task) => task.status === "running") ?? []];
+  }
+
+  async promoteBackground(): Promise<void> {
+    const session = this.requiredSession();
+    await this.managed?.shellManager?.promote(session.sessionId);
+    this.publishBackgroundTasks();
+  }
+
+  async cancelBackground(taskId: string): Promise<void> {
+    this.requiredSession();
+    const task = this.getBackgroundTasks().find((item) => item.id === taskId);
+    if (!task) throw new Error("Unknown background task");
+    if (task.kind === "shell") await this.managed!.shellManager!.cancel(taskId);
+    else await this.managed!.coordinator.cancelTask(taskId);
+    this.publishBackgroundTasks();
+  }
+
   private cleanupTree(reason: string): Promise<void> {
     if (this.treeCleanupPromise) return this.treeCleanupPromise;
     const session = this.session;
@@ -1441,6 +1759,7 @@ class DirectSessionAdapter implements SessionAdapter {
       () => managed.compaction.cancel(),
       () => {
         if (this.queueClearComplete) return;
+        if (this.suspending) return;
         session.clearQueue();
         this.queueClearComplete = true;
       },
@@ -1449,9 +1768,16 @@ class DirectSessionAdapter implements SessionAdapter {
         await this.abortSessionAndSettlePrompts(session);
         this.sessionAbortComplete = true;
       },
+      () => {
+        if (!this.suspending || this.suspensionQueueComplete) return;
+        this.suspensionQueue.preserve(managed.session as unknown as Parameters<RootSuspensionQueue["preserve"]>[0]);
+        this.suspensionQueueComplete = true;
+        this.queueClearComplete = true;
+      },
       async () => {
         if (this.supervisorAbortComplete) return;
-        await managed.supervisor.abortAll(reason);
+        if (this.suspending) await managed.supervisor.suspendAll(reason);
+        else await managed.supervisor.abortAll(reason);
         this.supervisorAbortComplete = true;
       },
       async () => {
@@ -1547,14 +1873,14 @@ function isHiddenStatusMessage(value: unknown): boolean {
     && "role" in value
     && value.role === "custom"
     && "customType" in value
-    && (value.customType === AGENT_STATUS_TYPE || isLlmRetryControl(value));
+    && (value.customType === AGENT_STATUS_TYPE || isLlmRetryControl(value) || ("display" in value && value.display === false));
 }
 
 function isHiddenStatusEntry(value: unknown): boolean {
   return value !== null
     && typeof value === "object"
     && "customType" in value
-    && (value.customType === AGENT_STATUS_TYPE || isLlmRetryControl(value));
+    && (value.customType === AGENT_STATUS_TYPE || isLlmRetryControl(value) || ("display" in value && value.display === false));
 }
 
 function isHiddenStatusContent(value: string): boolean {

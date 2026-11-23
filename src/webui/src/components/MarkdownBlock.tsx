@@ -13,7 +13,7 @@ import {
   setCompletedMarkdown,
 } from "./markdown/render";
 import { TranscriptCode } from "./markdown/TranscriptCode";
-import { TranscriptFileLink } from "./markdown/TranscriptFileLink";
+import { FileReferenceSettledContext, TranscriptFileLink } from "./markdown/TranscriptFileLink";
 
 export interface MarkdownBlockProps {
   text: string;
@@ -101,15 +101,21 @@ function MarkdownBlockComponent({
   }, [rendered, text]);
 
   if (!markdownScope || !markdownKey || !canUseMarkdownWorker() || failedSource === text) {
-    return <SynchronousMarkdown text={text} className={className} />;
+    return (
+      <FileReferenceSettledContext value={!streaming}>
+        <SynchronousMarkdown text={text} className={className} />
+      </FileReferenceSettledContext>
+    );
   }
   const canReuse = rendered && (rendered.source === text || (streaming && text.startsWith(rendered.source)));
   const pendingText = canReuse ? text.slice(rendered.source.length) : text;
   return (
-    <div className={className} data-markdown-root data-markdown-source-length={canReuse ? rendered.source.length : 0}>
-      {canReuse ? rendered.blocks.map((block) => block.node) : null}
-      {pendingText ? <div className="whitespace-pre-wrap">{pendingText}</div> : null}
-    </div>
+    <FileReferenceSettledContext value={!streaming}>
+      <div className={className} data-markdown-root data-markdown-source-length={canReuse ? rendered.source.length : 0}>
+        {canReuse ? rendered.blocks.map((block) => block.node) : null}
+        {pendingText ? <div className="whitespace-pre-wrap">{pendingText}</div> : null}
+      </div>
+    </FileReferenceSettledContext>
   );
 }
 

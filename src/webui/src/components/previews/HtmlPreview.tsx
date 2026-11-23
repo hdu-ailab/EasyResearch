@@ -1,5 +1,6 @@
 import { RotateCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import type { FileLineRange } from "../../../../web/file-reference-contracts";
 import {
   createHtmlPreview,
   type HtmlPreviewCapability,
@@ -8,20 +9,24 @@ import {
   releaseHtmlPreview,
 } from "../../api";
 import { useI18n } from "../../i18n/useI18n";
+import { usePreviewMode } from "./PreviewMode";
 import { PreviewToolbar, previewButtonClass } from "./PreviewToolbar";
+import { TextSourcePreview } from "./TextSourcePreview";
 
 export interface HtmlPreviewProps {
   path: string;
   revision?: number;
+  selection?: FileLineRange;
+  selectionKey?: number;
 }
 
-export function HtmlPreview({ path, revision = 0 }: HtmlPreviewProps) {
-  return <HtmlDocument key={JSON.stringify([path, revision])} path={path} revision={revision} />;
+export function HtmlPreview({ path, revision = 0, ...props }: HtmlPreviewProps) {
+  return <HtmlDocument key={JSON.stringify([path, revision])} path={path} revision={revision} {...props} />;
 }
 
-function HtmlDocument({ path, revision }: Required<HtmlPreviewProps>) {
+function HtmlDocument({ path, revision, selection, selectionKey }: HtmlPreviewProps & { revision: number }) {
   const { t } = useI18n();
-  const [mode, setMode] = useState<"preview" | "source">("preview");
+  const [mode, setMode] = usePreviewMode(selection, selectionKey);
   const [attempt, setAttempt] = useState(0);
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
@@ -54,7 +59,14 @@ function HtmlDocument({ path, revision }: Required<HtmlPreviewProps>) {
       {mode === "preview" ? (
         <HtmlFrame key={attempt} path={path} />
       ) : (
-        <HtmlSource key={attempt} path={path} revision={revision} attempt={attempt} />
+        <HtmlSource
+          key={attempt}
+          path={path}
+          revision={revision}
+          attempt={attempt}
+          selection={selection}
+          selectionKey={selectionKey}
+        />
       )}
     </div>
   );
@@ -107,7 +119,13 @@ function HtmlFrame({ path }: { path: string }) {
   );
 }
 
-function HtmlSource({ path, revision, attempt }: Required<HtmlPreviewProps> & { attempt: number }) {
+function HtmlSource({
+  path,
+  revision,
+  attempt,
+  selection,
+  selectionKey,
+}: HtmlPreviewProps & { revision: number; attempt: number }) {
   const [source, setSource] = useState<string | null>(null);
   const [failure, setFailure] = useState<"error" | "size" | null>(null);
   useEffect(() => {
@@ -125,11 +143,7 @@ function HtmlSource({ path, revision, attempt }: Required<HtmlPreviewProps> & { 
 
   if (failure) return <HtmlMessage error tooLarge={failure === "size"} />;
   if (source === null) return <HtmlMessage />;
-  return (
-    <pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[12px] leading-[1.5] text-v2-text-text-base whitespace-pre">
-      {source}
-    </pre>
-  );
+  return <TextSourcePreview content={source} selection={selection} selectionKey={selectionKey} />;
 }
 
 function HtmlMessage({ error = false, tooLarge = false }: { error?: boolean; tooLarge?: boolean }) {

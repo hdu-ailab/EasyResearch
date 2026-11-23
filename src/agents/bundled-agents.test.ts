@@ -49,6 +49,9 @@ describe("bundled agent definitions", () => {
     expect(byName.experiment!.subagents).toEqual(["search"]);
     expect(byName.writing!.subagents).toEqual(["search", "figures"]);
     expect(byName.review!.subagents).toEqual(["search"]);
+    expect(byName.figures!.subagents).toEqual(["search"]);
+    expect(byName.search!.effectiveTools).not.toContain("subagent");
+    expect(byName.search!.effectiveTools).not.toContain("models");
     expect(byName.figures!.effectiveSkills).toEqual(expect.arrayContaining(["drawio", "drawio-academic-skills"]));
     expect(byName.figures!.effectiveSkills).toContain("scientific-visualization");
     for (const name of ["search", "experiment", "writing", "figures"]) {
@@ -56,7 +59,7 @@ describe("bundled agent definitions", () => {
     }
     expect(byName["research-assistant"]!.effectiveSkills).toContain("specialist-handoff");
     expect(byName["research-assistant"]!.effectiveTools).toEqual(
-      expect.arrayContaining(["read", "bash", "edit", "write", "subagent", "web-search", "webfetch"]),
+      expect.arrayContaining(["read", "shell", "edit", "write", "subagent", "models", "web-search", "webfetch"]),
     );
     expect(byName["research-assistant"]!.effectiveSkills).toContain("autoresearch");
     expect(byName.experiment!.effectiveSkills).not.toContain("autoresearch");
@@ -80,13 +83,14 @@ describe("bundled agent definitions", () => {
     expect(byName.figures!.effectiveTools).not.toContain("ssh-bash");
     expect(byName.review!.effectiveTools).toEqual(expect.arrayContaining([
       "read",
-      "bash",
+      "shell",
       "write",
       "subagent",
+      "models",
       "web-search",
       "webfetch",
     ]));
-    expect(byName.review!.effectiveTools).not.toEqual(expect.arrayContaining(["edit", "ssh-bash"]));
+    for (const tool of ["edit", "ssh-bash"]) expect(byName.review!.effectiveTools).not.toContain(tool);
     expect(byName.review!.effectiveSkills).toEqual(expect.arrayContaining([
       "peer-review",
       "paper-lookup",
@@ -109,16 +113,12 @@ describe("bundled agent definitions", () => {
     expect(agents.length).toBeGreaterThan(0);
     for (const agent of agents) {
       expect(agent.effectiveTools).toEqual(expect.arrayContaining(["web-search", "webfetch"]));
-      expect(agent.effectiveTools).not.toEqual(expect.arrayContaining(["grep", "find", "ls"]));
+      for (const tool of ["grep", "find", "ls"]) expect(agent.effectiveTools).not.toContain(tool);
       expect(agent.effectiveSkills).toContain("playwright-cli");
     }
   });
 
-  it.each([
-    ["win32", "powershell", "bash"],
-    ["linux", "bash", "powershell"],
-    ["darwin", "bash", "powershell"],
-  ] as const)("reports the native local shell for all-tools metadata on %s", async (platform, native, excluded) => {
+  it.each(["win32", "linux", "darwin"] as const)("keeps managed shell and model discovery aligned with role capabilities on %s", async (platform) => {
     const catalog = await loadAgentCatalog({
       agentDir: join(root, "agent"),
     });
@@ -130,8 +130,11 @@ describe("bundled agent definitions", () => {
     });
     const researchAssistant = agents.find((agent) => agent.name === "research-assistant");
 
-    expect(researchAssistant?.effectiveTools).toContain(native);
-    expect(researchAssistant?.effectiveTools).not.toContain(excluded);
+    for (const agent of agents) {
+      expect(agent.effectiveTools.filter(tool => ["shell", "bash", "powershell"].includes(tool))).toEqual(["shell"]);
+      expect(agent.effectiveTools.includes("models")).toBe(agent.effectiveTools.includes("subagent"));
+      expect(new Set(agent.effectiveTools).size).toBe(agent.effectiveTools.length);
+    }
     expect(researchAssistant?.effectiveTools).toContain("ssh-bash");
   });
 });

@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -170,6 +171,22 @@ afterEach(() => {
 });
 
 describe("third-party notice collection", () => {
+  it("ships bundled font copyright texts and refuses a package missing a required font license", () => {
+    const project = createNoticeFixture({ roots: ["@betteroffice/fonts@0.4.0"], packages: { "@betteroffice/fonts": { identity: "@betteroffice/fonts@0.4.0" } } });
+    const packageDir = fixturePackageDir(project, "@betteroffice/fonts");
+    const sourceDir = join(PROJECT_ROOT, "node_modules/@betteroffice/fonts/LICENSES");
+    mkdirSync(join(packageDir, "LICENSES"));
+    for (const name of readdirSync(sourceDir)) {
+      writeFileSync(join(packageDir, "LICENSES", name), readFileSync(join(sourceDir, name)));
+    }
+    const roots = [{ name: "@betteroffice/fonts", version: "0.4.0" }];
+    const entries = collectThirdPartyNoticeEntries(project, roots);
+    const notice = renderThirdPartyNotices(entries);
+    expect(notice).toContain("SIL OPEN FONT LICENSE");
+    expect(notice).toContain("OFL-Carlito.txt");
+    unlinkSync(join(packageDir, "LICENSES/OFL-Carlito.txt"));
+    expect(() => collectThirdPartyNoticeEntries(project, roots)).toThrow(/OFL-Carlito/);
+  });
   it("walks production edges, nested versions, installed optionals, and required peers", () => {
     const project = createNoticeFixture({
       roots: ["root-a@1.0.0", "root-b@2.0.0"],

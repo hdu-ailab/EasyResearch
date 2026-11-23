@@ -8,6 +8,9 @@ type MermaidRuntime = typeof import("mermaid")["default"];
 
 let mermaidPromise: Promise<MermaidRuntime> | null = null;
 let initialized = false;
+// Mermaid uses this as a DOM/render identity, not a capability. Each render needs
+// a fresh ID even when an earlier async render for this component is still pending.
+let diagramSequence = 0;
 
 function loadMermaid(): Promise<MermaidRuntime> {
   mermaidPromise ??= import("mermaid").then((module) => module.default);
@@ -20,7 +23,7 @@ export function MermaidDiagram({ source }: MermaidDiagramProps) {
 
   useEffect(() => {
     let cancelled = false;
-    const id = `mermaid-${crypto.randomUUID()}`;
+    const id = `mermaid-${++diagramSequence}`;
     loadMermaid()
       .then((mermaid) => {
         if (cancelled) return null;

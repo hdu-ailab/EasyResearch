@@ -24,7 +24,7 @@ export function activityCategory(entry: ActivityEntry): TimelineCategory;
 export function activityCategory(entry: PresentationEntry): TimelineCategory | undefined;
 export function activityCategory(entry: PresentationEntry): TimelineCategory | undefined {
   if ("name" in entry) {
-    if (["bash", "powershell", "ssh-bash"].includes(entry.name)) return "shell";
+    if (["shell", "bash", "powershell", "ssh-bash"].includes(entry.name)) return "shell";
     if (["edit", "write", "patch", "apply_patch"].includes(entry.name)) return "edit";
     if (entry.name === "subagent") return "subagents";
     return "tools";

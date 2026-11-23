@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { ContextManagementError, parseContextEditRequest } from "./context-management";
 import type { SkillMarketplace } from "./skill-marketplace";
+import { BackgroundOutputError, type BackgroundOutputService } from "./background-output";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { bundledFilePath } from "../runtime/bundled-assets";
@@ -37,6 +38,7 @@ import type {
 import { createGlobalAgent, listGlobalAgents, readGlobalAgent, writeGlobalAgent, listGlobalSkills, readGlobalSkill, writeGlobalSkill } from "./agent-resources";
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError, fileServiceError } from "./directories";
+import { resolveFileReferences, validateFileReferences } from "./file-references";
 import { rawFileHeaders, parseByteRange, RawFileRangeError, type RawFileDescriptor } from "./raw-file";
 import { FileOperationError, FileOperationService } from "./file-operations";
 import { HTML_PREVIEW_PATH, HtmlPreviewService } from "./html-preview";
@@ -128,6 +130,7 @@ export interface RouteServices {
   daemonControl?: DaemonControl;
   runtimeRestart?: Pick<RuntimeRestartCoordinator, "request">;
   skillMarketplace?: SkillMarketplace;
+  backgroundOutput?: BackgroundOutputService;
   desktopAccess?: DesktopAccessControl;
 }
 
@@ -502,6 +505,14 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return sessionEvents(services, eventsMatch[1]!);
       }
 
+      const fileReferencesMatch = path.match(/^\/api\/sessions\/([^/]+)\/file-references\/resolve$/);
+      if (req.method === "POST" && fileReferencesMatch) {
+        fileQuery(url, []);
+        const references = validateFileReferences(await jsonBody<unknown>(req));
+        const cwd = await services.registry.getCwd(fileReferencesMatch[1]!);
+        return jsonResponse(await resolveFileReferences(cwd, references, req.signal));
+      }
+
       const fileWatchesMatch = path.match(/^\/api\/sessions\/([^/]+)\/file-watches\/([^/]+)$/);
       if (req.method === "PUT" && fileWatchesMatch) {
         const body = await jsonBody<{ revision: unknown; directories: unknown }>(req);
@@ -520,6 +531,31 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
         return jsonResponse({ ok: true, applied });
       }
 
+      const outputMatch = path.match(/^\/api\/sessions\/([^/]+)\/background\/([^/]+)\/output$/);
+      if (req.method === "GET" && outputMatch) {
+        fileQuery(url, ["cursor", "limit"]);
+        const input: { cursor?: number; limit?: number } = {};
+        for (const key of ["cursor", "limit"] as const) {
+          const text = url.searchParams.get(key);
+          if (text === null) continue;
+          if (!/^\d+$/.test(text) || !Number.isSafeInteger(Number(text))) throw new BackgroundOutputError(400, "SHELL_OUTPUT_INVALID");
+          input[key] = Number(text);
+        }
+        if (!services.backgroundOutput) throw new BackgroundOutputError();
+        return jsonResponse(await services.backgroundOutput.read(decodeURIComponent(outputMatch[1]!), decodeURIComponent(outputMatch[2]!), input));
+      }
+
+      const outputWatches = path.match(/^\/api\/sessions\/([^/]+)\/background-output-watches\/([^/]+)$/);
+      if (req.method === "PUT" && outputWatches) {
+        fileQuery(url, []);
+        const body = await jsonBody<unknown>(req);
+        if (!isObject(body) || Object.keys(body).length !== 2 || !Number.isSafeInteger(body.revision)
+          || (body.revision as number) < 0 || !Array.isArray(body.taskIds) || body.taskIds.length > 16
+          || !body.taskIds.every((id) => typeof id === "string")) throw new BackgroundOutputError(400, "SHELL_OUTPUT_INVALID");
+        if (!services.backgroundOutput) throw new BackgroundOutputError();
+        return jsonResponse(await services.backgroundOutput.replaceLease(decodeURIComponent(outputWatches[1]!), decodeURIComponent(outputWatches[2]!), body.revision as number, body.taskIds));
+      }
+
       const messagesMatch = path.match(/^\/api\/sessions\/([^/]+)\/messages$/);
       if (req.method === "POST" && messagesMatch) {
         const body = await jsonBody<{ message: string }>(req);
@@ -532,6 +568,23 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
       }
 
       const retryMatch = path.match(/^\/api\/sessions\/([^/]+)\/retry$/);
+      const backgroundMatch = path.match(/^\/api\/sessions\/([^/]+)\/background(?:\/([^/]+)\/cancel)?$/);
+      if (backgroundMatch && (req.method === "GET" || req.method === "POST")) {
+        const root = decodeURIComponent(backgroundMatch[1]!);
+        const taskId = backgroundMatch[2] ? decodeURIComponent(backgroundMatch[2]) : undefined;
+        if (req.method === "GET" && !taskId) {
+          return jsonResponse({ tasks: await services.registry.backgroundTasks(root) });
+        }
+        if (req.method === "POST") {
+          const body = await jsonBody<unknown>(req);
+          if (!isObject(body) || Object.keys(body).length !== 0) {
+            return errorResponse(400, "Background controls accept an empty object.");
+          }
+          if (taskId) await services.registry.cancelBackground(root, taskId);
+          else await services.registry.promoteBackground(root);
+          return jsonResponse({ ok: true });
+        }
+      }
       if (req.method === "POST" && retryMatch) {
         const body = await jsonBody<unknown>(req);
         if (!isObject(body) || Object.keys(body).length !== 2
@@ -799,6 +852,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
 
       return new Response("Not found", { status: 404 });
     } catch (error) {
+      if (error instanceof BackgroundOutputError) return errorResponse(error.status, error.message, { code: error.code });
       if (error instanceof ContextManagementError) return errorResponse(error.status, error.message, { code: error.code });
       if (/^\/api\/sessions\/[^/]+\/context(?:\/|$)/.test(new URL(req.url).pathname)) {
         if (error instanceof UnknownSessionError) return errorResponse(404, "Root session context is unavailable.", { code: "CONTEXT_UNAVAILABLE" });
@@ -868,6 +922,7 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
     && htmlPreviews.isValidResourceRequest(request);
   handler.close = async () => {
     htmlPreviews.close();
+    services.backgroundOutput?.close();
     const results = await Promise.allSettled([files.close(), channels.close(), services.skillMarketplace?.close()]);
     const errors = results.filter((result): result is PromiseRejectedResult => result.status === "rejected").map((result) => result.reason);
     if (errors.length) throw new AggregateError(errors, "Route cleanup failed");
@@ -1015,7 +1070,10 @@ function sessionEvents(services: RouteServices, id: string): Response {
     unsubscribe = null;
     const leaseId = fileWatchLeaseId;
     fileWatchLeaseId = null;
-    if (leaseId) registry.releaseFileWatchLease(id, leaseId);
+    if (leaseId) {
+      services.backgroundOutput?.releaseLease(id, leaseId);
+      registry.releaseFileWatchLease(id, leaseId);
+    }
     stopListening?.();
     controllerRef = null;
     logger.info("sse disconnected", { sessionId: id });
@@ -1031,7 +1089,13 @@ function sessionEvents(services: RouteServices, id: string): Response {
       if (usageRecord !== undefined) refreshUsage(usageRecord);
     });
     fileWatchLeaseId = registry.acquireFileWatchLease(id);
+    services.backgroundOutput?.acquireLease(id, fileWatchLeaseId);
   } catch {
+    if (fileWatchLeaseId) {
+      services.backgroundOutput?.releaseLease(id, fileWatchLeaseId);
+      registry.releaseFileWatchLease(id, fileWatchLeaseId);
+      fileWatchLeaseId = null;
+    }
     unsubscribe?.();
     unsubscribe = null;
     throw new UnknownSessionError(`Unknown session: ${id}`);
@@ -1228,6 +1292,7 @@ function isPreBarrierSupplement(event: unknown): boolean {
   const value = event as { type?: unknown };
   if (
     value.type === "file.watcher.updated" ||
+    value.type === "background_output_changed" ||
     value.type === "agent_start" ||
     value.type === "agent_settled" ||
     value.type === "session_activity_changed" ||

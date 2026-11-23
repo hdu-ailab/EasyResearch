@@ -1,4 +1,5 @@
 import type { AgentSessionEvent, MessageUpdateEvent } from "@earendil-works/pi-coding-agent";
+import type { BackgroundTask } from "../../background/contracts";
 import type {
   ApiUsageRecordDto,
   ApiUsageStatisticsDto,
@@ -55,6 +56,8 @@ export interface ToolView {
   step?: number;
   /** Agent name for `subagent` tool rows. */
   agentName?: string;
+  /** Short label from current subagent admission input, separate from its prompt. */
+  taskDescription?: string;
   /** Skill name when a `read` tool call loads a SKILL.md (like the TUI's
    * `[skill] <label>` classification); the transcript renders a skill card. */
   skillName?: string;
@@ -158,6 +161,8 @@ export interface SessionViewState {
   runtimeConfigurationGeneration: number;
   /** Persisted supervisor summaries from the latest snapshot, including nested owners. */
   subagentSummaries?: SubagentSessionSummaryDto[];
+  /** Owned work is independent of the current root run and transcript branch. */
+  backgroundTasks?: BackgroundTask[];
   contextUsage?: ContextUsageDto;
   compactionPolicy: CompactionPolicyDto;
   compactionState: CompactionStateDto;
@@ -207,6 +212,7 @@ const emptyState: SessionViewState = {
 };
 
 type SessionSnapshotInput = Omit<SessionSnapshotDto, "compactionPolicy"> & {
+  backgroundTasks?: BackgroundTask[];
   compactionPolicy?: CompactionPolicyDto;
   /** Child history has no live run flag; its supervisor supplies tool ownership. */
   toolRunActive?: boolean;
@@ -352,24 +358,28 @@ export function readSkillName(args: unknown): string | undefined {
   return lastSlash === -1 ? undefined : dir.slice(lastSlash + 1) || undefined;
 }
 
-/** Agent name from a subagent tool call's arguments (single or chain mode). */
-function agentNameOfToolCall(args: unknown): string | undefined {
-  if (args === undefined || args === null) return undefined;
+/** Current admission input and legacy single/chain calls share one presentation. */
+function subagentInputOfToolCall(args: unknown): Pick<ToolView, "agentName" | "taskDescription"> {
+  if (args === undefined || args === null) return {};
   if (typeof args === "string") {
     try {
       args = JSON.parse(args);
     } catch {
-      return undefined;
+      return {};
     }
   }
-  if (typeof args !== "object") return undefined;
+  if (!args || typeof args !== "object") return {};
   const a = args as Record<string, unknown>;
-  if (typeof a.agent === "string" && a.agent) return a.agent;
+  if (typeof a.agent === "string" && a.agent)
+    return {
+      agentName: a.agent,
+      ...(typeof a.description === "string" && a.description.trim() ? { taskDescription: a.description } : {}),
+    };
   if (Array.isArray(a.chain) && a.chain.length > 0) {
     const first = a.chain[0] as { agent?: unknown } | undefined;
-    if (typeof first?.agent === "string" && first.agent) return first.agent;
+    if (typeof first?.agent === "string" && first.agent) return { agentName: first.agent };
   }
-  return undefined;
+  return {};
 }
 
 /** Extract text from Pi tool result values without applying presentation limits. */
@@ -474,6 +484,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
     steers: (snapshot.steering ?? []).map((text, index) => createSteerView(text, `steer:${index}`)),
     runtimeConfigurationGeneration: snapshot.runtimeConfigurationGeneration,
     subagentSummaries: snapshot.subagents ?? [],
+    backgroundTasks: snapshot.backgroundTasks ?? [],
     ...(snapshot.contextUsage !== undefined ? { contextUsage: snapshot.contextUsage } : {}),
     compactionPolicy: snapshot.compactionPolicy ?? { triggerPercent: 70, enabled: true },
     compactionState: snapshot.compactionState ?? "idle",
@@ -535,6 +546,11 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
         tool.resultEntryId = identityFor(message as UnknownMessage);
         if (tool.name === "subagent") {
           if (subagentText) tool.latestMessage = subagentText;
+          const admitted = admittedSubagentResult(message);
+          if (admitted) {
+            tool.sessionId = admitted.sessionId;
+            tool.latestMessage = admitted.latestMessage;
+          }
         } else if (output) {
           tool.output = output;
         }
@@ -552,6 +568,13 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
           ...(toolName === "subagent" ? (subagentText ? { latestMessage: subagentText } : {}) : { output }),
           order: next(),
         };
+        if (toolName === "subagent") {
+          const admitted = admittedSubagentResult(message);
+          if (admitted) {
+            unmatched.sessionId = admitted.sessionId;
+            unmatched.latestMessage = admitted.latestMessage;
+          }
+        }
         state.tools.push(unmatched);
         if (!toolsByKey.has(unmatched.key)) toolsByKey.set(unmatched.key, unmatched);
       }
@@ -608,7 +631,7 @@ export function fromSnapshot(snapshot: SessionSnapshotInput, hydrationRevision =
           error: false,
           callEntryId: identityFor(message as UnknownMessage),
           args: compactArgs(b.arguments),
-          agentName: b.name === "subagent" ? agentNameOfToolCall(b.arguments) : undefined,
+          ...(b.name === "subagent" ? subagentInputOfToolCall(b.arguments) : {}),
           skillName: b.name === "read" ? readSkillName(b.arguments) : undefined,
           order: next(),
         };
@@ -923,6 +946,29 @@ interface SubagentLaunchIdentity {
   childSessionId: string;
 }
 
+/** Native admission identity is available before the child's first model response.
+ * Legacy job envelopes remain supported below; history never infers live work
+ * solely from an old acknowledgement. */
+function admittedSubagentResult(
+  result: unknown,
+): { sessionId: string; running: boolean; error: boolean; latestMessage?: string } | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+  const outer = result as Record<string, unknown>;
+  const value =
+    outer.details && typeof outer.details === "object" && !Array.isArray(outer.details)
+      ? (outer.details as Record<string, unknown>)
+      : outer;
+  if (typeof value.sessionID !== "string" || !value.sessionID.trim()) return undefined;
+  if (!["running", "working", "completed", "complete", "cancelled", "error"].includes(String(value.status)))
+    return undefined;
+  return {
+    sessionId: value.sessionID,
+    running: value.status === "running" || value.status === "working",
+    error: value.status === "error" || value.status === "cancelled",
+    ...(typeof value.output === "string" && value.output.trim() ? { latestMessage: value.output } : {}),
+  };
+}
+
 function subagentLaunchIdentity(result: unknown, expectedToolCallId: string): SubagentLaunchIdentity | undefined {
   if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
   const details = (result as { details?: unknown }).details;
@@ -973,6 +1019,11 @@ function applyToolResult(
           latestMessage: undefined,
           latestActivity: undefined,
         };
+      }
+      const admitted = tool.name === "subagent" && !isError ? admittedSubagentResult(result) : undefined;
+      if (admitted) {
+        if (tool.supervised) return tool;
+        return { ...tool, ...admitted, supervised: true, done: !admitted.running, interrupted: undefined };
       }
       const finalText = usableText(outputText(result));
       const output = compactOutput(result);
@@ -1248,6 +1299,7 @@ export function terminateSessionRun(
 export function terminateDeletedSession(state: SessionViewState): SessionViewState {
   return {
     ...terminateSessionRun(state, true),
+    backgroundTasks: [],
     compactionState: "idle",
     retry: null,
     llmRecovery: null,
@@ -1581,7 +1633,7 @@ export function reduceSessionEvent(
                 name: typeof block.name === "string" ? block.name : "tool",
                 args: compactArgs(block.arguments),
                 skillName: block.name === "read" ? readSkillName(block.arguments) : undefined,
-                agentName: block.name === "subagent" ? agentNameOfToolCall(block.arguments) : undefined,
+                ...(block.name === "subagent" ? subagentInputOfToolCall(block.arguments) : {}),
                 running: false,
                 done: false,
                 error: false,
@@ -1668,7 +1720,7 @@ export function reduceSessionEvent(
             done: false,
             error: false,
             args: compactArgs(args),
-            agentName: toolName === "subagent" ? agentNameOfToolCall(args) : undefined,
+            ...(toolName === "subagent" ? subagentInputOfToolCall(args) : {}),
             skillName: toolName === "read" ? readSkillName(args) : undefined,
             order: state.nextOrder,
           },

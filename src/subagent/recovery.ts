@@ -30,14 +30,13 @@ const UNMATERIALIZED_ERROR = "Subagent recovery could not validate an exact mate
 
 function ownerSessionPath(
   coordinator: SubagentCoordinator,
-  state: SubagentJournalState,
   ownerSessionId: string,
 ): string | undefined {
   const root = coordinator.getRootSessionManager();
   if (ownerSessionId === root.getSessionId()) return root.getSessionFile();
 
   const paths = new Set<string>();
-  for (const job of state.jobs.values()) {
+  for (const job of coordinator.ownedJournal().jobs.values()) {
     if (job.childSessionId === ownerSessionId && job.sessionPath) paths.add(job.sessionPath);
   }
   return paths.size === 1 ? [...paths][0] : undefined;
@@ -73,12 +72,13 @@ export async function recoverSubagentTree(options: {
     acknowledgedBatchIds: [],
     notifications: [],
   };
-  const initialState = options.coordinator.journal();
+  const initialState = options.coordinator.ownedJournal();
   if (initialState.jobs.size === 0 && initialState.pendingBatches.length === 0) return report;
 
   const deliver = async (batch: NotificationBatchRecord): Promise<boolean> => {
-    const state = options.coordinator.journal();
-    const path = ownerSessionPath(options.coordinator, state, batch.ownerSessionId);
+    const state = options.coordinator.ownedJournal();
+    if (!state.pendingBatches.some((owned) => owned.batchId === batch.batchId && owned.ownerSessionId === batch.ownerSessionId)) return false;
+    const path = ownerSessionPath(options.coordinator, batch.ownerSessionId);
     if (!path) return false;
     const inspected = await options.store.inspect(path);
     if (
@@ -86,6 +86,10 @@ export async function recoverSubagentTree(options: {
       || inspected.sessionId !== batch.ownerSessionId
       || inspected.cwd !== options.expectedCwd
     ) return false;
+    const stillOwned = () => options.coordinator.ownedJournal().pendingBatches.some((owned) =>
+      owned.batchId === batch.batchId && owned.ownerSessionId === batch.ownerSessionId && owned.content === batch.content)
+      && ownerSessionPath(options.coordinator, batch.ownerSessionId) === path;
+    if (!stillOwned()) return false;
 
     await options.store.appendHiddenMessage(path, {
       customType: AGENT_STATUS_TYPE,
@@ -93,6 +97,7 @@ export async function recoverSubagentTree(options: {
       display: false,
       details: { batchId: batch.batchId, ...(batch.outcomes ? { outcomes: batch.outcomes } : {}) },
     });
+    if (!stillOwned()) return false;
     options.coordinator.acknowledgeNotification(batch.batchId);
     report.acknowledgedBatchIds.push(batch.batchId);
     report.notifications.push({
@@ -111,7 +116,7 @@ export async function recoverSubagentTree(options: {
     ownerJobs.push(job);
     outcomesByOwner.set(job.ownerSessionId, ownerJobs);
   };
-  const stateAfterPending = options.coordinator.journal();
+  const stateAfterPending = options.coordinator.ownedJournal();
   const pendingLaunchIds = new Set(stateAfterPending.pendingBatches.flatMap(({ launchIds }) => launchIds));
   for (const job of stateAfterPending.jobs.values()) {
     if (
@@ -124,7 +129,12 @@ export async function recoverSubagentTree(options: {
     addOutcome(job);
   }
 
-  for (const initialJob of [...options.coordinator.journal().jobs.values()]) {
+  for (const snapshot of [...options.coordinator.ownedJournal().jobs.values()]) {
+    const initialJob = options.coordinator.ownedJournal().jobs.get(snapshot.launchId);
+    if (!initialJob) continue;
+    // Modern claims are resumed only after live owner binding and verified prior-owner death.
+    // Historical journals retain their conservative interrupted-error behavior.
+    if (initialJob.background || initialJob.description !== undefined) continue;
     if (initialJob.terminalSuppressed) continue;
     if (initialJob.terminalStatus) {
       if (initialJob.status === initialJob.terminalStatus) continue;
@@ -137,11 +147,11 @@ export async function recoverSubagentTree(options: {
           : { latestAssistantText: initialJob.latestAssistantText }),
         ...(initialJob.errorMessage === undefined ? {} : { errorMessage: initialJob.errorMessage }),
       });
-      const promoted = options.coordinator.journal().jobs.get(initialJob.launchId);
+      const promoted = options.coordinator.ownedJournal().jobs.get(initialJob.launchId);
       if (
         promoted
         && !pendingLaunchIds.has(promoted.launchId)
-        && !options.coordinator.journal().acknowledgedNotificationLaunchIds.has(promoted.launchId)
+        && !options.coordinator.ownedJournal().acknowledgedNotificationLaunchIds.has(promoted.launchId)
       ) addOutcome(promoted);
       continue;
     }
@@ -157,6 +167,8 @@ export async function recoverSubagentTree(options: {
     }
 
     const inspected = await options.store.inspect(sessionPath);
+    const stillOwned = options.coordinator.ownedJournal().jobs.get(initialJob.launchId);
+    if (!stillOwned || stillOwned.childSessionId !== childSessionId || stillOwned.sessionPath !== sessionPath) continue;
     if (
       !inspected.readable
       || inspected.sessionId !== childSessionId
@@ -177,16 +189,16 @@ export async function recoverSubagentTree(options: {
       latestAssistantText: inspected.latestAssistantText ?? initialJob.latestAssistantText,
       errorMessage: INTERRUPTION_ERROR,
     });
-    const recovered = options.coordinator.journal().jobs.get(initialJob.launchId);
+    const recovered = options.coordinator.ownedJournal().jobs.get(initialJob.launchId);
     if (!recovered) continue;
     addOutcome(recovered);
     report.interruptedLaunchIds.push(initialJob.launchId);
   }
 
   for (const [ownerSessionId, jobs] of outcomesByOwner) {
-    const state = options.coordinator.journal();
+    const state = options.coordinator.ownedJournal();
     const outcomes = jobs.flatMap((job) =>
-      job.sessionPath
+      job.sessionPath && state.jobs.get(job.launchId)?.ownerSessionId === ownerSessionId
         ? [{
             launchId: job.launchId,
             agentId: job.agentId,
@@ -206,7 +218,7 @@ export async function recoverSubagentTree(options: {
         .map((job) => job.agentId),
       outcomes,
     });
-    const batchId = nextBatchId(state);
+    const batchId = nextBatchId(options.coordinator.journal());
     options.coordinator.recordNotificationBatch({
       batchId,
       ownerSessionId,
@@ -215,7 +227,7 @@ export async function recoverSubagentTree(options: {
       outcomes: completionOutcomes(outcomes),
       triggerTurn: false,
     });
-    const batch = options.coordinator.journal().pendingBatches.find(
+    const batch = options.coordinator.ownedJournal().pendingBatches.find(
       (candidate) => candidate.batchId === batchId,
     );
     if (batch) await deliver(batch);

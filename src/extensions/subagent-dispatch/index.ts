@@ -12,6 +12,7 @@ import {
 } from "../../subagent/tool";
 import type { SubagentSupervisor } from "../../subagent/supervisor";
 import type { CreateSubagentToolOptions } from "../../subagent/tool";
+import type { AgentConfig } from "../../subagent/agents";
 
 /**
  * ADR-063: atomic extension registering the `subagent` dispatch tool for the
@@ -28,12 +29,12 @@ export interface SubagentDispatchExtensionOptions {
 /** Research Assistant dispatch follows the accepted caller row and target catalog. */
 export function createSubagentDispatchExtension(options: SubagentDispatchExtensionOptions): InlineExtension {
   return (pi) => {
-    const callerAgent = options.binding.current().name;
-    const makeTool = (available: readonly string[]) => createSubagentTool({
+    const makeTool = (available: readonly AgentConfig[]) => createSubagentTool({
       coordinator: options.coordinator,
       supervisor: options.supervisor,
       liveConfiguration: options.liveConfiguration,
-      callerAgent,
+      callerAgent: options.binding.current().name,
+      getCallerThinking: () => options.binding.thinking(),
       description: formatSubagentDescription(available),
     });
     const setDispatchActive = (enabled: boolean) => {
@@ -51,13 +52,13 @@ export function createSubagentDispatchExtension(options: SubagentDispatchExtensi
         await withCurrentAgentCatalog(options.liveConfiguration, ctx.cwd, ({ generation, agents }) => {
           if (options.binding.generation() !== generation) return;
           const caller = options.binding.current();
-          const available = filterAgentsByAllowlist(agents, caller.subagents, callerAgent);
+          const available = filterAgentsByAllowlist(agents, caller.subagents, caller.name);
           const canDispatch = caller.enabled && caller.subagents?.length !== 0;
           if (
             options.binding.generation() !== generation ||
             options.liveConfiguration.generation !== generation
           ) return;
-          if (canDispatch) pi.registerTool(makeTool(available.map((agent) => agent.name)));
+          if (canDispatch) pi.registerTool(makeTool(available));
           setDispatchActive(canDispatch && (caller.tools === undefined || caller.tools.includes("subagent")));
         }, { maxGenerationRetries: 0 });
       } catch (error) {

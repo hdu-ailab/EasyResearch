@@ -1,5 +1,6 @@
 import { memo, type Ref, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import type { FileContentDto, FileEntryDto, FileRenameResultDto } from "../../../web/contracts";
+import type { FileLineRange } from "../../../web/file-reference-contracts";
 import { readFileContent } from "../api";
 import { EMPTY_FILE_EVENTS, parentPath, type QueuedFileWatcherEvent } from "../file-watcher";
 import { filesystemPathName } from "../filesystem-path";
@@ -25,7 +26,7 @@ export interface FileBrowserProps {
 }
 
 export interface FileBrowserHandle {
-  openPath(path: string): void;
+  openPath(path: string, selection?: FileLineRange): void;
 }
 
 /**
@@ -55,8 +56,8 @@ function FileBrowserScope({
   const { visible } = activity.current;
   useEffect(() => {
     if (visible) return;
-    browserRef.current?.querySelectorAll("video").forEach((video) => {
-      video.pause();
+    browserRef.current?.querySelectorAll<HTMLMediaElement>("audio, video").forEach((media) => {
+      media.pause();
     });
     const releaseOwnedFullscreen = async () => {
       if (activity.current.visible) return;
@@ -74,6 +75,8 @@ function FileBrowserScope({
   }, [visible, activity]);
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
+  const [selections, setSelections] = useState<Record<string, FileLineRange | undefined>>({});
+  const [selectionKey, setSelectionKey] = useState(0);
   const [contents, setContents] = useState<Record<string, FileContentDto>>({});
   const [contentRevision, setContentRevision] = useState<Record<string, number>>({});
   const [treeVisible, setTreeVisible] = useState(true);
@@ -144,7 +147,7 @@ function FileBrowserScope({
     if (!activeTab) return;
     if (activeContent) return;
     const kind = previewKind(activeTab);
-    if (["pdf", "docx", "image", "video", "html"].includes(kind)) {
+    if (["pdf", "docx", "image", "audio", "video", "font", "spreadsheet", "presentation", "html"].includes(kind)) {
       setContents((current) => ({
         ...current,
         [activeTab]: { path: activeTab, content: "", byteCount: 0, truncated: false, binary: false },
@@ -182,6 +185,7 @@ function FileBrowserScope({
   const activateTab = useCallback((path: string) => {
     if (activeRead.current?.path !== path) activeRead.current = null;
     setActiveTab(path);
+    setSelectionKey((current) => current + 1);
     setMobileTreeVisible(false);
   }, []);
 
@@ -194,7 +198,8 @@ function FileBrowserScope({
   );
 
   const openPath = useCallback(
-    (path: string) => {
+    (path: string, selection?: FileLineRange) => {
+      setSelections((current) => ({ ...current, [path]: selection }));
       openFile({ kind: "file", path, name: filesystemPathName(path) });
     },
     [openFile],
@@ -203,6 +208,11 @@ function FileBrowserScope({
   useImperativeHandle(ref, () => ({ openPath }), [openPath]);
 
   const fileRenamed = useCallback(({ oldPath, entry }: FileRenameResultDto) => {
+    setSelections((current) => {
+      const next = { ...current, [entry.path]: current[oldPath] };
+      delete next[oldPath];
+      return next;
+    });
     if (activeRead.current && [oldPath, entry.path].includes(activeRead.current.path)) activeRead.current = null;
     setTabs((current) => {
       const opened = current.some((tab) => tab.path === oldPath);
@@ -227,6 +237,12 @@ function FileBrowserScope({
 
   const closeTab = useCallback(
     (path: string) => {
+      setSelections((current) => {
+        const next = { ...current };
+        delete next[path];
+        return next;
+      });
+      setSelectionKey((current) => current + 1);
       if (activeRead.current?.path === path) activeRead.current = null;
       const index = tabs.findIndex((tab) => tab.path === path);
       const next = tabs.filter((tab) => tab.path !== path);
@@ -276,6 +292,8 @@ function FileBrowserScope({
           <FilePreview
             path={activeTab}
             revision={activeRevision}
+            selection={selections[activeTab]}
+            selectionKey={selectionKey}
             textFile={contents[activeTab] ?? null}
             onOpenFile={openPath}
           />

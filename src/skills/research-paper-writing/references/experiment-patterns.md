@@ -419,42 +419,29 @@ Always include in the paper:
 
 ---
 
-## Monitoring (Cron Pattern)
+## Completion-Driven Evidence Review
 
-### Cron Prompt Template
+Experiment owns execution and its selected-root records. Writing consumes the
+accepted handoff and evidence; it does not run a cron monitor, poll processes or
+logs, duplicate trials, or modify the experiment root. While required evidence
+is pending, do independent writing-readiness work or end the response and await
+automatic resumption through the caller's workflow.
 
-For each experiment batch, create a monitoring prompt:
+Managed background work reports through `<background-result>` harness notices,
+not human user speech. Never fabricate or reproduce their XML. A child reports
+after each busy period, including outstanding descendant/shell work, so an idle
+report is not proof that its experiment has finished.
 
-```
-Check the status of the [EXPERIMENT_NAME] experiment:
+After an actual completed experiment outcome is handed off:
 
-1. Process check: ps aux | grep [PROCESS_PATTERN]
-2. Log check: tail -30 [LOG_FILE]
-3. Results check: ls [RESULT_DIR]/eval/ (or appropriate result location)
-4. If results are available:
-   - Read the result JSON files
-   - Report metrics in a table (Borda scores, accuracy, etc.)
-   - Compute key comparisons between methods
-5. If all experiments in this batch are complete:
-   - Report whether the expected records and formal evidence exist
-    - Identify each missing selected-root artifact for Experiment or the Research Assistant to address
-   - Report final summary
-6. Key question: [SPECIFIC ANALYTICAL QUESTION]
+1. Read its exact experiment record, completed result files, and relevant failure
+   evidence; do not infer success from a PID, quiet log, or a file's existence.
+2. Compare completed versus expected runs and formal-evidence requirements.
+3. Report verified metrics and answer the assigned analytical question.
+4. Identify exact missing selected-root artifacts for Experiment or the Research
+   Assistant to address; Writing does not fill those gaps by running experiments.
 
-If nothing has changed since the last check, respond with [SILENT].
-```
-
-### Monitoring Best Practices
-
-1. **Check processes first** — don't read results if the experiment is still running and results are incomplete
-2. **Read the log tail** — look for errors, progress indicators, completion messages
-3. **Count completed vs expected** — "45/150 problems done" is more useful than "some results exist"
-4. **Report in structured tables** — always include key metrics in a table
-5. **Answer the key question** — each experiment should have a specific analytical question to answer when done
-6. **[SILENT] for no-news** — suppress notifications when nothing has changed
-7. **Handoff on completion** — report existing evidence and identify exact missing record/result artifacts for Experiment or the Research Assistant; Writing does not modify the selected experiment root
-
-### Example Monitoring Report
+### Example Evidence Review
 
 ```
 ## Code Experiments (Haiku 3.5) - COMPLETE

@@ -56,7 +56,7 @@ const flatten = (entries: PresentationEntry[]) =>
   entries.flatMap((entry) => ("kind" in entry && entry.kind === "activity-group" ? entry.entries : [entry]));
 
 describe("transcript presentation projection", () => {
-  it.each(["bash", "powershell", "ssh-bash"])("classifies %s as command execution", (name) => {
+  it.each(["shell", "bash", "powershell", "ssh-bash"])("classifies %s as command execution", (name) => {
     expect(activityCategory(tool("call", 0, { name }))).toBe("shell");
   });
   it.each(["edit", "write", "patch", "apply_patch"])("classifies %s as file changes", (name) => {

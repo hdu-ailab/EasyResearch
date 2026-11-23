@@ -147,7 +147,10 @@ export function SubagentToolCard({
               <Check className="shrink-0 text-v2-status-success" size={14} aria-hidden />
             ) : null}
             {tool.error ? <AlertTriangle className="shrink-0 text-v2-status-error" size={14} aria-hidden /> : null}
-            <span className="min-w-0 flex-1 truncate font-medium text-v2-text-text-base">{agentName}</span>
+            <span className="min-w-0 flex-1 truncate font-medium text-v2-text-text-base" title={tool.taskDescription}>
+              {agentName}
+              {tool.taskDescription ? ` · ${tool.taskDescription}` : ""}
+            </span>
             {agentId ? (
               <span className="shrink-0 rounded bg-v2-grey-100 px-1.5 py-0.5 font-mono text-[10.5px] text-v2-text-text-muted">
                 {agentId}

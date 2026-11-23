@@ -62,30 +62,29 @@ describe("ssh-bash tool", () => {
     expect(ssh.configure).not.toHaveBeenCalled();
   });
 
-  it("runs bounded commands for Experiment without returning credential metadata", async () => {
+  it("rejects unmanaged execution instead of silently ignoring background ownership", async () => {
     const ssh = runtime();
     const tool = createSshBashTool({ runtime: ssh, allowConfigure: false });
 
-    const result = await tool.execute("call-3", {
+    await expect(tool.execute("call-3", {
       action: "run",
       command: "nvidia-smi",
-      timeout: 60,
-    }, new AbortController().signal, undefined, context);
-
-    expect(ssh.run).toHaveBeenCalledWith("/project", "nvidia-smi", 60, expect.anything(), expect.any(Function));
-    expect(result.content).toEqual([{ type: "text", text: "remote output\n" }]);
-    expect(result.details).toEqual({ exitCode: 0 });
+      timeout: 60_000,
+      background: true,
+    }, new AbortController().signal, undefined, context)).rejects.toThrow(/Managed SSH execution is unavailable/);
+    expect(ssh.run).not.toHaveBeenCalled();
   });
 
-  it("rejects a nonzero remote command as a tool error", async () => {
+  it("rejects a mismatched exact-cwd owner before reading connection credentials", async () => {
     const ssh = runtime();
-    ssh.run = vi.fn(async () => ({ stdout: "", stderr: "permission denied", exitCode: 1 }));
-    const tool = createSshBashTool({ runtime: ssh, allowConfigure: false });
+    const tool = createSshBashTool({ runtime: ssh, allowConfigure: false,
+      manager: {} as never, owner: () => ({ sessionID: "child", cwd: "/other-project" }) });
 
     await expect(tool.execute("call-4", {
       action: "run",
       command: "test -w /srv/paper",
-      timeout: 30,
-    }, new AbortController().signal, undefined, context)).rejects.toThrow(/permission denied/i);
+      timeout: 30_000,
+    }, new AbortController().signal, undefined, context)).rejects.toThrow(/exact session cwd/i);
+    expect(ssh.run).not.toHaveBeenCalled();
   });
 });

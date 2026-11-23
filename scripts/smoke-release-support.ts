@@ -13,6 +13,7 @@ import { isAbsolute, join, posix, win32 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { BundledModelAddition, BundledModelRemoval } from "../src/runtime/bundled-model-additions";
 import type { NativeLocalShellTool } from "../src/runtime/platform-tools";
+import { smokeBackgroundReports, smokeSubagentSessionID } from "./smoke-agent-scenario";
 import { parseTimelineEntryAppendedEvent } from "../src/webui/src/api/parsers";
 import {
   DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER, isProcessAlive, readServerProcess,
@@ -1582,6 +1583,7 @@ export interface SmokeModelScenario {
 }
 
 export interface SmokeModelState {
+  childSessionID?: string;
   baselineConfigurationGeneration: number | undefined;
   externalResourcesWritten: boolean;
   acceptedConfigurationGeneration: number | undefined;
@@ -1683,34 +1685,15 @@ function messageContentText(content: unknown): string {
 
 function hasSuccessfulTerminalHandoff(
   messages: Array<{ role?: string; content?: unknown }> | undefined,
-  agentId: string,
+  sessionID: string,
 ): boolean {
-  const terminalMessages = messages
-    ?.filter((message) => message.role === "user")
-    .map((message) => messageContentText(message.content))
-    .filter((content) => content.includes("<agent_status>") || content.includes("<agent_handoff>"))
-    ?? [];
-  if (terminalMessages.length === 0) return false;
-  if (terminalMessages.length !== 1) {
-    throw new Error(`native smoke expected exactly one atomic terminal notification, received ${terminalMessages.length}`);
-  }
-
-  const normalized = terminalMessages[0]!.replaceAll("\r\n", "\n").trim();
-  const match = normalized.match(
-    /^<agent_status>\n([\s\S]*?)\n<\/agent_status>\n<agent_handoff>\n([\s\S]*?)\n<\/agent_handoff>$/u,
-  );
-  const status = match?.[1];
-  const handoff = match?.[2];
-  const completeLines = status
-    ?.split("\n")
-    .filter((line) => line.trim() === `Complete subagent:${agentId}`)
-    ?? [];
-  if (
-    completeLines.length !== 1
-    || status?.includes("session_path")
-    || handoff?.trim() !== `Agent: ${agentId}\nResult: ${STAGE_COMPLETION}`
-  ) {
-    throw new Error(`native smoke received a malformed atomic terminal notification: ${normalized}`);
+  const reports = smokeBackgroundReports({ messages }).filter(report => report.kind === "subagent" && report.sessionID === sessionID);
+  if (reports.some(report => report.state === "error" || report.state === "cancelled")) throw new Error("native smoke child background task failed");
+  const terminal = reports.filter(report => report.state === "completed");
+  if (!terminal.length) return false;
+  if (terminal.length !== 1) throw new Error("native smoke expected exactly one background terminal notification");
+  if (terminal[0]!.text !== STAGE_COMPLETION || terminal[0]!.text.includes("session_path")) {
+    throw new Error("native smoke received a malformed background terminal handoff");
   }
   return true;
 }
@@ -1718,7 +1701,7 @@ function hasSuccessfulTerminalHandoff(
 export function selectSmokeModelAction(
   request: {
     tools?: Array<{ function?: { name?: string; description?: string } }>;
-    messages?: Array<{ role?: string; content?: unknown; tool_call_id?: string }>;
+    messages?: Array<{ role?: string; content?: unknown; tool_call_id?: string; details?: unknown }>;
   },
   scenario: SmokeModelScenario,
   state: SmokeModelState,
@@ -1742,9 +1725,7 @@ export function selectSmokeModelAction(
   const toolNames = new Set(tools.map((tool) => tool.function?.name));
   const shellTools = tools
     .map((tool) => tool.function?.name)
-    .filter((name): name is NativeLocalShellTool =>
-      name === "bash" || name === "powershell"
-    );
+    .filter((name) => name === "shell" || name === "bash" || name === "powershell");
   if (shellTools.length !== 1 || shellTools[0] !== scenario.shellToolName) {
     throw new Error(
       `native smoke expected exactly one local shell tool named ${scenario.shellToolName}; received ${shellTools.join(", ") || "none"}`,
@@ -1763,7 +1744,6 @@ export function selectSmokeModelAction(
     throw new Error("native smoke model request arrived before root configuration application");
   }
   if (state.complete) throw new Error("native smoke model sequence is already complete");
-  const agentId = `${scenario.agentName}_0`;
 
   const transition = (
     action: SmokeModelAction,
@@ -1795,13 +1775,9 @@ export function selectSmokeModelAction(
     return description;
   };
   const descriptionListsAgent = (description: string): boolean => {
-    const prefix = "Available subagents: ";
-    const line = description.split(/\r?\n/u).find((candidate) => candidate.startsWith(prefix));
-    if (!line?.endsWith(".")) return false;
-    return line
-      .slice(prefix.length, -1)
-      .split(", ")
-      .includes(scenario.agentName);
+    const lines = description.split(/\r?\n/u);
+    const start = lines.indexOf("Available subagents:");
+    return start >= 0 && lines.slice(start + 1).some(line => line === `- ${scenario.agentName}` || line.startsWith(`- ${scenario.agentName}: `));
   };
 
   if (toolNames.has("write")) {
@@ -1820,22 +1796,22 @@ export function selectSmokeModelAction(
         name: "subagent",
         arguments: JSON.stringify({
           agent: scenario.agentName,
-          task: `Run the native venv validation command with the ${scenario.shellToolName} tool and return a complete handoff.`,
+          description: "Validate native skill environment",
+          prompt: `Run the native venv validation command with the ${scenario.shellToolName} tool and return a complete handoff.`,
         }),
       }, { customDispatchIssued: true });
     }
     if (!descriptionListsAgent(description)) {
       throw new Error(`native smoke parent lost ${scenario.agentName} from the refreshed subagent schema`);
     }
-    const working = expectedToolResult("call_native_reviewer");
-    if (working !== `${agentId} is working.`) {
-      throw new Error(`subagent tool result was not exactly ${agentId} is working.: ${working}`);
-    }
-    const terminalHandoffObserved = hasSuccessfulTerminalHandoff(request.messages, agentId);
+    expectedToolResult("call_native_reviewer");
+    const childSessionID = smokeSubagentSessionID(request.messages!.find(message => message.role === "tool" && message.tool_call_id === "call_native_reviewer")!);
+    if (state.childSessionID && state.childSessionID !== childSessionID) throw new Error("native smoke child sessionID changed after admission");
+    const terminalHandoffObserved = hasSuccessfulTerminalHandoff(request.messages, childSessionID);
     if (!terminalHandoffObserved) {
       return transition(
         { kind: "text", text: "Parent waiting for supervised completion." },
-        { parentWorkingObserved: true },
+        { parentWorkingObserved: true, childSessionID },
       );
     }
     if (!state.childSkillObserved || !state.venvValidated || !state.stageCompleted) {
@@ -1845,7 +1821,7 @@ export function selectSmokeModelAction(
     }
     return transition(
       { kind: "text", text: "Parent smoke run complete." },
-      { parentWorkingObserved: true, terminalHandoffObserved: true, complete: true },
+      { parentWorkingObserved: true, childSessionID, terminalHandoffObserved: true, complete: true },
     );
   }
 
@@ -1877,7 +1853,7 @@ export function selectSmokeModelAction(
         kind: "tool",
         id: "call_native_venv",
         name: scenario.shellToolName,
-        arguments: JSON.stringify({ command: scenario.toolCommand, timeout: 60 }),
+        arguments: JSON.stringify({ command: scenario.toolCommand, timeout: 60_000 }),
       }, { childSkillObserved: true, stageShellIssued: true });
     }
     if (state.stageCompleted) {

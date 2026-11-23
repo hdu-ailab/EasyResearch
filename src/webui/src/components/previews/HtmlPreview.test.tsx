@@ -35,6 +35,22 @@ const reads = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "
 const deletes = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE").map(([path]) => path);
 
 describe("interactive HTML preview", () => {
+  it("starts in inert source for a line range and re-reveals a new selection without recreating a capability", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <HtmlPreview path="/p/report.html" selection={{ start: 1, end: 1 }} selectionKey={1} />,
+    );
+    expect(await screen.findByText(/<h1 id="authored-source">/)).toBeVisible();
+    expect(creates()).toHaveLength(0);
+    expect(document.querySelector("mark")).toHaveTextContent("Source report");
+    await user.click(screen.getByRole("button", { name: "Preview" }));
+    await screen.findByTitle("HTML preview");
+    rerender(<HtmlPreview path="/p/report.html" selection={{ start: 1, end: 1 }} selectionKey={2} />);
+    expect(await screen.findByText(/<h1 id="authored-source">/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Source" })).toHaveAttribute("aria-pressed", "true");
+    expect(creates()).toHaveLength(1);
+    await waitFor(() => expect(deletes()).toContain("/api/file/preview/cap-1"));
+  });
   it("keeps folder access and supported local dependencies reachable in a native disclosure", async () => {
     const user = userEvent.setup();
     render(<HtmlPreview path="/p/report.html" />);

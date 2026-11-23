@@ -1,0 +1,153 @@
+.er-background-capsule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-block-end: 8px;
+  color: var(--color-v2-text-text-muted);
+  font-size: 12px;
+}
+.er-background-trigger {
+  display: inline-flex;
+  max-inline-size: 100%;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-v2-grey-200);
+  border-radius: 999px;
+  padding: 4px 10px;
+  min-block-size: 32px;
+}
+.er-background-panel {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  inline-size: min(360px, calc(100vw - 16px));
+  border: 1px solid var(--color-v2-grey-200);
+  border-radius: 10px;
+  padding: 4px;
+  background: var(--color-v2-background-bg-base);
+  color: var(--color-v2-text-text-muted);
+  box-shadow: var(--v2-elevation-overlay);
+  font-size: 12px;
+}
+.er-background-panel-shell {
+  inline-size: min(560px, calc(100vw - 16px));
+}
+.er-background-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.er-background-heading {
+  min-inline-size: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  padding-inline: 4px;
+}
+.er-background-panel-shell .er-background-heading {
+  font-family: var(--v2-font-family-code, monospace);
+}
+.er-background-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 32px;
+  min-block-size: 32px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  flex: none;
+}
+.er-background-action:disabled,
+.er-background-trigger:disabled {
+  opacity: 0.5;
+}
+.er-background-action:hover:not(:disabled),
+.er-background-task:hover,
+.er-background-trigger:hover:not(:disabled) {
+  background: var(--color-v2-grey-100);
+}
+.er-background-list {
+  min-block-size: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+}
+.er-background-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.er-background-list li > svg {
+  flex: none;
+}
+.er-background-task {
+  min-inline-size: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: start;
+  min-block-size: 32px;
+  padding: 4px;
+  border-radius: 4px;
+}
+.er-background-task[data-kind="shell"] {
+  font-family: var(--v2-font-family-code, monospace);
+}
+.er-background-elapsed {
+  flex: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.er-background-end {
+  flex: none;
+}
+.er-background-end[data-failed] {
+  color: var(--color-v2-status-error);
+}
+.er-background-output {
+  min-block-size: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 8px 10px;
+  margin: 4px;
+  border-radius: 6px;
+  background: var(--color-v2-background-bg-deep);
+}
+.er-background-output pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 13px / 1.5 var(--v2-font-family-code, monospace);
+}
+.er-background-empty {
+  color: var(--color-v2-text-text-muted);
+}
+.er-background-error {
+  color: var(--color-v2-status-error);
+  margin: 4px;
+  overflow-wrap: anywhere;
+}
+.er-background-panel :is(button, [tabindex]):focus-visible,
+.er-background-capsule button:focus-visible {
+  outline: 2px solid var(--color-v2-blue-600);
+  outline-offset: 2px;
+}
+@media (pointer: coarse), (max-width: 819px) {
+  .er-background-action,
+  .er-background-task,
+  .er-background-trigger {
+    min-block-size: 44px;
+  }
+  .er-background-action {
+    min-inline-size: 44px;
+  }
+}

@@ -1,4 +1,6 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { BackgroundTask } from "../background/contracts";
+export type { BackgroundTask, BackgroundTasksChangedEvent } from "../background/contracts";
 import type {
   SubagentJobStatus,
   SubagentSupervisorEvent,
@@ -100,6 +102,7 @@ export interface ActiveSessionDto {
 
 export interface SessionSnapshotDto {
   session: ActiveSessionDto;
+  backgroundTasks?: BackgroundTask[];
   automaticRetry?: AutomaticRetryDto | null;
   llmRecovery?: LlmRecoveryDto | null;
   runtimeConfigurationGeneration: number;

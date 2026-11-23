@@ -28,6 +28,7 @@ import { isEmbeddedBuild } from "../../runtime/bundled-assets";
 import { startCliDaemonSuccessor } from "../daemon-spawn";
 import { localHttpOrigin } from "../local-http";
 import type { RuntimeRestartReservation } from "../../web/runtime-restart";
+import type { Server } from "../../web/server";
 
 export interface ServeOptions {
   owner?: ServerOwner;
@@ -57,10 +58,11 @@ export async function runServe(
   delete environment[DAEMON_OWNER_ENV];
   const agentDir = getAgentDir();
   const bootId = randomUUID();
-  let server: { port: number; stop: () => Promise<void> } | undefined;
+  let server: Server | undefined;
   let serverLease: RuntimeLease | undefined;
   let ownsRecord = false;
   let serverStopped = false;
+  let backgroundHandoffPrepared = false;
   let leaseReleased = false;
   let restartTransition: RuntimeLease | undefined;
   let restartTransitionReleaseAttempted = false;
@@ -84,6 +86,21 @@ export async function runServe(
   const signalShutdown = () => requestTerminalShutdown();
   let unregisterShutdownTrigger: (() => void) | undefined;
   let exitCode = 1;
+
+  const revokePreparedBackground = async () => {
+    if (!backgroundHandoffPrepared || !server) return;
+    // The predecessor may have released its server lease while awaiting readiness.
+    // Reacquisition proves the successor has stopped its writers before fresh native
+    // root/child journals are opened. A still-live successor remains fail-closed.
+    const revocationLease = serverLease?.held ? undefined
+      : await acquireServerLease(agentDir, owner, token, { timeoutMs: 0 });
+    try {
+      await server.stop();
+      backgroundHandoffPrepared = false;
+    } finally {
+      if (revocationLease && !revocationLease.release()) throw new Error("EasyResearch could not release background-revocation ownership.");
+    }
+  };
 
   const reserveRestart = async (): Promise<RuntimeRestartReservation> => {
     if (terminalShutdownRequested || restartReservationActive || restartTransition) {
@@ -149,6 +166,7 @@ export async function runServe(
     server = await startServer({
       host,
       port,
+      ownsExclusiveServerLease: serverLease.held,
       bootId,
       networkPolicy,
       daemonControl: {
@@ -181,7 +199,11 @@ export async function runServe(
     await shutdownRequested;
     // Let the authenticated control response flush before closing the listener.
     await new Promise((resolve) => setTimeout(resolve, 25));
-    await server.stop();
+    backgroundHandoffPrepared = restartWasCommitted() && !terminalShutdownRequested;
+    await server.stop(backgroundHandoffPrepared ? { restart: true } : undefined);
+    if (terminalShutdownRequested && backgroundHandoffPrepared) {
+      await revokePreparedBackground();
+    }
     serverStopped = true;
     if (!removeServerPid(agentDir, token, serverLease)) {
       throw new Error("EasyResearch server stopped but could not release its ownership record.");
@@ -254,6 +276,13 @@ export async function runServe(
       }
     }
   } finally {
+    if (terminalShutdownRequested && backgroundHandoffPrepared && server) {
+      try { await revokePreparedBackground(); }
+      catch (error) {
+        exitCode = 1;
+        createLogger("web-server").error(`EasyResearch terminal background cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     unregisterShutdownTrigger?.();
     process.removeListener("SIGTERM", signalShutdown);
     process.removeListener("SIGINT", signalShutdown);

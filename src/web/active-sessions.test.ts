@@ -16,6 +16,7 @@ import type {
 } from "./session-adapter";
 import type { Logger } from "../runtime/logger";
 import type { FileWatcherEvent, FileWatcherFactory } from "./file-watcher";
+import type { BackgroundTask } from "../background/contracts";
 
 const [loggerMock, createLoggerMock] = vi.hoisted(() => {
   const mockLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -56,6 +57,14 @@ interface FakeAdapterStats {
 }
 
 class FakeAdapter implements SessionAdapter {
+  tasks: BackgroundTask[] = [];
+  getBackgroundTasks() { return this.tasks.map((task) => ({ ...task })); }
+  async promoteBackground() { this.tasks.forEach((task) => { task.blocking = false; }); }
+  async cancelBackground(taskId: string) {
+    const task = this.tasks.find((task) => task.id === taskId);
+    if (!task) throw new Error("Unknown background task");
+    task.status = "cancelled";
+  }
   static all: FakeAdapter[] = [];
   static nextId = 0;
   events = new Set<(event: unknown) => void>();
@@ -81,6 +90,8 @@ class FakeAdapter implements SessionAdapter {
   supervisorActive = false;
   startImpl: () => Promise<void> = async () => {};
   stopImpl: () => Promise<void> = async () => {};
+  suspended = 0;
+  async suspend() { this.suspended += 1; }
   abortImpl: () => Promise<void> = async () => {};
   onEventCalls = 0;
   getStateImpl: (() => Promise<SessionState>) | undefined;
@@ -264,6 +275,37 @@ describe("ActiveSessionRegistry", () => {
     expect(factory.created[0]?.stats.started).toBe(1);
     expect(created.status).toBe("ready");
     expect(created.id).toBe(fakeState.sessionId);
+  });
+
+  it("scopes task snapshots, promotion and cancellation to their owning root", async () => {
+    const first = await registry.create({ cwd });
+    const second = await registry.create({ cwd: `${cwd}-other` });
+    const task = (id: string, sessionID: string): BackgroundTask => ({
+      id, sessionID, kind: "shell", description: "build", status: "running", blocking: true,
+    });
+    factory.created[0]!.tasks = [task("first-command", first.id)];
+    factory.created[1]!.tasks = [task("second-command", second.id)];
+    expect((await registry.snapshot(first.id)).backgroundTasks).toEqual(factory.created[0]!.tasks);
+    await registry.promoteBackground(first.id);
+    expect(factory.created[0]!.tasks[0]!.blocking).toBe(false);
+    expect(factory.created[1]!.tasks[0]!.blocking).toBe(true);
+    await expect(registry.cancelBackground(first.id, "second-command")).rejects.toThrow();
+    expect(factory.created[1]!.tasks[0]!.status).toBe("running");
+    await registry.cancelBackground(second.id, "second-command");
+    expect((await registry.backgroundTasks(second.id))[0]!.status).toBe("cancelled");
+    await registry.shutdown();
+  });
+
+  it("uses suspension for planned replacement and terminal cleanup for ordinary shutdown", async () => {
+    await registry.create({ cwd });
+    await registry.shutdown({ restart: true });
+    expect(factory.created[0]!.suspended).toBe(1);
+    expect(factory.created[0]!.stats.stopped).toBe(0);
+    const fresh = new ActiveSessionRegistry(factory, noopLogger, { idleTimeoutMs: -1 });
+    await fresh.create({ cwd });
+    await fresh.shutdown();
+    expect(factory.created[1]!.suspended).toBe(0);
+    expect(factory.created[1]!.stats.stopped).toBe(1);
   });
 
   describe("workspace mutation admission", () => {

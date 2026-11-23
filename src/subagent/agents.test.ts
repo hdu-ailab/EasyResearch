@@ -197,9 +197,9 @@ describe("discoverAgents (Markdown layers)", () => {
   });
 
   it.each([
-    ["win32", ["read", "powershell", "ssh-bash"]],
-    ["linux", ["read", "bash", "ssh-bash"]],
-    ["darwin", ["read", "bash", "ssh-bash"]],
+    ["win32", ["read", "shell", "ssh-bash"]],
+    ["linux", ["read", "shell", "ssh-bash"]],
+    ["darwin", ["read", "shell", "ssh-bash"]],
   ] as const)("normalizes strict local-shell names on %s", async (platform, expected) => {
     writeAgent(bundledDir, "experiment", [
       "tools: [read, bash, powershell, ssh-bash]",

@@ -25,7 +25,7 @@ export function createWriteRecoverySmoke(runId: string) {
   lanes.set("child", new SmokeAgentLane("write_child", makeSteps("child"), () => final("child")));
   lanes.set("root", new SmokeAgentLane("write_root", [
     ...makeSteps("root"),
-    { name: "subagent", args: () => ({ agent: "search", task: prompt("child") }), terminal: () => {
+    { name: "subagent", args: () => ({ agent: "search", description: "Recover native file writes", prompt: prompt("child") }), terminal: () => {
       assert(lanes.get("child")!.complete);
       return final("child");
     } },

@@ -29,18 +29,22 @@ export interface SshConnectionConfig {
 export interface SshExecutionRequest {
   config: SshConnectionConfig;
   command: string;
-  timeoutSeconds: number;
+  /** Bounded probes only. Managed command deadlines belong to the shell manager. */
+  timeoutSeconds?: number;
   signal: AbortSignal;
   password?: string;
   privateKey?: string;
   passphrase?: string;
   onUpdate?: (text: string) => void;
+  /** Streaming mode: raw combined chunks, without retained stdout/stderr copies. */
+  onOutput?: (chunk: Uint8Array) => void;
 }
 
 export interface SshExecutionResult {
   stdout: string;
   stderr: string;
-  exitCode: number;
+  exitCode: number | null;
+  signal?: string;
 }
 
 export interface SshBashRuntimeDependencies {
@@ -55,9 +59,10 @@ export interface SshBashRuntime {
   run(
     cwd: string,
     command: string,
-    timeoutSeconds: number,
+    timeoutSeconds: number | undefined,
     signal: AbortSignal,
     onUpdate?: (text: string) => void,
+    onOutput?: (chunk: Uint8Array) => void,
   ): Promise<SshExecutionResult>;
 }
 
@@ -270,11 +275,12 @@ export function createSshBashRuntime(deps: SshBashRuntimeDependencies): SshBashR
   const execute = async (
     cwd: string,
     command: string,
-    timeoutSeconds: number,
+    timeoutSeconds: number | undefined,
     signal: AbortSignal,
     onUpdate?: (text: string) => void,
+    onOutput?: (chunk: Uint8Array) => void,
   ): Promise<SshExecutionResult> => {
-    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 7200) {
+    if (timeoutSeconds === undefined ? !onOutput : !Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 7200) {
       throw new Error("ssh-bash timeout must be an integer from 1 through 7200 seconds");
     }
     if (signal.aborted) throw abortError("ssh-bash operation aborted");
@@ -292,6 +298,7 @@ export function createSshBashRuntime(deps: SshBashRuntimeDependencies): SshBashR
       timeoutSeconds,
       signal,
       onUpdate,
+      onOutput,
       ...readCredential(config, cwd),
     });
   };
