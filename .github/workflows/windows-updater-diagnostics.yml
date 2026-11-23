@@ -29,14 +29,16 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Restore diagnostic runner
         run: Copy-Item "$env:RUNNER_TEMP/diagnose-windows-update.ts" scripts/diagnose-windows-update.ts
-      - name: Diagnose using Bun
-        continue-on-error: true
-        run: bun scripts/diagnose-windows-update.ts
       - name: Diagnose using Node
         continue-on-error: true
         run: |
           bun build scripts/diagnose-windows-update.ts --target=node --format=esm --outfile "$env:RUNNER_TEMP/diagnose-windows-update.mjs"
           node "$env:RUNNER_TEMP/diagnose-windows-update.mjs"
+      # Earlier receipts ran Bun first. Reverse order to distinguish runtime
+      # behavior from cold PowerShell/CodeDOM initialization on a fresh runner.
+      - name: Diagnose using Bun
+        continue-on-error: true
+        run: bun scripts/diagnose-windows-update.ts
       - name: Retain bounded diagnostic receipts
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
