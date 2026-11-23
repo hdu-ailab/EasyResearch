@@ -1,0 +1,44 @@
+name: Windows updater diagnostics
+on:
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: Repository revision to diagnose
+        required: true
+        default: main
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Preserve diagnostic runner
+        run: Copy-Item scripts/diagnose-windows-update.ts "$env:RUNNER_TEMP/diagnose-windows-update.ts"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ inputs.source-ref }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: "1.4.0"
+      - run: bun install --frozen-lockfile
+      - name: Restore diagnostic runner
+        run: Copy-Item "$env:RUNNER_TEMP/diagnose-windows-update.ts" scripts/diagnose-windows-update.ts
+      - name: Diagnose using Bun
+        continue-on-error: true
+        run: bun scripts/diagnose-windows-update.ts
+      - name: Diagnose using Node
+        continue-on-error: true
+        run: |
+          bun build scripts/diagnose-windows-update.ts --target=node --format=esm --outfile "$env:RUNNER_TEMP/diagnose-windows-update.mjs"
+          node "$env:RUNNER_TEMP/diagnose-windows-update.mjs"
+      - name: Retain bounded diagnostic receipts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: windows-job-diagnostics
+          path: |
+            ${{ runner.temp }}/windows-job-diagnostic-*.json
+          if-no-files-found: warn
+          retention-days: 7
