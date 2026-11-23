@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runNpmUpdateProcess } from "./npm-update-process";
 
+// Windows Node needs SystemRoot to initialize its OS random-number provider.
+// Keep the fixture otherwise empty; production still receives the exact caller environment.
+const fixtureEnvironment = () => process.platform === "win32"
+  ? { SystemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT } : {};
+
 describe("owned updater processes", () => {
   it.skipIf(process.platform === "win32")("retains group cleanup after the root closes while an ignored-stdio descendant ignores TERM", async () => {
     const root = mkdtempSync(join(tmpdir(), "npm-process-tree-"));
@@ -33,16 +38,25 @@ describe("owned updater processes", () => {
     }
   });
   it("drains large output with a bounded capture and preserves argv literally", async () => {
-    const result = await runNpmUpdateProcess(process.execPath, ["-e", "process.stdout.write(process.argv[1]);process.stderr.write('x'.repeat(300000))", "literal ; $HOME"], { environment: {}, timeoutMs: 5000 });
+    const result = await runNpmUpdateProcess(process.execPath, ["-e", "process.stdout.write(process.argv[1]);process.stderr.write('x'.repeat(300000))", "literal ; $HOME"], { environment: fixtureEnvironment(), timeoutMs: 5000 });
     expect(result.code, JSON.stringify(result)).toBe(0);
     expect(result.stdout).toBe("literal ; $HOME");
     expect(result.stderr.length).toBeLessThanOrEqual(8192);
   });
   it("aborts and joins a process that ignores ordinary termination", async () => {
+    const root = mkdtempSync(join(tmpdir(), "npm-process-abort-"));
+    const ready = join(root, "ready");
     const abort = new AbortController();
-    const running = runNpmUpdateProcess(process.execPath, ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},100)"], { environment: {}, timeoutMs: 5000, signal: abort.signal, killAfterMs: 20 });
-    setTimeout(() => abort.abort(), 100);
-    await expect(running).rejects.toThrow(/cancel/i);
+    const running = runNpmUpdateProcess(process.execPath, ["-e", `process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},100)`], { environment: fixtureEnvironment(), timeoutMs: 5000, signal: abort.signal, killAfterMs: 20 });
+    void running.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 4000 });
+      abort.abort();
+      await expect(running).rejects.toThrow(/cancel/i);
+    } finally {
+      abort.abort(); await running.catch(() => {});
+      rmSync(root, { recursive: true, force: true });
+    }
   });
   it("does not spawn on an already-aborted operation", async () => {
     await expect(runNpmUpdateProcess("/unavailable/executable", [], { environment: {}, timeoutMs: 100, signal: AbortSignal.abort() })).rejects.toThrow();
