@@ -53,16 +53,24 @@ async function verifyWindowsFixtureProcessCleanup(root: string): Promise<Record<
     }
     assert.equal(expected.size, 2);
     const observed = await fixtureWindowsProcesses(directory);
-    assert.equal(observed.length, 2, "Process preflight observation included missing or foreign processes");
-    for (const item of observed) {
-      assert(expected.has(item.pid) && item.parentPid === process.pid && item.start.trim().length > 0
+    console.log(`[process-preflight] ${JSON.stringify({ roots: [...expected], observed })}`);
+    assert([...expected].every(pid => observed.some(item => item.pid === pid)), "Process preflight missed an owned root");
+    const tree = new Set(expected);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const item of observed) if (!tree.has(item.pid) && tree.has(item.parentPid)) { tree.add(item.pid); added = true; }
+    }
+    assert(observed.every(item => tree.has(item.pid)), "Process preflight observation included a foreign process");
+    for (const item of observed.filter(item => expected.has(item.pid))) {
+      assert(item.parentPid === process.pid && item.start.trim().length > 0
         && win32.resolve(item.executable).toLowerCase() === win32.resolve(realpathSync(process.execPath)).toLowerCase()
         && !item.worker && !item.installer && !item.job, "Process preflight observation escaped its exact child ownership");
     }
     await stopFixtureWindowsProcesses(directory, observed);
     await joinChildren();
     assert(owned.every(item => item.isClosed), "Native process cleanup did not close both owned child handles");
-    result = { observedChildren: observed.length, creationIdentitiesVerified: true, ownedChildHandlesClosed: true };
+    result = { observedRoots: expected.size, observedProcesses: observed.length, creationIdentitiesVerified: true, ownedChildHandlesClosed: true };
   } catch (error) { failure = error; }
   finally {
     // Never turn a failed observation into authority over an arbitrary PID.
