@@ -2,9 +2,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile, symlink, lstat, realpath } fro
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { backupWindowsInstallation, updateFileHash } from "./update-files";
+import { backupWindowsInstallation, physicalUpdateFilePath, updateFileHash } from "./update-files";
 
 it("uses the supplied physical reader for both identity checks and exact file bytes", async () => {
   const root = await mkdtemp(join(tmpdir(), "desktop-raw-update-"));
@@ -19,6 +19,30 @@ it("uses the supplied physical reader for both identity checks and exact file by
       read: path => { streamed = true; return createReadStream(path); },
     })).rejects.toThrow("physical identity unavailable");
     expect(streamed).toBe(false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("normalizes filesystem aliases while rejecting symbolic links in any path component", async () => {
+  const root = await mkdtemp(join(tmpdir(), "desktop-update-alias-"));
+  try {
+    const directory = join(root, "long installation"); await mkdir(directory);
+    const physical = join(directory, "app.asar"); await writeFile(physical, "archive bytes");
+    const alias = join(root, "SHORT~1", "app.asar");
+    let linked: string | undefined;
+    const reader = {
+      lstat: async (path: string) => {
+        const stat = await lstat(path === alias ? physical : path === dirname(alias) ? directory : path);
+        return path === linked ? Object.assign(stat, { isSymbolicLink: () => true }) : stat;
+      },
+      realpath: async () => physical,
+      read: (path: string) => createReadStream(path),
+    };
+    expect(await physicalUpdateFilePath(alias, reader)).toBe(physical);
+    expect(await updateFileHash(await physicalUpdateFilePath(alias, reader), reader)).toBe(createHash("sha256").update("archive bytes").digest("hex"));
+    for (const path of [alias, dirname(alias)]) {
+      linked = path;
+      await expect(physicalUpdateFilePath(alias, reader)).rejects.toThrow(/link/i);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

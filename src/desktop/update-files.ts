@@ -11,13 +11,33 @@ export interface UpdateFileReader {
 export type UpdateFileHasher = (path: string) => Promise<string>;
 const nativeReader: UpdateFileReader = { lstat, realpath, read: path => createReadStream(path) };
 
+export async function physicalUpdateFilePath(path: string, reader: UpdateFileReader = nativeReader): Promise<string> {
+  if (!isAbsolute(path) || path.includes("\0")) throw new Error("Invalid update file path.");
+  const expected = resolve(path);
+  const physical = await reader.realpath(expected);
+  const same = process.platform === "win32" ? physical.toLowerCase() === expected.toLowerCase() : physical === expected;
+  if (!same) {
+    // An 8.3 spelling names the same regular entries. A link/junction does not
+    // gain update authority merely because realpath can resolve its target.
+    let current = expected;
+    while (true) {
+      if ((await reader.lstat(current)).isSymbolicLink()) throw new Error("Linked update paths require a manual update.");
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  return physical;
+}
+
 export async function regularUpdateFile(path: string, max = 2 * 1024 * 1024 * 1024, reader: UpdateFileReader = nativeReader): Promise<number> {
   if (!isAbsolute(path) || path.includes("\0")) throw new Error("Invalid update file path.");
   const stat = await reader.lstat(path);
   const physical = await reader.realpath(path);
   const expected = resolve(path);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > max
-    || (process.platform === "win32" ? physical.toLowerCase() !== expected.toLowerCase() : physical !== expected)) throw new Error("Invalid update file.");
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Invalid update file type.");
+  if (stat.size <= 0 || stat.size > max) throw new Error("Invalid update file size.");
+  if (process.platform === "win32" ? physical.toLowerCase() !== expected.toLowerCase() : physical !== expected) throw new Error("Invalid update file identity.");
   return stat.size;
 }
 
