@@ -18,7 +18,12 @@ async function main(): Promise<void> {
     const files = [];
     for (const name of await readdir(directory).catch(() => [])) {
       const info = await stat(join(directory, name)).catch(() => undefined);
-      const item: Record<string, unknown> = { name, bytes: info?.size, directory: info?.isDirectory(), mode: info?.mode };
+      const item: Record<string, unknown> = { name, bytes: info?.size, directory: info?.isDirectory(), mode: info?.mode, created: info?.birthtimeMs, modified: info?.mtimeMs };
+      if (info?.isDirectory()) {
+        item.children = await readdir(join(directory, name)).catch(error => ({ error: (error as NodeJS.ErrnoException).code }));
+        const childAcl = spawnSync(win32.join(systemRoot, "System32", "icacls.exe"), [join(directory, name)], { encoding: "utf8", timeout: 5000 });
+        item.acl = childAcl.stdout?.slice(-4096); item.aclCode = childAcl.status;
+      }
       if (name === "ready.json" || name === "receipt.json") {
         try {
           const data = JSON.parse(await readFile(join(directory, name), "utf8"));
@@ -39,15 +44,15 @@ async function main(): Promise<void> {
       const code = mode === "echo" ? "process.stdout.write(JSON.stringify({pid:process.pid,cwd:process.cwd(),node:process.versions.node,bun:process.versions.bun}));"
         : `const fs=require('node:fs'),cp=require('node:child_process');const c=cp.spawn(process.execPath,['-e',${JSON.stringify(childSource)}],{detached:true,stdio:'ignore'});c.once('error',e=>{fs.writeFileSync(${JSON.stringify(join(area, "spawn-error.json"))},JSON.stringify({code:e.code,message:e.message}));process.exit(2)});c.once('spawn',()=>{fs.writeFileSync(${JSON.stringify(join(area, "root.json"))},JSON.stringify({pid:process.pid,child:c.pid}));c.unref();const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(leaf)})){clearInterval(t);process.exit(23)}},20);setTimeout(()=>process.exit(3),5000).unref()});`;
       const record: Record<string, unknown> = { mode }; (result.cases as unknown[]).push(record);
-      const start = performance.now();
+      const start = performance.now(); record.startedAt = Date.now();
       const job = await startWindowsUpdateJob(node, ["-e", code], { cwd: area, env: { ...process.env }, cleanupTimeoutMs: 5000 });
       record.guardPid = job.child.pid; record.createdMs = performance.now() - start;
       let output = "", errors = "";
-      job.child.stdout.on("data", chunk => { output = (output + chunk.toString()).slice(-4096); });
+      job.child.stdout.on("data", chunk => { record.firstOutputMs ??= performance.now() - start; output = (output + chunk.toString()).slice(-4096); });
       job.child.stderr.on("data", chunk => { errors = (errors + chunk.toString()).slice(-4096); });
       job.child.once("exit", (code, signal) => { record.guardExit = { code, signal, atMs: performance.now() - start }; });
       const settled = job.completed.then(value => { record.outcome = value; }, error => { record.error = String(error); });
-      const cancelTimer = setTimeout(() => { void job.cancel().catch(error => { record.cancelError = String(error); }); }, mode === "tree" ? 8000 : 35000);
+      const cancelTimer = setTimeout(() => { void job.cancel().catch(error => { record.cancelError = String(error); }); }, 35000);
       let ceiling: ReturnType<typeof setTimeout> | undefined;
       try { await Promise.race([settled, new Promise<void>(resolve => { ceiling = setTimeout(resolve, 45000); })]); }
       finally { clearTimeout(ceiling); }
