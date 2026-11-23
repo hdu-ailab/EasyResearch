@@ -3,7 +3,8 @@ import { randomBytes } from "node:crypto";
 import { lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, win32 } from "node:path";
-import { WINDOWS_UPDATE_JOB_BOOTSTRAP, WINDOWS_UPDATE_JOB_SOURCE } from "./windows-update-job/host-source";
+import { WINDOWS_UPDATE_JOB_BOOTSTRAP } from "./windows-update-job/host-source";
+import { WINDOWS_UPDATE_JOB_ASSEMBLY } from "../generated/windows-update-job-host";
 
 export interface WindowsUpdateJobOptions {
   cwd?: string;
@@ -149,6 +150,8 @@ async function readRecord(path: string, current: () => boolean): Promise<Record<
 export async function startWindowsUpdateJob(command: string, args: readonly string[], options: WindowsUpdateJobOptions): Promise<WindowsUpdateJob> {
   options.signal?.throwIfAborted();
   if (process.platform !== "win32") throw unavailable();
+  if (!WINDOWS_UPDATE_JOB_ASSEMBLY || WINDOWS_UPDATE_JOB_ASSEMBLY.length > 131072
+    || Buffer.from(WINDOWS_UPDATE_JOB_ASSEMBLY, "base64").subarray(0, 2).toString("ascii") !== "MZ") throw unavailable();
   const cleanupTimeoutMs = options.cleanupTimeoutMs ?? 10_000;
   if (!Number.isSafeInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1 || cleanupTimeoutMs > 60_000) throw unavailable();
   windowsUpdateCommandLine(command, args, options.windowsVerbatimArguments);
@@ -207,8 +210,8 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
   let checking: Promise<void> | undefined;
   let inputTask = Promise.resolve();
   let inputQueuedBytes = 0, inputAcknowledgedBytes = 0, inputWritePending = false, startQueued = false, admissionAcknowledged = false;
-  let inputPhase: "source" | "request" | "start" | "cancel" | undefined;
-  const inputCompleted: Partial<Record<"source" | "request" | "start" | "cancel", number>> = {};
+  let inputPhase: "assembly" | "request" | "start" | "cancel" | undefined;
+  const inputCompleted: Partial<Record<"assembly" | "request" | "start" | "cancel", number>> = {};
   let resolveCompletion!: (result: { code: number | null; signal: NodeJS.Signals | null }) => void;
   let rejectCompletion!: (error: Error) => void;
   const completed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => { resolveCompletion = resolve; rejectCompletion = reject; });
@@ -261,7 +264,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
       returned = true; checkWrite();
     } catch { onError(); }
   });
-  const send = (phase: "source" | "request" | "start" | "cancel", line: string) => {
+  const send = (phase: "assembly" | "request" | "start" | "cancel", line: string) => {
     const bytes = Buffer.from(line, "utf8");
     inputQueuedBytes += bytes.length;
     inputTask = inputTask.then(async () => {
@@ -375,7 +378,7 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
     // its exit event. A terminal decision needs a read begun after that event.
     if ((exited || closed) && !observedTerminal) return;
     if (closed) {
-      // A forced guard death (even during Add-Type) is not a positive settlement
+      // A forced guard death (even during assembly loading) is not a positive settlement
       // receipt. A normal bootstrap failure before authorization cannot have
       // created a target; an OS spawn failure cannot have created a guard.
       safe = Boolean(receipt?.jobEmpty) || (!launched && (!child.pid ||
@@ -414,8 +417,8 @@ function supervise(child: ChildProcessWithoutNullStreams, directory: string, non
   child.once("exit", () => { exited = true; exitedAt = Math.round(performance.now() - startedAt); terminalChanged(); });
   child.once("close", () => { closed = true; closedAt = Math.round(performance.now() - startedAt); terminalChanged(); });
   signal?.addEventListener("abort", onAbort, { once: true });
-  // Fixed compiler input and UTF-8 data, never interpolation into executable code.
-  send("source", `${Buffer.from(WINDOWS_UPDATE_JOB_SOURCE, "utf8").toString("base64")}\n`);
+  // Build-produced assembly and UTF-8 data, never runtime compilation or interpolation.
+  send("assembly", `${WINDOWS_UPDATE_JOB_ASSEMBLY}\n`);
   send("request", `${request}\n`);
   if (signal?.aborted) onAbort();
   armDeadline();

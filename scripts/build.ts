@@ -220,22 +220,25 @@ export function compileCommand(
 }
 
 export async function compileTarget(target: PlatformTarget): Promise<string> {
-  const pkgDir = platformPackageDir(target.name);
-  const binDir = join(pkgDir, "bin");
-  mkdirSync(binDir, { recursive: true });
-  const outfile = join(binDir, platformBinaryName(target));
-  // Native testing under the former Bun 1.3.14 pin found that
-  // `Bun.build({ compile })` emitted inert Windows executables. Keep the proven
-  // `bun build --compile` CLI path until every target validates an API change.
-  const result = Bun.spawnSync({
-    cmd: compileCommand(target, outfile),
-    stdout: "inherit",
-    stderr: "inherit",
+  const { withWindowsUpdateAssembly } = await import("./windows-update-assembly");
+  return withWindowsUpdateAssembly(target.name === "windows-x64", async () => {
+    const pkgDir = platformPackageDir(target.name);
+    const binDir = join(pkgDir, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const outfile = join(binDir, platformBinaryName(target));
+    // Native testing under the former Bun 1.3.14 pin found that
+    // `Bun.build({ compile })` emitted inert Windows executables. Keep the proven
+    // `bun build --compile` CLI path until every target validates an API change.
+    const result = Bun.spawnSync({
+      cmd: compileCommand(target, outfile),
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(`compile failed for ${target.name} (exit ${result.exitCode})`);
+    }
+    return outfile;
   });
-  if (result.exitCode !== 0) {
-    throw new Error(`compile failed for ${target.name} (exit ${result.exitCode})`);
-  }
-  return outfile;
 }
 
 export function finalizeBuildArtifact(

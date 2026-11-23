@@ -23,6 +23,9 @@ const receiptRead = vi.hoisted(() => ({
 // Only OS process/source preflight is replaced. Custody, private-file receipts,
 // cancellation, deadlines and deletion are the real adapter on every host.
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
+vi.mock("../generated/windows-update-job-host", () => ({
+  WINDOWS_UPDATE_JOB_ASSEMBLY: Buffer.from("MZ portable compiled image").toString("base64"),
+}));
 vi.mock("node:fs/promises", async (original) => {
   const fs = await original<typeof import("node:fs/promises")>();
   const nativePath = (path: unknown) => typeof path === "string" && [
@@ -122,10 +125,17 @@ async function fixture(options: Partial<Parameters<typeof startWindowsUpdateJob>
   });
   const launched = () => input.includes(`\nstart:${request.nonce}\n`);
   const close = (code = 0) => { child.exitCode = code; child.emit("close", code, null); };
-  return { job, child, request, ready, receipt, launched, close, controls: () => input.split("\n").slice(2) };
+  return { job, child, request, ready, receipt, launched, close,
+    assembly: () => Buffer.from(input.split("\n")[0]!, "base64"), controls: () => input.split("\n").slice(2) };
 }
 
 describe("Windows job settlement protocol", () => {
+  it("delivers the build-produced assembly unchanged before the private request", async () => {
+    const f = await fixture();
+    try { expect(f.assembly()).toEqual(Buffer.from("MZ portable compiled image")); }
+    finally { await f.receipt({ rootPid: 0, code: null }); f.close(); await f.job.dispose(); }
+  });
+
   it.each(["request", "start"] as const)("enforces startup expiry while the %s frame acknowledgement is pending", async (hold) => {
     const now = performance.now.bind(performance);
     let offset = 0;

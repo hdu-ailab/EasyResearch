@@ -215,7 +215,7 @@ if (mode === 'leaf') {
     expect(Buffer.concat(stderr)).toEqual(Buffer.from([254, 0, 10, 66]));
   }, 40_000);
 
-  it("fully removes its exact compiler/receipt directory after verified settlement, including under an administrator token", async () => {
+  it("fully removes its exact private directory after verified settlement, including under an administrator token", async () => {
     const original = { TEMP: process.env.TEMP, TMP: process.env.TMP };
     let job: WindowsUpdateJob;
     try {
@@ -304,7 +304,7 @@ if (mode === 'leaf') {
     job.child.stdout.resume(); job.child.stderr.resume();
     // Hold the private launch grant at the real transport boundary until the
     // guard is in an outer kernel job with a one-process limit. The guard has
-    // already finished Add-Type when it requests this grant. No product test
+    // already loaded the embedded assembly when it requests this grant. No product test
     // switch or copied implementation is involved.
     const write = job.child.stdin.write;
     let release!: () => void;
@@ -454,7 +454,7 @@ public static class JobLimitFixture {
   public static int Main(string[] args) {
     IntPtr job = CreateJobObjectW(IntPtr.Zero, null), process = IntPtr.Zero;
     try {
-      Limit limit = new Limit(); limit.Flags = 2; limit.ActiveProcesses = 1;
+      Limit limit = new Limit(); limit.Flags = 0x8; limit.ActiveProcesses = 1;
       process = OpenProcess(0x101, false, Int32.Parse(args[0]));
       if (job == IntPtr.Zero || process == IntPtr.Zero ||
           !SetInformationJobObject(job, 2, ref limit, (uint)Marshal.SizeOf(typeof(Limit))) ||

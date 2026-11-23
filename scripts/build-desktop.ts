@@ -352,7 +352,8 @@ export async function buildDesktop(targetName: DesktopTargetName): Promise<Deskt
   rmSync(stageDir, { recursive: true, force: true });
   mkdirSync(join(stageDir, "sidecar"), { recursive: true });
   mkdirSync(outputDir, { recursive: true });
-  await bundleDesktopHost(stageDir);
+  const { withWindowsUpdateAssembly } = await import("./windows-update-assembly");
+  await withWindowsUpdateAssembly(target.platform === "win32", () => bundleDesktopHost(stageDir));
   writeFileSync(join(stageDir, "package.json"), `${JSON.stringify({
     name: "easyresearch-desktop",
     productName: "EasyResearch",

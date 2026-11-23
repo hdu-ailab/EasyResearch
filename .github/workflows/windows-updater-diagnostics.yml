@@ -32,13 +32,13 @@ jobs:
       - name: Diagnose using Node
         continue-on-error: true
         run: |
-          bun build scripts/diagnose-windows-update.ts --target=node --format=esm --outfile "$env:RUNNER_TEMP/diagnose-windows-update.mjs"
+          bun scripts/windows-update-assembly.ts bun build scripts/diagnose-windows-update.ts --target=node --format=esm --outfile "$env:RUNNER_TEMP/diagnose-windows-update.mjs"
           node "$env:RUNNER_TEMP/diagnose-windows-update.mjs"
       # Earlier receipts ran Bun first. Reverse order to distinguish runtime
       # behavior from cold PowerShell/CodeDOM initialization on a fresh runner.
       - name: Diagnose using Bun
         continue-on-error: true
-        run: bun scripts/diagnose-windows-update.ts
+        run: bun scripts/windows-update-assembly.ts bun scripts/diagnose-windows-update.ts
       - name: Retain bounded diagnostic receipts
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
@@ -54,4 +54,4 @@ jobs:
           EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-update-tests/agent
           HOME: ${{ runner.temp }}/easyresearch-update-tests/home
           USERPROFILE: ${{ runner.temp }}/easyresearch-update-tests/home
-        run: bun run test src/runtime/windows-update-job.test.ts src/runtime/windows-update-job.protocol.test.ts src/runtime/windows-update-job.native.test.ts src/runtime/npm-update-process.test.ts src/runtime/npm-update-process-windows.test.ts src/runtime/npm-update-process-windows.native.test.ts src/desktop/update-process.test.ts src/desktop/update-worker.test.ts
+        run: bun scripts/windows-update-assembly.ts bun run test src/runtime/windows-update-job.test.ts src/runtime/windows-update-job.protocol.test.ts src/runtime/windows-update-job.native.test.ts src/runtime/npm-update-process.test.ts src/runtime/npm-update-process-windows.test.ts src/runtime/npm-update-process-windows.native.test.ts src/desktop/update-process.test.ts src/desktop/update-worker.test.ts

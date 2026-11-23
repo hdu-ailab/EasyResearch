@@ -1,6 +1,5 @@
-/** Fixed source compiled by the built-in Windows PowerShell/.NET Framework host.
- * Operation values travel only as UTF-8 JSON and typed control lines on stdin.
- * Keep this a literal TS resource so both native and Electron bundles include it.
+/** Fixed source compiled at build time by the Windows .NET Framework compiler.
+ * PowerShell loads its embedded assembly; operation values remain private UTF-8 data.
  */
 export const WINDOWS_UPDATE_JOB_BOOTSTRAP = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -15,25 +14,11 @@ try {
   Record-BootstrapStage 'entry'
   $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false, $true), $false, 4096, $true)
   $line = $reader.ReadLine()
-  Record-BootstrapStage 'source-read'
+  Record-BootstrapStage 'assembly-read'
   if ($null -eq $line -or $line.Length -gt 131072) { exit 70 }
-  $source = [System.Text.UTF8Encoding]::new($false, $true).GetString([Convert]::FromBase64String($line))
-  $compiler = [System.CodeDom.Compiler.CompilerParameters]::new()
-  $compiler.GenerateInMemory = $true
-  $compiler.ReferencedAssemblies.AddRange([string[]]@('System.dll', 'System.Core.dll', 'System.Web.Extensions.dll'))
-  $temporary = [System.CodeDom.Compiler.TempFileCollection]::new()
-  $compiler.TempFiles = $temporary
-  try {
-    Record-BootstrapStage 'compile-start'
-    Add-Type -TypeDefinition $source -Language CSharp -CompilerParameters $compiler -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null
-    Record-BootstrapStage 'compile-finish'
-  } finally {
-    # Default CodeDOM admin temp directories carry their own delete-deny/high-IL
-    # protection. Dispose the exact compiler owner before Run changes the parent
-    # DACL; Delete()/SafeDelete() alone do not remove that directory policy.
-    [System.IDisposable].GetMethod('Dispose').Invoke($temporary, @()) | Out-Null
-  }
-  Record-BootstrapStage 'compiler-disposed'
+  Record-BootstrapStage 'assembly-load-start'
+  [System.Reflection.Assembly]::Load([Convert]::FromBase64String($line)) | Out-Null
+  Record-BootstrapStage 'assembly-load-complete'
   exit ([EasyResearch.WindowsUpdateJobHost]::Run($reader))
 } catch { exit 70 }
 `;
