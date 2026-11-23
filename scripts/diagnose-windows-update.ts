@@ -18,9 +18,11 @@ async function main(): Promise<void> {
   const minimal = { SystemRoot: systemRoot, WINDIR: systemRoot, PATH: win32.join(systemRoot, "System32"), TEMP: root, TMP: root };
   const baselines: unknown[] = []; result.baselines = baselines;
   try {
-  for (const mode of ["simple-minimal", "simple-full", "stdin-string", "stdin-buffer", "stdin-end"]) {
+  for (const mode of ["simple-minimal", "simple-full", "stdin-string", "stdin-buffer", "stdin-end", "stdin-large-combined", "stdin-large-split"]) {
     const input = mode.startsWith("stdin");
-    const command = input ? "$r = [IO.StreamReader]::new([Console]::OpenStandardInput()); [Console]::Write($r.ReadLine().Length); exit 0" : "[Console]::Write('ready'); exit 0";
+    const large = mode.startsWith("stdin-large");
+    const command = large ? "$r = [IO.StreamReader]::new([Console]::OpenStandardInput()); [Console]::Write($r.ReadLine().Length); [Console]::Write(','); [Console]::Write($r.ReadLine().Length); exit 0"
+      : input ? "$r = [IO.StreamReader]::new([Console]::OpenStandardInput()); [Console]::Write($r.ReadLine().Length); exit 0" : "[Console]::Write('ready'); exit 0";
     const start = performance.now(); const value: Record<string, unknown> = { mode };
     const child = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], {
       env: mode === "simple-full" ? { ...process.env } : minimal, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"], windowsHide: true,
@@ -30,6 +32,8 @@ async function main(): Promise<void> {
     if (mode === "stdin-string") child.stdin!.write(payload);
     if (mode === "stdin-buffer") child.stdin!.write(Buffer.from(payload));
     if (mode === "stdin-end") child.stdin!.end(payload);
+    if (mode === "stdin-large-combined") child.stdin!.write("x".repeat(64000) + "\n" + "y".repeat(128000) + "\n");
+    if (mode === "stdin-large-split") child.stdin!.write("x".repeat(64000) + "\n", () => child.stdin!.write("y".repeat(128000) + "\n"));
     let output = "", errors = "";
     child.stdout!.on("data", chunk => { value.firstOutputMs ??= performance.now() - start; output += chunk.toString(); });
     child.stderr!.on("data", chunk => { errors = (errors + chunk.toString()).slice(-2048); });
@@ -88,6 +92,8 @@ async function main(): Promise<void> {
       const start = performance.now(); record.startedAt = Date.now();
       const job = await startWindowsUpdateJob(node, ["-e", code], { cwd: area, env: { ...process.env }, cleanupTimeoutMs: 5000 });
       record.guardPid = job.child.pid; record.createdMs = performance.now() - start;
+      record.stdinAtAdmission = { bytes: job.child.stdin.writableLength, needDrain: job.child.stdin.writableNeedDrain, corked: job.child.stdin.writableCorked };
+      job.child.stdin.on("drain", () => { record.lastDrainMs = performance.now() - start; });
       let output = "", errors = "";
       job.child.stdout.on("data", chunk => { record.firstOutputMs ??= performance.now() - start; output = (output + chunk.toString()).slice(-4096); });
       job.child.stderr.on("data", chunk => { errors = (errors + chunk.toString()).slice(-4096); });

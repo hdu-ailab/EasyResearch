@@ -6,6 +6,10 @@ on:
         description: Repository revision to diagnose
         required: true
         default: main
+      run-tests:
+        description: Also execute native Windows updater tests
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -42,3 +46,10 @@ jobs:
             ${{ runner.temp }}/windows-job-diagnostic-*.json
           if-no-files-found: warn
           retention-days: 7
+      - name: Verify native Windows updater tests
+        if: ${{ inputs['run-tests'] }}
+        env:
+          EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-update-tests/agent
+          HOME: ${{ runner.temp }}/easyresearch-update-tests/home
+          USERPROFILE: ${{ runner.temp }}/easyresearch-update-tests/home
+        run: bun run test src/runtime/windows-update-job.test.ts src/runtime/windows-update-job.protocol.test.ts src/runtime/windows-update-job.native.test.ts src/runtime/npm-update-process.test.ts src/runtime/npm-update-process-windows.test.ts src/runtime/npm-update-process-windows.native.test.ts src/desktop/update-process.test.ts src/desktop/update-worker.test.ts
