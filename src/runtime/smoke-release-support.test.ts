@@ -59,7 +59,7 @@ import { acquireServerLease } from "../cli/runtime-lease";
 import { removeServerPid, writeServerProcess } from "../cli/server-process";
 import { DirectoryService } from "../web/directories";
 import { SmokeAgentLane, smokeSubagentSessionID, smokeBackgroundReports } from "../../scripts/smoke-agent-scenario";
-import { createBackgroundExecutionSmoke } from "../../scripts/smoke-background-execution";
+import { assertBackgroundInvocationReceipt, createBackgroundExecutionSmoke } from "../../scripts/smoke-background-execution";
 
 const tempDirs: string[] = [];
 const asyncCleanups: Array<() => void | Promise<void>> = [];
@@ -2853,6 +2853,16 @@ describe("native background smoke correlation", () => {
 });
 
 describe("deterministic background acceptance provider", () => {
+  it.each(["\n", "\r\n"])("accepts one invocation receipt with native newline %j", (newline) => {
+    expect(() => assertBackgroundInvocationReceipt(`executed-once${newline}`, "executed-once")).not.toThrow();
+  });
+
+  it.each(["executed-once\nexecuted-once\n", "executed-once\r\nexecuted-once\r\n", "executed-once\n\n", "executed-once", "wrong\n", ""])(
+    "rejects replayed, missing or malformed invocation receipt %j", (content) => {
+      expect(() => assertBackgroundInvocationReceipt(content, "executed-once")).toThrow(/exactly once/);
+    },
+  );
+
   it("gates first child inference behind admission/follow-up and releases each process only after a running-period report", async () => {
     const scenario = createBackgroundExecutionSmoke({ runId: "unit", agentName: "smoke-reviewer", command: mode => `run-${mode}` });
     const sessionID = "b2370097-cd26-4687-baea-e6c7a83bcb59";

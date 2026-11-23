@@ -243,6 +243,12 @@ export function backgroundSmokeCommand(platform: NodeJS.Platform, directory: str
   return venvToolCommand(platform, join(directory, `${mode}.py`));
 }
 
+export function assertBackgroundInvocationReceipt(content: string, marker: string): void {
+  // Python's text-mode append uses CRLF on Windows; normalization must retain
+  // every record so a repeated command still fails the exact one-record check.
+  assert.equal(content.replaceAll("\r\n", "\n"), marker + "\n", "Background command did not execute exactly once");
+}
+
 export async function runBackgroundExecutionSmoke(options: {
   base: string; project: string; directory: string; deadline: number; scenario: Scenario;
   remoteCommands?: readonly { command: string }[];
@@ -293,7 +299,7 @@ export async function runBackgroundExecutionSmoke(options: {
         assert(options.remoteCommands, "Remote acceptance requires SSH protocol execution receipts");
         assert.equal(options.remoteCommands.filter(command => command.command === scenario.command(mode)).length, 1, "Remote SSH command was replayed");
       } else {
-        assert.equal(readFileSync(join(options.directory, `${mode}.counter`), "utf8"), scenario.marker(mode) + "\n", "Background command was replayed");
+        assertBackgroundInvocationReceipt(readFileSync(join(options.directory, `${mode}.counter`), "utf8"), scenario.marker(mode));
       }
     }
   } catch (error) {
