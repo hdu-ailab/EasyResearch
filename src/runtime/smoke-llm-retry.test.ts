@@ -186,17 +186,27 @@ describe("LLM retry acceptance wire and native evidence", () => {
     expect(() => retryStateInFrame({ ...state, llmRecovery: { targetSessionId: "other", failureId: "f", failedEntryId: "e", status: "available" } })).toThrow();
   });
 
-  function evidenceFixture() {
+  function evidenceFixture(depth: 1 | 2 = 1) {
     const root = directory();
     const fixture = createLlmRetryFixture({ runId: "audit", directory: join(root, "counter") });
-    const item = fixture.addCase("direct", 1);
+    const item = fixture.addCase(depth === 2 ? "nested" : "direct", depth);
     writeFileSync(item.counter, item.leaf.marker + "\n");
     const rootPath = join(root, "root.jsonl");
     const childPath = join(root, "child.jsonl");
+    const ownerPath = join(root, "owner.jsonl");
     const rows: any[] = [{ type: "session", id: "root" }, { type: "message", id: "root-user", message: { role: "user" } }];
     const record = <T>(data: T) => ({ type: "custom", customType: "easyresearch:subagent_job", data });
+    if (depth === 2) {
+      rows.push(...[
+        { kind: "reserved", launchId: "owner-launch", ownerSessionId: "root", toolCallId: "owner-tool", agent: fixture.ownerAgent, agentId: "owner_0", continuation: false, createdAt: "now" },
+        { kind: "created", launchId: "owner-launch", childSessionId: "owner", sessionPath: ownerPath },
+        { kind: "materialized", launchId: "owner-launch" },
+        { kind: "launch_acknowledged", launchId: "owner-launch", acknowledgedAt: "now" },
+      ].map(record));
+      writeFileSync(ownerPath, [{ type: "session", id: "owner" }, { type: "message", message: { role: "user" } }].map(row => JSON.stringify(row)).join("\n") + "\n");
+    }
     rows.push(...[
-      { kind: "reserved", launchId: "launch", ownerSessionId: "root", toolCallId: "tool", agent: fixture.leafAgent, agentId: "leaf_0", continuation: false, createdAt: "now" },
+      { kind: "reserved", launchId: "launch", ownerSessionId: depth === 2 ? "owner" : "root", toolCallId: "tool", agent: fixture.leafAgent, agentId: "leaf_0", continuation: false, createdAt: "now" },
       { kind: "created", launchId: "launch", childSessionId: "leaf", sessionPath: childPath },
       { kind: "materialized", launchId: "launch" },
       { kind: "launch_acknowledged", launchId: "launch", acknowledgedAt: "now" },
@@ -204,13 +214,15 @@ describe("LLM retry acceptance wire and native evidence", () => {
     const write = () => writeFileSync(rootPath, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
     write();
     writeFileSync(childPath, [{ type: "session", id: "leaf" }, { type: "message", id: "leaf-user", message: { role: "user" } },
-      { type: "message", id: "failed", message: { role: "assistant", stopReason: "error", errorMessage: "503 service unavailable: controlled LLM retry direct_leaf failure 2" } }].map(row => JSON.stringify(row)).join("\n") + "\n");
+      { type: "message", id: "failed", message: { role: "assistant", stopReason: "error", errorMessage: `503 service unavailable: controlled LLM retry ${item.leaf.name} failure 2` } }].map(row => JSON.stringify(row)).join("\n") + "\n");
     const recovery: LlmRecoveryDto = { targetSessionId: "leaf", failureId: "failure", failedEntryId: "failed", status: "available" };
     const snapshot: SessionSnapshotDto = { session: { id: "root", cwd: root, sessionFile: rootPath, status: "running", isStreaming: false },
-      subagents: [{ ownerSessionId: "root", childSessionId: "leaf", toolCallId: "tool", launchId: "launch", agentId: "leaf_0",
+      subagents: [{ ownerSessionId: depth === 2 ? "owner" : "root", childSessionId: "leaf", toolCallId: "tool", launchId: "launch", agentId: "leaf_0",
         agent: fixture.leafAgent, status: "working", llmRecovery: recovery }], timeline: [], runtimeConfigurationGeneration: 0,
       compactionPolicy: { enabled: false, triggerPercent: 70 } };
-    return { root, item, snapshot, recovery, rows, write, record, rootPath, childPath };
+    if (depth === 2) snapshot.subagents.unshift({ ownerSessionId: "root", childSessionId: "owner", toolCallId: "owner-tool",
+      launchId: "owner-launch", agentId: "owner_0", agent: fixture.ownerAgent, status: "working" });
+    return { root, item, snapshot, recovery, rows, write, record, rootPath, childPath, ownerPath };
   }
 
   function settled(snapshot: SessionSnapshotDto): SessionSnapshotDto {
@@ -239,25 +251,197 @@ describe("LLM retry acceptance wire and native evidence", () => {
     expect(evidence.histories.some((history: { entries: unknown[] }) => history.entries.length > 0)).toBe(true);
   });
 
-  function advancePeriod(f: ReturnType<typeof evidenceFixture>) {
-    f.rows.push(f.record({ kind: "background_admitted", launchId: "launch", admission: {
-      cwd: f.root, callerAgent: "research-assistant", description: "Retry child",
-    } }), f.record({ kind: "background_report", launchId: "launch",
-      result: { state: "completed", text: "Waiting for owned work", outstanding: [{ id: "shell", kind: "shell", sessionID: "leaf", status: "running" }] },
-      batch: { batchId: "first", ownerSessionId: "root", launchIds: ["launch"], content: "first report", triggerTurn: true, createdAt: "now" },
-    }), { type: "custom_message", customType: "easyresearch:agent_status", display: false,
-      details: { outcomes: [{ launchId: "launch", status: "complete" }] } });
-    f.rows.push(...[
-      { kind: "reserved", launchId: "later", ownerSessionId: "root", toolCallId: "wake", agent: f.snapshot.subagents[0]!.agent, agentId: "leaf_0", continuation: true, createdAt: "later" },
-      { kind: "created", launchId: "later", childSessionId: "leaf", sessionPath: f.childPath },
+  const admissionPhases = ["reserved", "created", "materialized", "background_admitted", "launch_acknowledged"] as const;
+
+  function laterPeriod(f: ReturnType<typeof evidenceFixture>) {
+    const previous = f.snapshot.subagents[0]!;
+    return [
+      { kind: "reserved", launchId: "later", ownerSessionId: previous.ownerSessionId, toolCallId: `wake:${previous.launchId}`,
+        agent: previous.agent, agentId: previous.agentId, continuation: true, createdAt: "later",
+        childSessionId: previous.childSessionId, sessionPath: f.item.depth === 2 ? f.ownerPath : f.childPath },
+      { kind: "created", launchId: "later", childSessionId: previous.childSessionId, sessionPath: f.item.depth === 2 ? f.ownerPath : f.childPath },
       { kind: "materialized", launchId: "later" },
+      { kind: "background_admitted", launchId: "later", admission: { cwd: f.root, callerAgent: "research-assistant", description: "Retry child" } },
       { kind: "launch_acknowledged", launchId: "later", acknowledgedAt: "later" },
-    ].map(f.record));
+    ].map(f.record);
+  }
+
+  function advancePeriod(f: ReturnType<typeof evidenceFixture>, through: typeof admissionPhases[number] = "launch_acknowledged") {
+    const previous = f.snapshot.subagents[0]!;
+    f.rows.push(f.record({ kind: "background_admitted", launchId: previous.launchId, admission: {
+      cwd: f.root, callerAgent: "research-assistant", description: "Retry child",
+    } }), f.record({ kind: "background_report", launchId: previous.launchId,
+      result: { state: "completed", text: "Waiting for owned work", outstanding: [{ id: "shell", kind: "shell", sessionID: "leaf", status: "running" }] },
+      batch: { batchId: "first", ownerSessionId: "root", launchIds: [previous.launchId], content: "first report", triggerTurn: true, createdAt: "now" },
+    }), { type: "custom_message", customType: "easyresearch:agent_status", display: false,
+      details: { outcomes: [{ launchId: previous.launchId, status: "complete" }] } });
+    f.rows.push(...laterPeriod(f).slice(0, admissionPhases.indexOf(through) + 1));
     f.write();
     const current = structuredClone(f.snapshot);
-    current.subagents.push({ ...current.subagents[0]!, launchId: "later", toolCallId: "wake" });
+    current.subagents.push({ ...current.subagents[0]!, launchId: "later", toolCallId: `wake:${previous.launchId}` });
     return current;
   }
+
+  describe.each(["capture", "check"] as const)("%s during automatic period admission", mode => {
+    it.each(admissionPhases)("audits the real %s prefix without changing native identities or inventing acknowledgement", phase => {
+      const f = evidenceFixture(2);
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      const current = advancePeriod(f, phase);
+      const bytes = readFileSync(f.rootPath, "utf8");
+      const audit = prior ?? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+      expect(audit.check(f.snapshot)).toMatchObject({ userRows: 3, toolExecutions: 1, terminalOutcomes: 0,
+        identities: [{ childSessionId: "leaf", ownerSessionId: "owner" }, { childSessionId: "owner", ownerSessionId: "root" }] });
+      expect(readFileSync(f.rootPath, "utf8")).toBe(bytes);
+      f.rows.push(...laterPeriod(f).slice(admissionPhases.indexOf(phase) + 1)); f.write();
+      expect(audit.check(current).identities).toHaveLength(2);
+    });
+
+    it("retains a reserved launch obligation even after the older snapshot is checked again", () => {
+      const f = evidenceFixture(2);
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      advancePeriod(f, "reserved");
+      const audit = prior ?? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+      expect(audit.check(f.snapshot).identities).toHaveLength(2);
+      f.rows.splice(f.rows.findIndex(row => row.data?.launchId === "later"), 1); f.write();
+      expect(() => audit.check(f.snapshot)).toThrow(/period disappeared|obligation/i);
+    });
+
+    it("requires the same binding after a pending period becomes acknowledged and terminal", () => {
+      const f = evidenceFixture();
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      const current = advancePeriod(f, "reserved");
+      const audit = prior ?? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+      expect(audit.check(f.snapshot).identities).toHaveLength(1);
+      f.rows.push(...laterPeriod(f).slice(1), f.record({ kind: "terminal", launchId: "later", status: "complete", finishedAt: "later" }),
+        { type: "custom_message", customType: "easyresearch:agent_status", display: false,
+          details: { outcomes: [{ launchId: "later", status: "complete" }] } });
+      f.write();
+      expect(audit.check(settled(current), "complete")).toMatchObject({ terminalOutcomes: 1, userRows: 2, toolExecutions: 1 });
+      const reservation = f.rows.find(row => row.data?.launchId === "later" && row.data.kind === "reserved").data;
+      reservation.toolCallId = "wake:foreign-launch"; f.write();
+      const rebound = structuredClone(current);
+      rebound.subagents.at(-1)!.toolCallId = reservation.toolCallId;
+      expect(() => audit.check(settled(rebound), "complete")).toThrow(/admission|obligation|wake/i);
+    });
+
+    it("rejects removal of an observed created binding instead of accepting an older reservation prefix", () => {
+      const f = evidenceFixture(2);
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      advancePeriod(f, "created");
+      const audit = prior ?? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+      expect(audit.check(f.snapshot).identities).toHaveLength(2);
+      f.rows.pop(); f.write();
+      expect(() => audit.check(f.snapshot)).toThrow(/regress|obligation/i);
+    });
+
+    it.each(admissionPhases.slice(0, -1))("rejects terminal settlement while %s remains unresolved", phase => {
+      const f = evidenceFixture(2);
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      advancePeriod(f, phase);
+      const audit = prior ?? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+      expect(audit.check(f.snapshot).identities).toHaveLength(2);
+      expect(() => audit.check(settled(f.snapshot), "error")).toThrow(/unresolved|admission|acknowledg/i);
+    });
+
+    it.each(["fresh", "foreign-wake", "owner", "agent", "alias", "unsettled", "concurrent", "uuid", "path"])("rejects %s admission rather than excluding it from the child count", fault => {
+      const f = evidenceFixture(2);
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      advancePeriod(f, fault === "uuid" || fault === "path" ? "created" : "reserved");
+      const reserved = f.rows.find(row => row.data?.launchId === "later" && row.data.kind === "reserved").data;
+      if (fault === "fresh") reserved.continuation = false;
+      if (fault === "foreign-wake") reserved.toolCallId = "wake:foreign-launch";
+      if (fault === "owner") reserved.ownerSessionId = "leaf";
+      if (fault === "agent") reserved.agent = "other-agent";
+      if (fault === "alias") reserved.agentId = "other-alias";
+      if (fault === "unsettled") f.rows.splice(f.rows.findIndex(row => row.data?.kind === "background_report"), 1);
+      if (fault === "concurrent") f.rows.push(f.record({ ...reserved, launchId: "concurrent" }));
+      if (fault === "uuid" || fault === "path") {
+        const created = f.rows.find(row => row.data?.launchId === "later" && row.data.kind === "created").data;
+        if (fault === "uuid") created.childSessionId = "foreign-uuid";
+        else created.sessionPath = f.childPath;
+      }
+      f.write();
+      expect(() => prior ? prior.check(f.snapshot) : captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root)).toThrow();
+    });
+
+    it("still rejects a genuinely admitted third child", () => {
+      const f = evidenceFixture(2);
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      advancePeriod(f);
+      const reservation = f.rows.find(row => row.data?.launchId === "later" && row.data.kind === "reserved").data;
+      Object.assign(reservation, { continuation: false, toolCallId: "extra-dispatch", agentId: "owner_1" });
+      const created = f.rows.find(row => row.data?.launchId === "later" && row.data.kind === "created").data;
+      Object.assign(created, { childSessionId: "third-child", sessionPath: join(f.root, "third.jsonl") });
+      f.write();
+      expect(() => prior ? prior.check(f.snapshot) : captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root)).toThrow(/logical child/i);
+    });
+
+    it("archives the exact failed read after disk admission and snapshots have advanced", () => {
+      const f = evidenceFixture(2);
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      advancePeriod(f, "reserved");
+      const reservation = f.rows.at(-1)!.data;
+      reservation.toolCallId = "wake:foreign-launch";
+      reservation.description = "PRIVATE_FAILING_READ_BODY";
+      reservation.apiKey = "PRIVATE_FAILING_READ_KEY";
+      f.write();
+      let failure: unknown;
+      const atFailure = structuredClone(f.snapshot);
+      try { prior ? prior.check(atFailure) : captureRetryEvidence(atFailure, f.recovery, f.item, f.root); }
+      catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(Error);
+      atFailure.session.id = "advanced-snapshot";
+      reservation.toolCallId = "wake:owner-launch";
+      f.rows.push(...laterPeriod(f).slice(1)); f.write();
+      const archive = preserveRetryFailureEvidence({ root: f.root, caseName: f.item.name, phase: mode, snapshots: [f.snapshot],
+        error: failure, parentDirectory: directory() });
+      const serialized = readFileSync(archive, "utf8");
+      const saved = JSON.parse(serialized);
+      expect(saved.failureRead.snapshot.session.id).toBe("root");
+      expect(saved.failureRead.jobs.find((job: { launchId: string }) => job.launchId === "later"))
+        .toMatchObject({ childSessionId: null, sessionPath: null, launchAcknowledged: false, toolCallId: "wake:foreign-launch" });
+      expect(saved.failureRead.journalTail.at(-1).data.kind).toBe("reserved");
+      expect(saved.histories.find((history: { source: string }) => history.source === f.rootPath).entries.at(-1).data.kind).toBe("launch_acknowledged");
+      expect(serialized).not.toMatch(/PRIVATE_FAILING_READ_BODY|PRIVATE_FAILING_READ_KEY|advanced-snapshot/);
+      expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(4 * 1024 * 1024);
+    });
+  });
+
+  it("bounds exact-read metadata while keeping the failing journal tail and excluding message bodies", () => {
+    const f = evidenceFixture(2);
+    for (let index = 0; index < 2600; index++) f.rows.push({ type: "custom", customType: "isolated-probe", id: `probe-${index}`,
+      data: { kind: "probe", ownerSessionId: "x".repeat(512), toolCallId: "y".repeat(512), content: "PRIVATE_LARGE_READ_BODY" } });
+    advancePeriod(f, "reserved");
+    f.rows.at(-1)!.data.toolCallId = "wake:foreign-launch"; f.write();
+    const snapshot = structuredClone(f.snapshot);
+    snapshot.subagents = Array.from({ length: 2000 }, () => ({ ...f.snapshot.subagents[0]!, agentId: "z".repeat(512) }));
+    let failure: unknown;
+    try { captureRetryEvidence(snapshot, f.recovery, f.item, f.root); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    const archive = preserveRetryFailureEvidence({ root: f.root, caseName: f.item.name, phase: "capture",
+      snapshots: [snapshot], error: failure, parentDirectory: directory() });
+    const serialized = readFileSync(archive, "utf8");
+    const saved = JSON.parse(serialized);
+    expect(saved.failureRead.truncated).toBe(true);
+    expect(saved.failureRead.journalTail.at(-1).data).toMatchObject({ kind: "reserved", toolCallId: "wake:foreign-launch" });
+    expect(serialized).not.toContain("PRIVATE_LARGE_READ_BODY");
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(4 * 1024 * 1024);
+  });
+
+  it("records the physical root read when the supplied snapshot has a replaced path", () => {
+    const f = evidenceFixture();
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    const replaced = structuredClone(f.snapshot);
+    replaced.session.sessionFile = join(f.root, "not-the-read-history.jsonl");
+    let failure: unknown;
+    try { audit.check(replaced); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    const archive = preserveRetryFailureEvidence({ root: f.root, caseName: f.item.name, phase: "check", snapshots: [f.snapshot],
+      error: failure, parentDirectory: directory() });
+    const saved = JSON.parse(readFileSync(archive, "utf8"));
+    expect(saved.failureRead.source).toBe(f.rootPath);
+    expect(saved.failureRead.snapshot.session.sessionFile).toBe(replaced.session.sessionFile);
+  });
 
   it("groups per-launch summaries into one logical child while validating every visible identity and journal path", () => {
     const f = evidenceFixture();

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import type { ChildSessionSnapshotDto, LlmRecoveryDto, LlmRetryStateEventDto, SessionSnapshotDto, SubagentSessionSummaryDto } from "../src/web/contracts";
-import { readSubagentJournal, SUBAGENT_JOB_ENTRY } from "../src/subagent/job-journal";
+import { readSubagentJournal, SUBAGENT_JOB_ENTRY, type InternalSubagentJob } from "../src/subagent/job-journal";
 import { AGENT_STATUS_TYPE } from "../src/subagent/notifications";
 import { smokeAgentText } from "./smoke-agent-scenario";
 import type { LlmRetryFixture, RetryFixtureCase } from "./smoke-llm-retry-fixture";
@@ -98,6 +98,7 @@ const evidenceKeys = new Set([
   "periodId", "failedEntryId", "failureId", "status", "state", "role", "stopReason", "toolName", "isError",
   "triggerTurn", "wake", "display", "pending", "active", "outcome", "outcomes", "result", "batch", "outstanding",
   "createdAt", "finishedAt", "acknowledgedAt", "continuation", "attempts", "ids", "llmRecovery", "automaticRetry",
+  "launchAcknowledged", "terminalStatus", "terminalSuppressed", "sessionPath", "sessionFile",
 ]);
 function retryEvidenceMetadata(value: unknown, depth = 0): unknown {
   if (depth > 10) return { truncated: true };
@@ -114,9 +115,49 @@ function retryEvidenceMetadata(value: unknown, depth = 0): unknown {
   return result;
 }
 
+function retryMetadataTail(values: readonly unknown[], budget: number) {
+  const entries: unknown[] = [];
+  let index = values.length - 1;
+  for (; index >= 0 && entries.length < 2000; index--) {
+    const metadata = retryEvidenceMetadata(values[index]);
+    const bytes = Buffer.byteLength(JSON.stringify(metadata)) + 1;
+    if (bytes > budget) break;
+    budget -= bytes;
+    entries.push(metadata);
+  }
+  return { entries: entries.reverse(), truncated: index >= 0 };
+}
+
+// Failure-owned, already-redacted evidence, not a second runtime or session store.
+const retryFailureRead = Symbol("retry-failure-read");
+function retainRetryRead<T>(phase: "capture" | "check", snapshot: SessionSnapshotDto, recovery: LlmRecoveryDto,
+  source: string, journalEntries: JsonEntry[], run: () => T): T {
+  try { return run(); }
+  catch (error) {
+    try {
+      if (error && typeof error === "object" && !Object.hasOwn(error, retryFailureRead)) {
+        const jobs = [...readSubagentJournal(journalEntries).jobs.values()];
+        const jobMetadata = retryMetadataTail(jobs.map(job => ({ ...job,
+          childSessionId: job.childSessionId ?? null, sessionPath: job.sessionPath ?? null })), 128 * 1024);
+        const tail = retryMetadataTail(journalEntries, 256 * 1024);
+        const subagents = retryMetadataTail(snapshot.subagents, 64 * 1024);
+        Object.defineProperty(error, retryFailureRead, { value: {
+          phase, source, entryCount: journalEntries.length, jobCount: jobs.length,
+          snapshot: { ...retryEvidenceMetadata({ session: snapshot.session, llmRecovery: snapshot.llmRecovery,
+            automaticRetry: snapshot.automaticRetry }) as object, subagents: subagents.entries },
+          checkpoint: retryEvidenceMetadata(recovery), jobs: jobMetadata.entries, journalTail: tail.entries,
+          truncated: jobMetadata.truncated || tail.truncated || subagents.truncated,
+        } });
+      }
+    } catch { /* Evidence capture must never replace the original assertion. */ }
+    throw error;
+  }
+}
+
 /** Failure-only metadata archive, outside the native smoke's auto-deleted root. No auth/config files or message bodies. */
 export function preserveRetryFailureEvidence(options: {
   root: string; caseName: string; phase: string; snapshots: readonly SessionSnapshotDto[]; parentDirectory?: string;
+  error?: unknown;
 }): string {
   const parent = options.parentDirectory ?? (existsSync("/tmp/opencode") ? "/tmp/opencode" : tmpdir());
   const archive = mkdtempSync(join(parent, "easyresearch-retry-failure-"));
@@ -128,7 +169,11 @@ export function preserveRetryFailureEvidence(options: {
   const queue = options.snapshots.slice(-8).flatMap(snapshot => snapshot.session.sessionFile ? [snapshot.session.sessionFile] : []);
   const seen = new Set<string>();
   const histories: Array<{ source: string; entries: unknown[]; truncated?: boolean; skipped?: string }> = [];
-  let budget = 3 * 1024 * 1024;
+  const failureRead = options.error && typeof options.error === "object"
+    ? (options.error as { [retryFailureRead]?: unknown })[retryFailureRead] : undefined;
+  const snapshots = retryMetadataTail(options.snapshots.slice(-8).map(snapshot => ({ session: snapshot.session, subagents: snapshot.subagents,
+    llmRecovery: snapshot.llmRecovery, automaticRetry: snapshot.automaticRetry })), 256 * 1024);
+  let budget = 3 * 1024 * 1024 - Buffer.byteLength(JSON.stringify({ failureRead, snapshots: snapshots.entries }));
   while (queue.length && histories.length < 24) {
     const path = queue.shift()!;
     if (seen.has(path)) continue;
@@ -154,9 +199,8 @@ export function preserveRetryFailureEvidence(options: {
       histories.push({ source: path, entries: projected, ...(truncated ? { truncated } : {}) });
     } catch { histories.push({ source: path, entries: [], skipped: "unavailable or outside isolated fixture" }); }
   }
-  const report = { caseName: options.caseName, phase: options.phase, histories,
-    snapshots: options.snapshots.slice(-8).map(snapshot => retryEvidenceMetadata({ session: snapshot.session, subagents: snapshot.subagents,
-      llmRecovery: snapshot.llmRecovery, automaticRetry: snapshot.automaticRetry })), truncated: queue.length > 0 };
+  const report = { caseName: options.caseName, phase: options.phase, histories, failureRead,
+    snapshots: snapshots.entries, truncated: queue.length > 0 || snapshots.truncated };
   const text = JSON.stringify(report);
   assert(Buffer.byteLength(text) + 1 <= 4 * 1024 * 1024, "Retry failure evidence exceeded its 4 MiB bound");
   const path = join(archive, "evidence.json");
@@ -189,23 +233,85 @@ export function assertCounterOnce(item: RetryFixtureCase): void {
   assert.deepEqual(readFileSync(item.counter, "utf8").trimEnd().split(/\r?\n/), [item.leaf.marker], "Manual/automatic retry replayed the completed side-effecting tool");
 }
 
+type RetryChild = ReturnType<typeof identity> & { sessionPath: string };
+type RetryAdmission = { child: RetryChild; toolCallId: string; predecessor: string; phase: number };
+const retryAdmissionPhases = ["reserved", "created", "materialized", "background_admitted", "launch_acknowledged"];
+
+/** Bind an unfinished automatic period to its proven predecessor, never synthesize native job fields. */
+function retryJournalPeriods(journalEntries: JsonEntry[], snapshot: SessionSnapshotDto,
+  obligations: Map<string, RetryAdmission>, terminal?: "complete" | "error") {
+  const jobs = [...readSubagentJournal(journalEntries).jobs.values()];
+  for (const id of obligations.keys()) assert(jobs.some(job => job.launchId === id), "An admission obligation's execution period disappeared");
+  const children = new Map<string, RetryChild>();
+  const periods: Array<{ job: InternalSubagentJob; child: RetryChild; pending: boolean }> = [];
+  const latest = new Map<string, typeof periods[number]>();
+  for (const job of jobs) {
+    const obligation = obligations.get(job.launchId);
+    const pending = !job.launchAcknowledged;
+    let child: RetryChild;
+    if (pending || obligation) {
+      const predecessor = [...latest.values()].find(period => job.toolCallId === `wake:${period.job.launchId}`);
+      assert(predecessor?.job.terminalStatus && job.continuation
+        && job.ownerSessionId === predecessor.child.ownerSessionId && job.agent === predecessor.child.agent
+        && job.agentId === predecessor.child.agentId, "Unfinished admission is not an automatic wake of the same settled child");
+      child = predecessor.child;
+      assert((job.childSessionId === undefined || job.childSessionId === child.childSessionId)
+        && (job.sessionPath === undefined || job.sessionPath === child.sessionPath), "Admission changed the original child UUID/path");
+      const kinds = journalEntries.filter(entry => entry.customType === SUBAGENT_JOB_ENTRY && entry.data?.launchId === job.launchId)
+        .map(entry => entry.data.kind);
+      const phase = Math.min(kinds.length, retryAdmissionPhases.length);
+      assert.deepEqual(kinds.slice(0, phase), retryAdmissionPhases.slice(0, phase), "Invalid automatic admission prefix");
+      if (pending) {
+        assert(phase > 0 && kinds.length < retryAdmissionPhases.length && !job.terminalStatus && !job.terminalSuppressed
+          && job.status === (phase === 1 ? "reserved" : phase === 2 ? "created" : "working"), "Invalid unresolved admission state");
+        assert(!snapshot.subagents.some(visible => visible.launchId === job.launchId), "Unacknowledged admission was already visible");
+        assert(!terminal, "Terminal retry outcome retained an unresolved admission obligation");
+      } else {
+        assert(phase === retryAdmissionPhases.length && job.childSessionId && job.sessionPath, "Admission obligation was not bound and acknowledged");
+      }
+      const expected = { child, toolCallId: job.toolCallId, predecessor: predecessor.job.launchId };
+      if (obligation) {
+        const { phase: previousPhase, ...original } = obligation;
+        assert.deepEqual(expected, original, "Admission obligation changed its original child or predecessor");
+        assert(phase >= previousPhase, "Admission obligation regressed before acknowledgement");
+      }
+      obligations.set(job.launchId, { ...expected, phase });
+    } else {
+      assert(job.childSessionId && job.sessionPath, "Acknowledged period has no native child identity/path");
+      child = { childSessionId: job.childSessionId, sessionPath: job.sessionPath, ownerSessionId: job.ownerSessionId,
+        agent: job.agent, agentId: job.agentId };
+      const original = children.get(child.childSessionId);
+      if (original) assert.deepEqual(child, original, "Retry replaced the original child identity/path");
+      else children.set(child.childSessionId, child);
+    }
+    const previous = latest.get(child.childSessionId);
+    if (previous) assert(previous.job.terminalStatus && job.continuation, "A new busy period replaced an unsettled child execution");
+    const period = { job, child, pending };
+    periods.push(period);
+    latest.set(child.childSessionId, period);
+  }
+  return { jobs, children, periods };
+}
+
 /** Captures native ids/paths once, then compares the same logical tree on recovery. */
 export function captureRetryEvidence(snapshot: SessionSnapshotDto, recovery: LlmRecoveryDto, item: RetryFixtureCase, directory: string) {
   const rootPath = snapshot.session.sessionFile;
   assert(rootPath, "Native root did not materialize");
   const rootEntries = entries(rootPath, directory);
-  const jobs = [...readSubagentJournal(rootEntries).jobs.values()];
-  assert.equal(new Set(jobs.map(job => job.childSessionId)).size, item.depth, "Recovery changed the number of logical children");
-  const target = item.depth ? jobs.find(job => job.childSessionId === recovery.targetSessionId) : undefined;
+  return retainRetryRead("capture", snapshot, recovery, rootPath, rootEntries,
+    () => captureRetryEvidenceFromRead(snapshot, recovery, item, directory, rootPath, rootEntries));
+}
+
+function captureRetryEvidenceFromRead(snapshot: SessionSnapshotDto, recovery: LlmRecoveryDto, item: RetryFixtureCase,
+  directory: string, rootPath: string, rootEntries: JsonEntry[]) {
+  const obligations = new Map<string, RetryAdmission>();
+  const initial = retryJournalPeriods(rootEntries, snapshot, obligations);
+  assert.equal(initial.children.size, item.depth, "Recovery changed the number of logical children");
+  const target = item.depth ? initial.children.get(recovery.targetSessionId) : undefined;
   assert(!item.depth || target?.sessionPath);
   const targetPath = target?.sessionPath ?? rootPath;
   const paths = new Map([[snapshot.session.id, rootPath]]);
-  for (const job of jobs) {
-    assert(job.childSessionId && job.sessionPath && job.launchAcknowledged);
-    const previous = paths.get(job.childSessionId);
-    if (previous) assert.equal(job.sessionPath, previous, "Child path changed between journal periods");
-    paths.set(job.childSessionId, job.sessionPath);
-  }
+  for (const child of initial.children.values()) paths.set(child.childSessionId, child.sessionPath);
   const targetEntries = entries(targetPath, directory);
   const failed = targetEntries.find(entry => entry.id === recovery.failedEntryId);
   assert.equal(failed?.message?.role, "assistant");
@@ -223,7 +329,7 @@ export function captureRetryEvidence(snapshot: SessionSnapshotDto, recovery: Llm
   } else if (target) assert.equal(target.ownerSessionId, snapshot.session.id);
   const verifiedFailures = new Map<string, JsonEntry>();
   const frozenOutcomes = new Map<string, JsonEntry>();
-  const observedPeriods = new Set(jobs.map(job => job.launchId));
+  const observedPeriods = new Set(initial.jobs.map(job => job.launchId));
   const verifyCheckpoint = (checkpoint: LlmRecoveryDto): void => {
     assert(checkpoint.targetSessionId === recovery.targetSessionId && checkpoint.failureId
       && ["available", "starting"].includes(checkpoint.status), "Retry checkpoint targets an unexpected session or state");
@@ -238,7 +344,7 @@ export function captureRetryEvidence(snapshot: SessionSnapshotDto, recovery: Llm
     : snapshot.subagents.findLast(job => job.childSessionId === recovery.targetSessionId)?.llmRecovery;
   assert.deepEqual(announced, recovery, "Snapshot does not expose the supplied live Retry checkpoint");
   verifyCheckpoint(recovery);
-  const check = (current: SessionSnapshotDto, terminal?: "complete" | "error") => {
+  const checkRead = (current: SessionSnapshotDto, journalEntries: JsonEntry[], terminal?: "complete" | "error") => {
     assert.equal(current.session.id, snapshot.session.id);
     assert.equal(current.session.sessionFile, rootPath);
     assert.deepEqual(logicalIdentities(current.subagents), original,
@@ -256,9 +362,9 @@ export function captureRetryEvidence(snapshot: SessionSnapshotDto, recovery: Llm
         assert.equal(control.content, "");
       }
     }
-    const journalEntries = entries(rootPath, directory);
-    const currentJobs = [...readSubagentJournal(journalEntries).jobs.values()];
-    assert.equal(new Set(currentJobs.map(job => job.childSessionId)).size, item.depth, "Retry created a replacement logical child");
+    const inspected = retryJournalPeriods(journalEntries, current, obligations, terminal);
+    const currentJobs = inspected.jobs;
+    assert.equal(inspected.children.size, item.depth, "Retry created a replacement logical child");
     // The HTTP snapshot and this file read are not atomic. Each visible period
     // must exist in the journal, but an active child's newer period may already
     // have been appended after the response was produced.
@@ -292,16 +398,13 @@ export function captureRetryEvidence(snapshot: SessionSnapshotDto, recovery: Llm
       assert(consumed && active, "Expected a live Retry checkpoint or its admitted active recovery");
     }
     const latest = new Map<string, typeof currentJobs[number]>();
-    for (const job of currentJobs) {
-      const previous = latest.get(job.childSessionId!);
-      const originalJob = jobs.find(candidate => candidate.childSessionId === job.childSessionId);
-      assert(originalJob && job.ownerSessionId === originalJob.ownerSessionId && job.agent === originalJob.agent
-        && job.agentId === originalJob.agentId && job.sessionPath === originalJob.sessionPath, "Retry replaced the original child identity");
-      if (previous) assert(previous.terminalStatus && job.continuation, "A new busy period replaced an unsettled child execution");
-      latest.set(job.childSessionId!, job);
+    for (const { job, child, pending } of inspected.periods) {
+      assert.deepEqual(child, initial.children.get(child.childSessionId), "Retry replaced the original child identity");
+      latest.set(child.childSessionId, job);
       const outcomes = journalEntries.filter(entry => entry.customType === SUBAGENT_JOB_ENTRY
         && ["terminal", "background_report"].includes(entry.data?.kind) && entry.data.launchId === job.launchId);
       assert(outcomes.length <= 1, "Premature or duplicate terminal child outcome");
+      if (pending) assert.equal(outcomes.length, 0, "Unacknowledged admission already has a terminal outcome");
       const frozen = frozenOutcomes.get(job.launchId);
       if (frozen) assert.deepEqual(outcomes[0], frozen, "A settled period outcome was changed or overwritten");
       else if (outcomes[0]) frozenOutcomes.set(job.launchId, structuredClone(outcomes[0]));
@@ -338,7 +441,11 @@ export function captureRetryEvidence(snapshot: SessionSnapshotDto, recovery: Llm
     return { rootId: snapshot.session.id, targetSessionId: recovery.targetSessionId, identities: original,
       userRows: paths.size, toolExecutions: 1, terminalOutcomes: terminal ? latest.size : 0 };
   };
-  check(snapshot);
+  const check = (current: SessionSnapshotDto, terminal?: "complete" | "error") => {
+    const journalEntries = entries(rootPath, directory);
+    return retainRetryRead("check", current, recovery, rootPath, journalEntries, () => checkRead(current, journalEntries, terminal));
+  };
+  checkRead(snapshot, rootEntries);
   return { check, targetPath, rootPath };
 }
 
@@ -557,7 +664,7 @@ export async function runLlmRetrySmoke(options: { base: string; root: string; ag
         try { return await retrySmokeRequest(base, `/api/sessions/${id}/snapshot`) as SessionSnapshotDto; }
         catch { return undefined; }
       }));
-      const evidence = preserveRetryFailureEvidence({ root, caseName, phase,
+      const evidence = preserveRetryFailureEvidence({ root, caseName, phase, parentDirectory: process.env.RUNNER_TEMP, error,
         snapshots: snapshots.filter((snapshot): snapshot is SessionSnapshotDto => snapshot !== undefined) });
       console.error(`[smoke] Retry failure evidence: ${evidence} (case=${caseName}, phase=${phase})`);
       if (error instanceof Error) error.message += `\nRetry failure evidence: ${evidence}`;

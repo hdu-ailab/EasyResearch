@@ -148,6 +148,7 @@ jobs:
             ${{ runner.temp }}/easyresearch-update-fixture-*/*.log
             ${{ runner.temp }}/easyresearch-npm-update-*/report.json
             ${{ runner.temp }}/easyresearch-npm-update-*/*.log
+            ${{ runner.temp }}/easyresearch-retry-failure-*/evidence.json
           retention-days: 7
           if-no-files-found: warn
 
