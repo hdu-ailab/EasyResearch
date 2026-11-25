@@ -19,6 +19,9 @@ import type {
 import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
+import { guardExtensionReload } from "../runtime/extensions-guard";
+import { installAgentToolPolicy, type ObservableToolRuntime } from "../runtime/agent-tool-policy";
+import type { RegisteredAgentTool } from "../subagent/agents";
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import { resolveSystemPrompt } from "../runtime/system-prompt";
 import {
@@ -153,6 +156,7 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
     getProviderAuthStatus(providerId: string): { configured: boolean };
   };
   readonly resourceLoader: {
+    getExtensions?(): { errors: readonly { path: string }[]; runtime?: ObservableToolRuntime };
     getSkills(): {
       skills: ReadonlyArray<{ name: string; description?: string }>;
       diagnostics: readonly unknown[];
@@ -173,6 +177,7 @@ export interface InProcessAgentSession extends RuntimeSteeringSession {
     getBranch(): unknown[];
   };
   getSessionStats(): { contextUsage?: ContextUsageDto };
+  getAllTools?(): RegisteredAgentTool[];
   subscribe(listener: (event: unknown) => void): () => void;
   prompt(message: string, options?: SteerPromptOptions): Promise<void>;
   sendCustomMessage(
@@ -360,6 +365,11 @@ function createBindingSession(session: BindableAgentSession, recovery?: LlmRecov
       await session.reload();
       configureBatchedSteering(session);
     },
+    toolSnapshot: () => ({
+      tools: session.getAllTools?.() ?? [],
+      errors: session.resourceLoader.getExtensions?.().errors ?? [],
+    }),
+    installToolPolicy: (agent, changed) => installAgentToolPolicy(session, agent, changed),
     async abort() {
       recovery?.blockCurrentRun();
       // Pi signals abort synchronously, but its promise waits for agent_settled,
@@ -494,7 +504,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         shellManager,
         shellOwner: () => ({ sessionID: session!.sessionId, cwd: options.cwd }),
       });
-      const resourceLoader = deps.createResourceLoader({
+      const resourceLoader = guardExtensionReload(deps.createResourceLoader({
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
@@ -514,7 +524,7 @@ export function createPiAgentSessionCreator(deps: PiRuntimeDependencies): AgentS
         skillsOverride: applySkillSnapshotBaseDirs,
         systemPromptOverride: resolveSystemPrompt,
         appendSystemPromptOverride: (base) => binding.appendSystemPrompt(base),
-      });
+      }), { cwd: options.cwd, agentDir: deps.agentDir });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });
       const model = binding.model();
       const createOptions: Record<string, unknown> = {

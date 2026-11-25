@@ -19,6 +19,11 @@
     padding-block: 4px;
   }
 
+  .er-chat-message[data-message-role="user"] {
+    inline-size: 100%;
+    align-items: flex-end;
+  }
+
   .er-chat-message-label {
     color: var(--color-v2-text-text-muted);
     font-size: 12px;

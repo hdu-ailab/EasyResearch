@@ -44,6 +44,7 @@ export interface AgentConfig extends AgentDefinition {
   model?: string;
   thinking?: ThinkingLevel;
   effectiveTools: string[];
+  toolDiagnostics?: string[];
   effectiveSkills: string[];
   effectiveSkillPaths: string[];
   missingSkills: string[];
@@ -67,6 +68,40 @@ export const CONTROLLED_TOOL_INVENTORY = [
 ] as const;
 const RESEARCH_ASSISTANT_TOOL_INVENTORY = [...CONTROLLED_TOOL_INVENTORY, "ssh-bash"] as const;
 const EXPERIMENT_TOOL_INVENTORY = [...CONTROLLED_TOOL_INVENTORY, "ssh-bash"] as const;
+
+export interface RegisteredAgentTool {
+  name: string;
+  sourceInfo?: { path: string; scope?: string };
+}
+
+export function defaultAgentTools(name: string): readonly string[] {
+  return name === RESEARCH_ASSISTANT_AGENT ? RESEARCH_ASSISTANT_TOOL_INVENTORY
+    : name === "experiment" ? EXPERIMENT_TOOL_INVENTORY : CONTROLLED_TOOL_INVENTORY;
+}
+
+export function isUserExtensionTool(tool: RegisteredAgentTool): boolean {
+  const path = tool.sourceInfo?.path;
+  return !!path && !path.startsWith("builtin:") && !path.startsWith("<");
+}
+
+/** Select from real registrations; a configured name alone grants no capability. */
+export function selectAgentTools(
+  agent: Pick<AgentDefinition, "name" | "tools">,
+  registered: readonly RegisteredAgentTool[],
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const available = new Set(registered.map(tool => tool.name));
+  if (agent.tools?.length) {
+    return normalizeLocalShellTools(agent.tools, platform).filter(name => available.has(name));
+  }
+  const controlled = new Set(defaultAgentTools(agent.name));
+  if (agent.name === RESEARCH_ASSISTANT_AGENT) {
+    return registered.filter(tool => !tool.sourceInfo?.path.startsWith("builtin:") || controlled.has(tool.name))
+      .map(tool => tool.name);
+  }
+  return registered.filter(tool => !isUserExtensionTool(tool)
+    && (!tool.sourceInfo?.path.startsWith("builtin:") || controlled.has(tool.name))).map(tool => tool.name);
+}
 const BUILTIN_ALIASES: Record<string, string> = {
   [RESEARCH_ASSISTANT_AGENT]: "Research Assistant",
 };
@@ -246,13 +281,7 @@ export function resolveAgentCatalog(
     const runtimeDefault = snapshot.defaults?.[definition.name];
     const tools = definition.tools ? [...definition.tools] : undefined;
     const skills = definition.skills ? [...definition.skills] : undefined;
-    const inventory = tools ?? [
-      ...(definition.name === RESEARCH_ASSISTANT_AGENT
-        ? RESEARCH_ASSISTANT_TOOL_INVENTORY
-        : definition.name === "experiment"
-          ? EXPERIMENT_TOOL_INVENTORY
-          : CONTROLLED_TOOL_INVENTORY),
-    ];
+    const inventory = tools ?? [...defaultAgentTools(definition.name)];
     const { effectiveSkills, effectiveSkillPaths, missingSkills } = resolveSkillSelection(skills, {
       cwd,
       agentDir,

@@ -2129,10 +2129,19 @@ describe("SettingsModal", () => {
   it("refreshes current Global diagnostics after a successful Agent save", async () => {
     const user = userEvent.setup();
     const metadata = vi.mocked(api.listAgents).getMockImplementation()!;
-    vi.mocked(api.listAgents)
-      .mockImplementationOnce(metadata)
-      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["before-save"] }] as never)
-      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["after-save"] }] as never);
+    const write = vi.mocked(api.writeAgentResource).getMockImplementation()!;
+    let saved = false;
+    vi.mocked(api.listAgents).mockImplementation(async (cwd) =>
+      (await metadata(cwd)).map((agent) => ({
+        ...agent,
+        missingSkills: agent.name === "search" ? [saved ? "after-save" : "before-save"] : [],
+      })),
+    );
+    vi.mocked(api.writeAgentResource).mockImplementation(async (...args) => {
+      const result = await write(...args);
+      saved = true;
+      return result;
+    });
     renderSettings();
     await selectCategory(user, "Skills and tools");
     expect(await screen.findByText("before-save")).toBeVisible();
@@ -2380,6 +2389,65 @@ describe("SettingsModal", () => {
     expect(within(details).getByText("paper-search")).toBeTruthy();
   });
 
+  it("shows scoped registered tools and load diagnostics, then removes tools after a configuration refresh", async () => {
+    const user = userEvent.setup();
+    let removed = false;
+    vi.mocked(api.listAgents).mockImplementation(async (cwd) => [
+      {
+        name: "research-assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "research-assistant.md",
+        tools: ["unregistered"],
+        effectiveTools: ["read", ...(!removed ? [cwd ? "project_tool" : "global_tool"] : [])],
+        effectiveSkills: [],
+        missingSkills: [],
+        toolDiagnostics: ["Could not load extension: /agent/extensions/broken.ts"],
+      },
+    ]);
+    const view = render(settingsElement());
+    await selectCategory(user, "Skills and tools");
+    expect(await screen.findByText("global_tool")).toBeVisible();
+    expect(screen.queryByText("unregistered")).toBeNull();
+    expect(screen.getByText("Could not load extension: /agent/extensions/broken.ts")).toBeVisible();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Tool scope" }), "/papers/project-a");
+    expect(await screen.findByText("project_tool")).toBeVisible();
+    expect(screen.queryByText("global_tool")).toBeNull();
+    removed = true;
+    view.rerender(settingsElement(undefined, undefined, 2));
+    await waitFor(() => expect(screen.queryByText("project_tool")).toBeNull());
+  });
+
+  it("recovers scoped Tool inventory on manual Refresh without a new configuration event", async () => {
+    const user = userEvent.setup();
+    let removed = false;
+    vi.mocked(api.listAgents).mockImplementation(async (cwd) => [
+      {
+        name: "research-assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "research-assistant.md",
+        effectiveTools: ["read", ...(cwd && !removed ? ["project_tool"] : [])],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+    ]);
+    renderSettings();
+    await selectCategory(user, "Skills and tools");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Tool scope" }), "/papers/project-a");
+    expect(await screen.findByText("project_tool")).toBeVisible();
+    removed = true;
+    await selectCategory(user, "Agents");
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).not.toBeDisabled());
+    await selectCategory(user, "Skills and tools");
+    expect(screen.queryByText("project_tool")).toBeNull();
+  });
+
   it("opens the agent config modal with the enable switch, model, thinking, and edit controls", async () => {
     const user = userEvent.setup();
     renderSettings();
@@ -2431,6 +2499,41 @@ describe("SettingsModal", () => {
       "search",
       "---\nname: search\ndescription: Searches\nenable: false\n---\nPrompt\n",
     );
+  });
+
+  it("keeps registration-backed tools after an Agent mutation returns configured-only metadata", async () => {
+    const user = userEvent.setup();
+    let enabled = true;
+    const accepted = {
+      name: "search",
+      description: "Searches",
+      enabled: true,
+      builtin: true,
+      source: "bundled" as const,
+      filePath: "search.md",
+      effectiveTools: ["registered_tool"],
+      effectiveSkills: [],
+      missingSkills: [],
+    };
+    vi.mocked(api.listAgents).mockImplementation(async () => [{ ...accepted, enabled }]);
+    vi.mocked(api.readAgentResource).mockResolvedValue({
+      ...accepted,
+      content: "---\nname: search\ndescription: Search\nenable: true\n---\nSearch.",
+    });
+    vi.mocked(api.writeAgentResource).mockImplementation(async () => {
+      enabled = false;
+      return { ...accepted, enabled, effectiveTools: ["not_registered"] };
+    });
+    renderSettings();
+    const dialog = await openAgentConfig(user, "Search");
+    await user.click(within(dialog).getByRole("switch", { name: "Enable Search" }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole("switch", { name: "Enable Search" })).toHaveAttribute("aria-checked", "false"),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "View tools & skills details" }));
+    const details = screen.getByRole("dialog", { name: "Search resources" });
+    expect(within(details).getByText("registered_tool")).toBeVisible();
+    expect(within(details).queryByText("not_registered")).toBeNull();
   });
 
   it("stacks the details dialog above the agent config modal and Esc unwinds top-down", async () => {

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assertSafeExtensionSources, ExtensionGuardError } from "./extensions-guard";
+import { assertSafeExtensionSources, ExtensionGuardError, guardExtensionReload } from "./extensions-guard";
 
 const originalGetAgentDir = vi.hoisted(() => ({ value: "" }));
 
@@ -27,6 +27,21 @@ describe("assertSafeExtensionSources (ADR-032)", () => {
   it("passes when no settings arrays exist", () => {
     expect(() => assertSafeExtensionSources({ cwd })).not.toThrow();
     expect(() => assertSafeExtensionSources({})).not.toThrow();
+  });
+
+  it("checks sources again before each native resource reload", async () => {
+    let loaded = 0;
+    const native = { async reload() { loaded++; } };
+    const loader = guardExtensionReload(native, { agentDir, cwd });
+    await loader.reload();
+    expect(loaded).toBe(1);
+    mkdirSync(join(cwd, ".easyresearch"), { recursive: true });
+    writeFileSync(join(cwd, ".easyresearch", "settings.json"), JSON.stringify({ packages: ["npm:unwanted"] }));
+    await expect(loader.reload()).rejects.toThrow(ExtensionGuardError);
+    expect(loaded).toBe(1);
+    writeFileSync(join(cwd, ".easyresearch", "settings.json"), "{}");
+    await loader.reload();
+    expect(loaded).toBe(2);
   });
 
   it("allows extension discovery directories (global and project)", () => {

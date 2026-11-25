@@ -18,6 +18,55 @@ afterEach(() => {
 });
 
 describe("EasyResearch native identity", () => {
+	it("reloads local extension helpers under Bun without retaining its native import cache", () => {
+		const home = mkdtempSync(join(tmpdir(), "easyresearch-bun-extension-"));
+		tempDirs.push(home);
+		const agentDir = join(home, "agent");
+		const cwd = join(home, "paper");
+		const extension = join(agentDir, "extensions", "probe");
+		mkdirSync(extension, { recursive: true });
+		mkdirSync(cwd);
+		const helper = join(extension, "helper.ts");
+		writeFileSync(helper, 'export const version = "first";');
+		writeFileSync(join(extension, "index.ts"), `
+import { Type } from "typebox";
+import { version } from "./helper.ts";
+export default api => api.registerTool({
+  name: "cache_probe", label: "Cache probe", description: "Read helper",
+  parameters: Type.Object({}),
+  execute: async () => ({content: [{ type: "text", text: version }], details: {}})
+});`);
+		const output = execFileSync("bun", ["-e", `
+const { writeFileSync, renameSync } = await import("node:fs");
+const { importPi } = await import("./src/runtime/pi-import.ts");
+const pi = await importPi();
+const cwd = ${JSON.stringify(cwd)}, agentDir = ${JSON.stringify(agentDir)};
+const settingsManager = pi.SettingsManager.inMemory();
+const loader = new pi.DefaultResourceLoader({cwd, agentDir, settingsManager,
+ noSkills:true, noContextFiles:true, noThemes:true, noPromptTemplates:true});
+await loader.reload({resolveProjectTrust: async () => true});
+const { session } = await pi.createAgentSession({cwd, agentDir, settingsManager, resourceLoader: loader,
+ sessionManager: pi.SessionManager.inMemory(cwd)});
+try {
+ await session.bindExtensions({mode:"print"});
+ const run = () => session.getToolDefinition("cache_probe").execute("probe", {}, undefined, undefined, {});
+ const before = await run();
+ writeFileSync(${JSON.stringify(helper + ".next")}, 'export const version = "second";');
+ renameSync(${JSON.stringify(helper + ".next")}, ${JSON.stringify(helper)});
+ await session.reload();
+ console.log(JSON.stringify({before, after:await run()}));
+} finally {
+ await session.extensionRunner.emit({type:"session_shutdown",reason:"quit"});
+ session.dispose();
+}`], {
+			cwd: process.cwd(), encoding: "utf8", timeout: 20_000,
+			env: { ...process.env, HOME: home, USERPROFILE: home, EASYRESEARCH_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", JITI_TRY_NATIVE: "true" },
+		});
+		const result = JSON.parse(output.trim());
+		expect(result.before.content[0].text).toBe("first");
+		expect(result.after.content[0].text).toBe("second");
+	}, 25_000);
+
 	it("keeps EasyResearch identity when discovery is imported first", () => {
 		const home = mkdtempSync(join(tmpdir(), "easyresearch-home-"));
 		tempDirs.push(home);

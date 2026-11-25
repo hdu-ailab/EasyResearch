@@ -46,6 +46,8 @@ import { getAgentDir } from "./pi-import";
 import { parsePiSettingsJson } from "./pi-settings-json";
 import { parseProviderTimeoutSettings } from "./provider-timeout-settings";
 import { ConfigurationSourceError } from "./configuration-source-error";
+import { RuntimeToolInventory, type RuntimeToolSnapshot } from "./runtime-tool-inventory";
+import { fingerprintExtensionResources } from "./extension-resources";
 import {
   fingerprintGlobalSkillResources,
   fingerprintSkillRoot,
@@ -74,6 +76,7 @@ export interface ConfigurationFingerprint {
   sessionTitleSettings?: SessionTitleSettingsDto;
   providerTimeoutSettings?: ProviderTimeoutSettingsDto;
   globalSkills: string;
+  extensions?: string;
   homeSkills: string | null;
   globalSkillDescriptors: readonly AcceptedSkillDescriptor[];
   homeSkillDescriptors: readonly AcceptedSkillDescriptor[] | null;
@@ -127,6 +130,7 @@ export interface ConfigurationChange {
   agentsChanged?: boolean;
   modelsChanged?: boolean;
   skillsChanged?: boolean;
+  extensionsChanged?: boolean;
   projectCwds?: readonly string[];
   availabilityChanged?: boolean;
   force?: boolean;
@@ -170,6 +174,7 @@ export interface LiveConfiguration {
   isCurrent(generation: number): boolean;
   notify(change: ConfigurationChange): Promise<ConfigurationSynchronizationOutcome>;
   resolveAgents(cwd?: string): Promise<AgentConfig[]>;
+  updateRuntimeTools?(owner: object, snapshot: RuntimeToolSnapshot | undefined): void;
   subscribe(listener: (event: ConfigurationEvent) => void): () => void;
   close(): Promise<void>;
 }
@@ -228,6 +233,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
   const resolveCatalog = options.resolveCatalog ?? resolveAgentCatalog;
   const createWatcherManager = options.createWatcherManager ?? createConfigurationWatcherManager;
   const listeners = new Set<(event: ConfigurationEvent) => void>();
+  const toolInventory = new RuntimeToolInventory(agentDir);
 
   let currentGeneration = 0;
   let currentAvailabilityEpoch = 0;
@@ -508,6 +514,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         const runtimeChanged = agentsChanged
           || modelsChanged
           || skillsChanged
+          || candidate.extensions !== currentFingerprint?.extensions
           || currentFingerprint === undefined
           || !isDeepStrictEqual(nextCompactionPolicy, currentCompactionPolicy)
           || !isDeepStrictEqual(nextProviderTimeoutSettings, currentProviderTimeoutSettings);
@@ -691,12 +698,14 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
       onError(path) {
         publishWatcherError(path);
       },
-      fingerprintProject(cwd) {
-        return fingerprintSkillRoot(
+      async fingerprintProject(cwd) {
+        const skills = await fingerprintSkillRoot(
           join(cwd, ".easyresearch", "skills"),
           `project:${cwd}`,
           skillSnapshotRoot,
         ).catch(() => { throw new ConfigurationSourceError(join(cwd, ".easyresearch", "skills"), "read"); });
+        const extensions = await fingerprintExtensionResources(join(cwd, ".easyresearch"));
+        return { ...skills, value: `${skills.value}:${extensions.value}` };
       },
     });
   } catch (error) {
@@ -811,7 +820,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         throw new ConfigurationUnavailableError();
       }
       try {
-        return resolveCatalog(snapshot, {
+        return toolInventory.project(resolveCatalog(snapshot, {
           ...catalogOptions,
           agentDir,
           cwd,
@@ -823,10 +832,18 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
               ? {}
               : { project: projectSkillDescriptors }),
           },
-        }).agents;
+        }).agents, cwd);
       } catch (cause) {
         throw new Error("Agent configuration could not be resolved.", { cause });
       }
+    },
+    updateRuntimeTools(owner, snapshot) {
+      if (closed || !toolInventory.update(owner, snapshot)) return;
+      publish({
+        type: "config.updated", generation: currentGeneration, availabilityEpoch: currentAvailabilityEpoch,
+        agentsChanged: false, modelsChanged: false, skillsChanged: false, runtimeChanged: false,
+        toolsChanged: true,
+      });
     },
     subscribe(listener) {
       if (closed) return () => {};
@@ -1006,6 +1023,7 @@ export async function fingerprintConfiguration(
   const homeSkills = skillResources.homeSkills?.value ?? null;
   const globalSkillDescriptors = skillResources.globalSkills.skillDescriptors;
   const homeSkillDescriptors = skillResources.homeSkills?.skillDescriptors ?? null;
+  const extensions = (await fingerprintExtensionResources(agentDir)).value;
   const value = createHash("sha256")
     .update("easyresearch-configuration-v4\0")
     .update(agents)
@@ -1016,6 +1034,7 @@ export async function fingerprintConfiguration(
     .update(JSON.stringify(sessionTitleSettings))
     .update(JSON.stringify(providerTimeoutSettings))
     .update(globalSkills)
+    .update(extensions)
     .update(homeSkills ?? "disabled")
     .update(diagnostic ?? "valid")
     .update("\0")
@@ -1033,6 +1052,7 @@ export async function fingerprintConfiguration(
     sessionTitleSettings,
     providerTimeoutSettings,
     globalSkills,
+    extensions,
     homeSkills,
     globalSkillDescriptors,
     homeSkillDescriptors,
@@ -1068,6 +1088,7 @@ function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFin
     isDeepStrictEqual(left.sessionTitleSettings, right.sessionTitleSettings) &&
     isDeepStrictEqual(left.providerTimeoutSettings, right.providerTimeoutSettings) &&
     left.globalSkills === right.globalSkills &&
+    left.extensions === right.extensions &&
     left.homeSkills === right.homeSkills &&
     left.diagnostic === right.diagnostic &&
     left.invalidSettingsLayers?.agentDefaults === right.invalidSettingsLayers?.agentDefaults &&

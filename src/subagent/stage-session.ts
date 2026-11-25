@@ -14,6 +14,8 @@ import { runCleanupSteps } from "../runtime/cleanup";
 import { toJsonSessionEvent } from "../runtime/json-session-event";
 import { ConfigurationUnavailableError, type LiveConfiguration } from "../runtime/live-configuration";
 import { excludedLocalShellTools } from "../runtime/platform-tools";
+import { guardExtensionReload } from "../runtime/extensions-guard";
+import { installAgentToolPolicy, type ObservableToolRuntime } from "../runtime/agent-tool-policy";
 import { createProviderTimeoutExtension } from "../extensions/provider-timeout";
 import { createFileWriteRecoveryExtension } from "../extensions/file-write-recovery";
 import { createLlmRetryPolicyBinding } from "../runtime/llm-retry-policy";
@@ -31,7 +33,7 @@ import { assertModelRequestReady, ModelRequestError } from "../runtime/model-req
 import { configureBatchedSteering, type RuntimeSteeringSession } from "../runtime/steering-mode";
 import type { AgentSessionNetworkRouter } from "../runtime/network-routing";
 import { createConfiguredModelRuntime } from "../web/auth-runtime";
-import type { AgentConfig } from "./agents";
+import type { AgentConfig, RegisteredAgentTool } from "./agents";
 import { createCompactionCancellationExtension, prioritizeCompactionCancellation } from "./compaction-cancellation";
 import {
   AgentConfigurationChangedError,
@@ -110,7 +112,7 @@ export interface StageLaunchOptions {
   >, "availabilityEpoch" | "synchronize"> & {
     readonly availabilityEpoch?: number;
     synchronize(options?: { projectCwds?: readonly string[] }): Promise<unknown>;
-  } & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
+  } & Partial<Pick<LiveConfiguration, "compactionPolicy" | "updateRuntimeTools">>;
   signal?: AbortSignal;
 }
 
@@ -149,7 +151,7 @@ export interface StageAgentSession extends RuntimeSteeringSession {
   subscribe(listener: (event: unknown) => void): () => void;
   bindExtensions(bindings: unknown): Promise<void>;
   setSessionName(name: string): void;
-  getAllTools(): Array<{ name: string }>;
+  getAllTools(): RegisteredAgentTool[];
   setActiveToolsByName(names: string[]): void;
   reload(): Promise<void>;
   setModel(model: Model<any>): Promise<void>;
@@ -168,6 +170,7 @@ export interface StageAgentSession extends RuntimeSteeringSession {
 }
 
 interface StageResourceLoader {
+  getExtensions?(): { errors: readonly { path: string }[]; runtime?: ObservableToolRuntime };
   reload(options?: { resolveProjectTrust?: () => Promise<boolean> }): Promise<void>;
 }
 
@@ -193,7 +196,7 @@ export interface StageExtensionRuntime {
   >, "availabilityEpoch" | "synchronize"> & {
     readonly availabilityEpoch?: number;
     synchronize(options?: { projectCwds?: readonly string[] }): Promise<unknown>;
-  } & Partial<Pick<LiveConfiguration, "compactionPolicy">>;
+  } & Partial<Pick<LiveConfiguration, "compactionPolicy" | "updateRuntimeTools">>;
   coordinator: SubagentCoordinator;
   supervisor: SubagentSupervisor;
   publishTimelineEntry: (entry: unknown) => void;
@@ -483,7 +486,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
       result.agentSource = currentAgent.source;
       const modelRuntime = binding.modelRuntime();
       supervisor = deps.createDirectChildSupervisor(options.coordinator, launchStage);
-      const resourceLoader = deps.createResourceLoader({
+      const resourceLoader = guardExtensionReload(deps.createResourceLoader({
         cwd: options.cwd,
         agentDir: deps.agentDir,
         settingsManager,
@@ -515,7 +518,7 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
         skillsOverride: applySkillSnapshotBaseDirs,
         systemPromptOverride: resolveSystemPrompt,
         appendSystemPromptOverride: (base) => binding!.appendSystemPrompt(base),
-      });
+      }), { cwd: options.cwd, agentDir: deps.agentDir });
       await resourceLoader.reload({ resolveProjectTrust: async () => true });
       const model = binding.model();
       if (options.reservation.description !== undefined && !options.resume && !options.restoreIdle) {
@@ -741,6 +744,13 @@ export function createStageSessionLauncher(deps: StageSessionDependencies): Stag
           return session!.thinkingLevel;
         },
         reload: () => session!.reload(),
+        toolSnapshot: () => ({
+          tools: session!.getAllTools(),
+          errors: resourceLoader.getExtensions?.().errors ?? [],
+        }),
+        installToolPolicy: (agent, changed) => installAgentToolPolicy({
+          resourceLoader, getAllTools: () => session!.getAllTools(),
+        }, agent, changed),
         async abort() {
           recovery.blockCurrentRun();
           // Pi signals abort synchronously, then waits for this event drain to

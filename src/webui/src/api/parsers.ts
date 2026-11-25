@@ -872,6 +872,9 @@ export function parseAgent(value: unknown): AgentDto {
     ...(typeof source.effectiveModel === "string" ? { effectiveModel: source.effectiveModel } : {}),
     ...(isThinkingLevel(source.thinking) ? { thinking: source.thinking } : {}),
     effectiveTools,
+    ...(source.toolDiagnostics === undefined
+      ? {}
+      : { toolDiagnostics: stringArray(source.toolDiagnostics, "toolDiagnostics") }),
     effectiveSkills,
     missingSkills,
     ...(tools !== undefined ? { tools } : {}),
@@ -921,6 +924,9 @@ export function parseConfigurationEvent(value: unknown): PublicConfigurationEven
     if (source.availabilityChanged !== undefined && source.availabilityChanged !== true) {
       throw new Error("Invalid API response: availabilityChanged must be true");
     }
+    if (source.toolsChanged !== undefined && source.toolsChanged !== true) {
+      throw new Error("Invalid API response: toolsChanged must be true");
+    }
     return {
       type: "config.updated",
       bootId,
@@ -932,6 +938,7 @@ export function parseConfigurationEvent(value: unknown): PublicConfigurationEven
       ...(availabilityEpoch === undefined ? {} : { availabilityEpoch }),
       ...(source.availabilityChanged === true ? { availabilityChanged: true } : {}),
       ...(source.apiUsageChanged === true ? { apiUsageChanged: true } : {}),
+      ...(source.toolsChanged === true ? { toolsChanged: true } : {}),
       ...(projectWatchLeaseId === undefined ? {} : { projectWatchLeaseId }),
     };
   }

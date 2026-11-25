@@ -395,6 +395,7 @@ export interface ResourceSettingsPanelProps {
   initialMarketplace?: boolean;
   onInstalled?(): void;
   tools: readonly string[];
+  toolDiagnostics?: readonly string[];
   skills: readonly SkillResourceDto[];
   projects: readonly { cwd: string }[];
   diagnosticScope: string;
@@ -409,6 +410,7 @@ export function ResourceSettingsPanel({
   initialMarketplace = false,
   onInstalled = () => undefined,
   tools,
+  toolDiagnostics = [],
   skills,
   projects,
   diagnosticScope,
@@ -441,7 +443,22 @@ export function ResourceSettingsPanel({
       />
       <div hidden={market} className="flex flex-col gap-4">
         <section className={`${sectionClass} p-4`} aria-label={t("settings.resources.tools")}>
-          <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.tools")}</h3>
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.tools")}</h3>
+            <select
+              aria-label={t("settings.resources.toolScope")}
+              className="h-7 min-w-0 max-w-[240px] rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[12px] text-v2-text-text-base focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600"
+              value={diagnosticScope}
+              onChange={(event) => onScopeChange(event.target.value)}
+            >
+              <option value="global">{t("config.global")}</option>
+              {projects.map((project) => (
+                <option key={project.cwd} value={project.cwd}>
+                  {project.cwd}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {tools.length > 0 ? (
               tools.map((tool) => (
@@ -456,6 +473,13 @@ export function ResourceSettingsPanel({
               <span className="text-[12px] text-v2-text-text-faint">{t("settings.resources.noTools")}</span>
             )}
           </div>
+          {toolDiagnostics.length > 0 && (
+            <ul className="mt-2 list-inside list-disc break-words text-[12px] text-v2-text-text-muted">
+              {toolDiagnostics.map((diagnostic) => (
+                <li key={diagnostic}>{diagnostic}</li>
+              ))}
+            </ul>
+          )}
         </section>
         <section className={`${sectionClass} p-4`} aria-label={t("settings.resources.skills")}>
           <div className="flex min-w-0 items-center justify-between gap-3">

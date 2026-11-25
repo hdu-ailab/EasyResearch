@@ -80,6 +80,7 @@ export function agentToDto(agent: AgentConfig, effectiveModel: string | undefine
     thinking: isThinkingLevel(agent.thinking) ? agent.thinking : undefined,
     tools: agent.tools,
     effectiveTools: agent.effectiveTools,
+    ...(agent.toolDiagnostics?.length ? { toolDiagnostics: agent.toolDiagnostics } : {}),
     subagents: agent.subagents,
     skills: agent.skills,
     effectiveSkills: agent.effectiveSkills,

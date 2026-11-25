@@ -20,6 +20,19 @@ export interface ExtensionGuardOptions {
   cwd?: string;
 }
 
+/** Cover startup, managed refresh and native extension-command reload alike. */
+export function guardExtensionReload<T extends { reload(...args: any[]): Promise<void> }>(
+  loader: T,
+  scope: ExtensionGuardOptions,
+): T {
+  const reload = loader.reload.bind(loader);
+  loader.reload = async (...args) => {
+    assertSafeExtensionSources(scope);
+    await reload(...args);
+  };
+  return loader;
+}
+
 export function assertSafeExtensionSources(options: ExtensionGuardOptions = {}): void {
   const agentDir = options.agentDir ?? getAgentDir();
   const offenders: string[] = [];

@@ -17,6 +17,9 @@ let cachedPi: typeof import("@earendil-works/pi-coding-agent") | null = null;
 
 export async function importPi(): Promise<typeof import("@earendil-works/pi-coding-agent")> {
 	if (cachedPi) return cachedPi;
+	// Match Pi's compiled loader: Bun-native imports otherwise keep user helper
+	// modules cached across resource reloads. Fixed once, never toggled per load.
+	if (typeof Bun !== "undefined") process.env.JITI_TRY_NATIVE = "false";
 	const previous = process.env.PI_PACKAGE_DIR;
 	process.env.PI_PACKAGE_DIR = piPackageRoot();
 	try {

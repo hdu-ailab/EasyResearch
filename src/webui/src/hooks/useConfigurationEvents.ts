@@ -164,12 +164,14 @@ export function useConfigurationEvents(): ConfigurationState {
           const generationChanged = nextGeneration > current.generation;
           const availabilityChanged = nextAvailabilityEpoch > current.availabilityEpoch;
           const availabilityOnly = event.type === "config.updated" && event.availabilityChanged === true;
+          const toolsChanged = event.type === "config.updated" && event.toolsChanged === true;
           return {
             bootId: coordinator.bootId,
             generation: nextGeneration,
             availabilityEpoch: nextAvailabilityEpoch,
-            revision: current.revision + (generationChanged || availabilityChanged ? 1 : 0),
-            error: event.type === "config.error" ? event.message : availabilityOnly ? current.error : null,
+            revision: current.revision + (generationChanged || availabilityChanged || toolsChanged ? 1 : 0),
+            error:
+              event.type === "config.error" ? event.message : availabilityOnly || toolsChanged ? current.error : null,
             runtimeReplaced: false,
           };
         });

@@ -5,7 +5,7 @@ import { createAgentDefinitionExtension } from "./index";
 
 function binding(tools: string[] | undefined): AgentRuntimeBinding {
   return {
-    current: () => ({ tools }) as ReturnType<AgentRuntimeBinding["current"]>,
+    current: () => ({ name: "research-assistant", tools }) as ReturnType<AgentRuntimeBinding["current"]>,
     skillPaths: () => ["/skills/workflow"],
     ensureCurrent: vi.fn(async () => {}),
     reapplyCompaction: vi.fn(async () => {}),

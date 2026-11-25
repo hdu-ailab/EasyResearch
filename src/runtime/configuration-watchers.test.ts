@@ -18,6 +18,7 @@ import {
   type ResourceWatchChange,
 } from "./configuration-watchers";
 import type { ConfigurationWatchImplementation } from "./live-configuration";
+import { fingerprintExtensionResources } from "./extension-resources";
 import { fingerprintSkillRoot, type SkillScopeFingerprint } from "./resource-fingerprint";
 import { importPi } from "./pi-import";
 
@@ -71,6 +72,7 @@ function realHarness(
   paths: ReturnType<typeof workspace>,
   fingerprintProject: (cwd: string) => Promise<SkillScopeFingerprint> = (cwd) =>
     fingerprintSkillRoot(join(cwd, ".easyresearch", "skills"), `project:${cwd}`),
+  nativeAnchors = false,
 ): RealHarness {
   const changes: ResourceWatchChange[] = [];
   const errors = { count: 0 };
@@ -79,7 +81,7 @@ function realHarness(
   const manager = createConfigurationWatcherManager({
     agentDir: paths.agentDir,
     homeDir: paths.homeDir,
-    watch(paths, options) {
+    watch: nativeAnchors ? undefined : (paths, options) => {
       const watcher = watch(paths, options);
       watchers.push(watcher);
       return watcher;
@@ -504,7 +506,6 @@ describe("real stable-anchor resource watching", () => {
       writeFileSync(join(paths.agentDir, "bundled", "agents", "bundled.md"), "inert", "utf8");
       writeFileSync(join(paths.agentDir, "bundled", "skills", "bundled", "SKILL.md"), "inert", "utf8");
       writeFileSync(join(paths.homeDir, "home-note.md"), "inert", "utf8");
-      writeFileSync(join(paths.project, ".easyresearch", "settings.json"), "{}", "utf8");
       writeFileSync(join(external, "SKILL.md"), "outside-two", "utf8");
       writeFileSync(join(globalSkills, ".hidden", "SKILL.md"), "hidden", "utf8");
       writeFileSync(join(globalSkills, "node_modules", "dependency", "SKILL.md"), "dependency", "utf8");
@@ -698,6 +699,128 @@ describe("real stable-anchor resource watching", () => {
 
     await registration.release();
   }, 20_000);
+});
+
+describe("extension resource watching", () => {
+  it("uses the composed project fingerprint transaction for helper edits and preserves rollback", async () => {
+    const paths = workspace();
+    const source = join(paths.project, ".easyresearch", "extensions", "helper.ts");
+    mkdirSync(join(source, ".."), { recursive: true });
+    writeFileSync(source, "initial");
+    const state = realHarness(paths, async (cwd) => {
+      const skills = await fingerprintSkillRoot(join(cwd, ".easyresearch", "skills"), cwd);
+      const extensions = await fingerprintExtensionResources(join(cwd, ".easyresearch"));
+      return { ...skills, value: `${skills.value}:${extensions.value}` };
+    }, true);
+    await state.manager.start(false);
+    const registration = await state.manager.acquireProject(paths.project);
+    await expectObserved(state.changes, () => writeFileSync(source, "edited"),
+      (change) => change.extensionsChanged === true && change.projectCwds?.includes(paths.project) === true,
+      "helper edit did not request exact project comparison");
+    const first = await state.manager.prepareProjectChanges([paths.project]);
+    expect(first.changedCwds).toEqual([paths.project]);
+    first.rollback();
+    const second = await state.manager.prepareProjectChanges([paths.project]);
+    expect(second.changedCwds).toEqual([paths.project]);
+    writeFileSync(source, "changed during preparation");
+    await expect(second.isCurrent()).resolves.toBe(false);
+    second.rollback();
+    const third = await state.manager.prepareProjectChanges([paths.project]);
+    expect(third.changedCwds).toEqual([paths.project]);
+    third.commit();
+    const unchanged = await state.manager.prepareProjectChanges([paths.project]);
+    expect(unchanged.changedCwds).toEqual([]);
+    unchanged.rollback();
+    expect(state.manager.projectSkillDescriptors(paths.project)).toEqual([]);
+    await registration.release();
+  }, 15_000);
+
+  it.each(["global", "project"] as const)("observes first %s source creation, helper changes and replacement through stable anchors", async (scope) => {
+    const paths = workspace();
+    const state = realHarness(paths, undefined, true);
+    await state.manager.start(false);
+    const registration = scope === "project" ? await state.manager.acquireProject(paths.project) : undefined;
+    const root = scope === "global" ? join(paths.agentDir, "extensions") : join(paths.project, ".easyresearch", "extensions");
+    const observed = (change: ResourceWatchChange) => change.extensionsChanged === true
+      && (scope === "global" ? !change.projectCwds : change.projectCwds?.includes(paths.project) === true);
+    const source = join(root, "tool", "index.ts");
+    await expectObserved(state.changes, () => {
+      mkdirSync(join(source, ".."), { recursive: true });
+      writeFileSync(source, "export default () => {};");
+    }, observed, "first extension source was not observed");
+    const helper = join(root, "tool", "helper.json");
+    await expectObserved(state.changes, () => writeFileSync(helper, '{"value":1}'),
+      observed, "helper creation was not observed");
+    await expectObserved(state.changes, () => writeFileSync(helper, '{"value":2}'),
+      observed, "helper edit was not observed");
+    await expectObserved(state.changes, () => unlinkSync(helper), observed, "helper unlink was not observed");
+    await expectObserved(state.changes, () => {
+      renameSync(root, join(paths.root, "old-extensions"));
+      mkdirSync(join(source, ".."), { recursive: true });
+      writeFileSync(source, "export default () => { /* replacement */ };");
+    }, observed, "extension directory replacement was not observed");
+    await expectObserved(state.changes, () => writeFileSync(source, "export default () => { /* edited */ };"),
+      observed, "replacement source edit was not observed");
+    await expectObserved(state.changes, () => {
+      renameSync(join(root, "tool"), join(paths.root, "old-tool"));
+      mkdirSync(join(source, ".."));
+      writeFileSync(source, "export default () => { /* nested replacement */ };");
+    }, observed, "nested extension directory replacement was not observed");
+    await expectObserved(state.changes, () => writeFileSync(source, "export default () => { /* nested edited */ };"),
+      observed, "nested replacement source edit was not observed");
+    expect(state.errors.count).toBe(0);
+    await registration?.release();
+  }, 25_000);
+
+  it("observes exact project settings selections only while the project is owned", async () => {
+    const paths = workspace();
+    const state = realHarness(paths, undefined, true);
+    await state.manager.start(false);
+    const first = await state.manager.acquireProject(paths.project);
+    const second = await state.manager.acquireProject(paths.project);
+    const settings = join(paths.project, ".easyresearch", "settings.json");
+    const observed = (change: ResourceWatchChange) => change.extensionsChanged === true
+      && change.projectCwds?.includes(paths.project) === true;
+    await expectObserved(state.changes, () => {
+      mkdirSync(join(settings, ".."));
+      writeFileSync(settings, '\uFEFF{"extensions":["./local.ts"]}');
+    }, observed, "project settings creation was not observed");
+    await first.release();
+    await expectObserved(state.changes, () => writeFileSync(settings, '{"extensions":[]}'),
+      observed, "remaining project owner lost its settings watch");
+    await second.release();
+    await expectUnobserved(state.changes, () => writeFileSync(settings, '{"extensions":["./other.ts"]}'));
+    const third = await state.manager.acquireProject(paths.project);
+    await expectObserved(state.changes, () => unlinkSync(settings), observed, "settings unlink was not observed");
+    await third.release();
+  }, 20_000);
+
+  it("confines automatic watching to authored extension roots and excludes external link targets", async () => {
+    const paths = workspace();
+    const root = join(paths.agentDir, "extensions");
+    const external = join(paths.root, "outside");
+    mkdirSync(root);
+    mkdirSync(external);
+    writeFileSync(join(external, "source.ts"), "before");
+    symlinkSync(external, join(root, "linked"), "dir");
+    mkdirSync(join(root, "node_modules", "dependency"), { recursive: true });
+    mkdirSync(join(root, ".git"));
+    const state = realHarness(paths, undefined, true);
+    await state.manager.start(true);
+    await expectUnobserved(state.changes, () => {
+      writeFileSync(join(root, "notes.txt"), "irrelevant");
+      writeFileSync(join(root, "node_modules", "dependency", "index.ts"), "inert");
+      writeFileSync(join(root, ".git", "objects.json"), "inert");
+      writeFileSync(join(external, "source.ts"), "manual/preflight only");
+      mkdirSync(join(paths.homeDir, "extensions"));
+      writeFileSync(join(paths.homeDir, "extensions", "source.ts"), "inert");
+      mkdirSync(join(paths.project, ".easyresearch", "extensions"), { recursive: true });
+      writeFileSync(join(paths.project, ".easyresearch", "extensions", "source.ts"), "unowned");
+    });
+    await expectObserved(state.changes, () => unlinkSync(join(root, "linked")),
+      (change) => change.extensionsChanged === true, "link unlink was not observed");
+    expect(state.errors.count).toBe(0);
+  }, 15_000);
 });
 
 interface Deferred<T> {

@@ -516,6 +516,8 @@ export interface ConfigurationUpdatedEvent {
   availabilityChanged?: true;
   /** Present only when ADR-098 display state changed after startup. */
   apiUsageChanged?: true;
+  /** Successful runtime registry publication; does not require a resource reload. */
+  toolsChanged?: true;
   projectWatchLeaseId?: string;
 }
 
@@ -561,6 +563,7 @@ export interface AgentDto {
   thinking?: ThinkingLevel;
   tools?: string[];
   effectiveTools: string[];
+  toolDiagnostics?: string[];
   subagents?: string[];
   skills?: string[];
   effectiveSkills: string[];
