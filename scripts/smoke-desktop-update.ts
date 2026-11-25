@@ -438,7 +438,10 @@ async function driveScenario(options: {
     assert.equal(readFileSync(join(agentDir, "bundled", ".easyresearch-bundled-version"), "utf8").trim(), expectedVersion, "Successor did not run its versioned resource setup");
     await assertFixtureInstallation(install, expectedVersion);
     if (mode === "rollback") {
-      await waitFor("native recovery Release fallback dialog", async () => await closeRecoveryReleaseDialog(successorPid!) ? true : undefined, 60_000, 500);
+      await waitFor("shared recovery update dialog with official Release action", async () => await closeRecoveryReleaseDialog(lineage.host, `${successorOrigin}/${route}`, {
+        onEvidence: evidence => writeFileSync(join(root, "native-window-recovery.log"),
+          `${fixtureDiagnosticError(JSON.stringify(evidence), diagnosticSecrets())}\n`, { mode: 0o600 }),
+      }) ? true : undefined, 60_000, 500);
       assert.deepEqual(readdirSync(join(install, "locales")).filter(name => name.endsWith(".pak")).sort(), oldLocales);
     } else {
       assertWindowsElectronLocales(install);

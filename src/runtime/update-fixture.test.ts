@@ -9,7 +9,7 @@ import { assertExternalFixtureReceipt, copyUpdateFixtureSource, parseUpdateFixtu
 import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, findDesktopUpdateLineage, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
 import { discoverDesktopRelease, downloadDesktopAsset } from "../desktop/update-download";
 import { windowsInstallerRegistryId } from "../desktop/update-worker";
-import { assessInstalledWindowEvidence, assertWindowsFixtureInstallation, formatInstalledWindowDiagnostic, parseFixtureWindowsProcesses, retainFixtureProcessObservation, type InstalledWindowEvidence } from "../../scripts/smoke-desktop-update-windows";
+import { assessInstalledRecoveryEvidence, assessInstalledWindowEvidence, assertWindowsFixtureInstallation, closeRecoveryReleaseDialog, formatInstalledWindowDiagnostic, parseFixtureWindowsProcesses, retainFixtureProcessObservation, type InstalledRecoveryEvidence, type InstalledWindowEvidence } from "../../scripts/smoke-desktop-update-windows";
 import { LATEST_RELEASE_PAGE, type UpdateSnapshot } from "./update-contract";
 import type { DesktopUpdateReceipt } from "../desktop/update-protocol";
 
@@ -330,6 +330,96 @@ describe("native window evidence", () => {
     expect(failed.checks.canonicalUrl).toBe(true);
     const absent = JSON.parse(formatInstalledWindowDiagnostic({ phase: "initial", owner, canonicalUrl, historyText, error: new Error("query failed"), secrets: [] }));
     expect(absent).toMatchObject({ queryStatus: "failed", sampleIsHistorical: false, checks: { urlStatus: "no-sample", canonicalUrl: false, historyVisible: false } });
+  });
+});
+
+describe("shared installed recovery dialog", () => {
+  const owner = { pid: 123, parentPid: 122, start: "2026-11-25T00:00:00.0000000Z", executable: "C:\\fixture\\EasyResearch.exe" };
+  const canonicalUrl = "http://127.0.0.1:12345/#/work/session?cwd=C%3A%5Cfixture";
+  const evidence = (): InstalledRecoveryEvidence => ({
+    owner, documents: 1, invoked: false,
+    dialogs: [{ documentUrl: canonicalUrl, title: "Updates", notice: "Installation failed. Open latest Release.", releaseUrl: LATEST_RELEASE_PAGE,
+      closeButtons: 1, enabledCloseButtons: 1 }],
+    scan: { handles: 1, accessibleRoots: 1, rootFailures: 0, visited: 12, integerChildren: 0, resolvedIntegerChildren: 0,
+      propertyErrors: 0, activationReads: 12, budgetLimited: false, depthLimited: false, valueLimited: false },
+  });
+
+  it("observes canonical document/dialog/notice/link before an independently revalidated accessible Close", async () => {
+    const read = vi.fn(async (_owner: typeof owner, _url: string, perform: boolean) => ({ ...evidence(), invoked: perform }));
+    const onEvidence = vi.fn();
+    expect(await closeRecoveryReleaseDialog(owner, canonicalUrl, { read, onEvidence })).toBe(true);
+    expect(read.mock.calls).toEqual([[owner, canonicalUrl, false], [owner, canonicalUrl, true]]);
+    expect(onEvidence).toHaveBeenCalledTimes(2);
+    // A modal intentionally makes background history inert; history is required
+    // by the existing successor gate only after this ordinary Close action.
+    expect(assessInstalledRecoveryEvidence(evidence(), owner, canonicalUrl)).toBe(true);
+  });
+
+  it.each([
+    ["other document", { documentUrl: canonicalUrl.replace("session", "foreign") }],
+    ["same-origin wrong route", { documentUrl: "http://127.0.0.1:12345/" }],
+    ["foreign origin", { documentUrl: canonicalUrl.replace("12345", "12346") }],
+    ["wrong dialog", { title: "Settings" }],
+    ["no recovery failure", { notice: "Update failed" }],
+    ["missing release link", { releaseUrl: null }],
+    ["wrong release target", { releaseUrl: `${LATEST_RELEASE_PAGE}?forward=foreign` }],
+    ["missing Close", { closeButtons: 0, enabledCloseButtons: 0 }],
+    ["ambiguous Close", { closeButtons: 2 }],
+    ["disabled Close", { enabledCloseButtons: 0 }],
+  ])("never acts on %s evidence", async (_label, changed) => {
+    const sample = evidence(); Object.assign(sample.dialogs[0]!, changed);
+    const read = vi.fn(async () => sample);
+    expect(await closeRecoveryReleaseDialog(owner, canonicalUrl, { read })).toBe(false);
+    expect(read).toHaveBeenCalledExactlyOnceWith(owner, canonicalUrl, false);
+  });
+
+  it("refuses ambiguous documents/dialogs and incomplete bounded scans", async () => {
+    for (const change of [
+      { documents: 0 }, { documents: 2 }, { dialogs: [] }, { dialogs: [evidence().dialogs[0]!, evidence().dialogs[0]!] },
+      ...["budgetLimited", "depthLimited", "valueLimited"].map(key => ({ scan: { ...evidence().scan, [key]: true } })),
+      ...["rootFailures", "propertyErrors"].map(key => ({ scan: { ...evidence().scan, [key]: 1 } })),
+    ]) {
+      const read = vi.fn(async () => ({ ...evidence(), ...change }));
+      expect(await closeRecoveryReleaseDialog(owner, canonicalUrl, { read })).toBe(false);
+      expect(read).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("rejects reused-PID and foreign-process evidence before any action", async () => {
+    for (const change of [{ pid: 124 }, { parentPid: 999 }, { start: "reused" }, { executable: "C:\\foreign\\EasyResearch.exe" }]) {
+      const read = vi.fn(async () => ({ ...evidence(), owner: { ...owner, ...change } }));
+      await expect(closeRecoveryReleaseDialog(owner, canonicalUrl, { read })).rejects.toThrow(/identity/);
+      expect(read).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("requires fresh valid dialog evidence at the action boundary and never claims an unperformed Close", async () => {
+    for (const result of [
+      evidence(),
+      { ...evidence(), dialogs: [{ ...evidence().dialogs[0]!, enabledCloseButtons: 0 }] },
+    ]) {
+      const read = vi.fn().mockResolvedValueOnce(evidence()).mockResolvedValueOnce(result);
+      expect(await closeRecoveryReleaseDialog(owner, canonicalUrl, { read })).toBe(false);
+    }
+    const read = vi.fn().mockResolvedValueOnce(evidence()).mockResolvedValueOnce({ ...evidence(), invoked: true, dialogs: [] });
+    await expect(closeRecoveryReleaseDialog(owner, canonicalUrl, { read })).rejects.toThrow(/lacked the exact dialog evidence/);
+    const replaced = vi.fn().mockResolvedValueOnce(evidence()).mockResolvedValueOnce({ ...evidence(), owner: { ...owner, start: "reused" } });
+    await expect(closeRecoveryReleaseDialog(owner, canonicalUrl, { read: replaced })).rejects.toThrow(/identity/);
+  });
+
+  it("rejects malformed native projections and an observation that unexpectedly acts", async () => {
+    for (const sample of [
+      { ...evidence(), documents: -1 },
+      { ...evidence(), dialogs: Array.from({ length: 17 }, () => evidence().dialogs[0]!) },
+      { ...evidence(), dialogs: [{ ...evidence().dialogs[0]!, title: "x".repeat(8192) }] },
+      { ...evidence(), dialogs: [{ ...evidence().dialogs[0]!, closeButtons: 0.5 }] },
+      { ...evidence(), scan: { ...evidence().scan, handles: 65537 } },
+      { ...evidence(), invoked: true },
+    ]) {
+      const read = vi.fn(async () => sample);
+      await expect(closeRecoveryReleaseDialog(owner, canonicalUrl, { read })).rejects.toThrow();
+      expect(read).toHaveBeenCalledOnce();
+    }
   });
 });
 

@@ -4,6 +4,8 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 
 ## 0.1.25 highlights
 
+- Remove the separate Desktop startup loading window. Tray and version-button updates share a redesigned dialog with clear versions, progress and recovery actions.
+- Improve Windows update rollback when installation files are temporarily locked, while preserving recovery files on failure.
 - Separate **Skills**, **Skill marketplace** and **Tools** in Settings. Installed Skills use categorized cards with edit, disable/enable and delete actions.
 - Load marketplace details only on demand. The plus button installs directly and becomes a checkmark after success; installation verifies discovery and refreshes the installed list immediately.
 - Apply user Tool source/helper updates through the existing idle reload lifecycle. User tools default to Research Assistant; other Agents require explicit tool names.
@@ -12,6 +14,8 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 
 ## 0.1.25 更新
 
+- 取消桌面端独立的启动加载窗口。托盘与版本按钮共用重新设计的升级弹窗，统一版本信息、进度和失败恢复操作。
+- 改进 Windows 升级回滚对安装文件临时占用的处理，失败时保留恢复文件。
 - 设置中拆分 **技能、技能市场、工具** 三个入口。已安装技能采用分类卡片，支持编辑、禁用/启用及删除。
 - 市场详情改为按需加载，加号直接安装，成功后显示勾号；安装会核验技能发现结果，并立即刷新已安装列表。
 - 自建工具源码及辅助文件的变化接入现有空闲重载机制。默认向研究助手开放，其他 Agent 通过显式工具名称授权。

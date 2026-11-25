@@ -112,6 +112,8 @@ export interface DesktopUpdateOptions {
   currentVersion: string;
   kind: DesktopPackageKind | null;
   stagingRoot: string;
+  /** The host has observed an installation-recovery failure before opening the UI. */
+  recoveredInstallationFailure?: boolean;
   fetch?: UpdateFetch;
   discover?: typeof discoverDesktopRelease;
   download?: typeof downloadDesktopAsset;
@@ -136,8 +138,9 @@ export function validateDesktopUpdateAction(value: unknown): UpdateAction {
 
 export function createDesktopUpdateController(options: DesktopUpdateOptions): UpdateController {
   parseSemanticVersion(options.currentVersion);
-  let state: UpdateSnapshot = { revision: 0, operationId: null, owner: "desktop", phase: "idle", currentVersion: options.currentVersion,
-    latestVersion: null, canDownload: false, canInstall: false, canActivate: false, canCancel: false, releaseUrl: LATEST_RELEASE_PAGE };
+  let state: UpdateSnapshot = { revision: 0, operationId: null, owner: "desktop", phase: options.recoveredInstallationFailure ? "failed" : "idle", currentVersion: options.currentVersion,
+    latestVersion: null, canDownload: false, canInstall: false, canActivate: false, canCancel: false, releaseUrl: LATEST_RELEASE_PAGE,
+    ...(options.recoveredInstallationFailure ? { message: "Installation failed. Open latest Release." } : {}) };
   let candidate: DesktopRelease | null = null;
   let downloaded: DesktopDownloadedUpdate | undefined;
   let directory: string | undefined;

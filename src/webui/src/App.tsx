@@ -592,8 +592,8 @@ export function App({
       {configOpen && (
         <div
           className="absolute inset-0"
-          inert={expectedRuntimeRestart ? true : undefined}
-          aria-hidden={expectedRuntimeRestart ? "true" : undefined}
+          inert={updateOpen || expectedRuntimeRestart ? true : undefined}
+          aria-hidden={updateOpen || expectedRuntimeRestart ? "true" : undefined}
         >
           <ConfigPage
             onHome={() => navigate({ page: "home" })}

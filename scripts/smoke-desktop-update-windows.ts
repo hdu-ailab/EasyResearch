@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { windowsInstallerRegistryId } from "../src/desktop/update-worker";
+import { LATEST_RELEASE_PAGE } from "../src/runtime/update-contract";
 import { assertFixtureChild, assertHostedWindowsFixture, fixtureDiagnosticError, powershell, runFixtureCommand, withFixtureRoamingBinding } from "./smoke-desktop-update-fixture";
 
 export interface WindowsFixtureProcess { pid: number; parentPid: number; start: string; executable: string; worker: boolean; installer: boolean; job: boolean; requestedFrench?: boolean }
@@ -151,7 +152,7 @@ public static class ErUpdateWindows {
   [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam, uint flags, uint timeout, out IntPtr result);
   [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint objectId, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object result);
   [DllImport("oleacc.dll")] static extern int AccessibleChildren(IAccessible parent, int start, int count, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex=2)] object[] children, out int obtained);
-  public static IntPtr[] Windows(int pid) { var list=new List<IntPtr>(); EnumWindows((h,s)=>{uint p; GetWindowThreadProcessId(h,out p); if(p==pid)list.Add(h);return true;},IntPtr.Zero); return list.ToArray(); }
+  public static IntPtr[] Windows(int pid) { var list=new List<IntPtr>(); EnumWindows((h,s)=>{uint p; GetWindowThreadProcessId(h,out p); if(p==pid)list.Add(h);return list.Count<=512;},IntPtr.Zero); return list.ToArray(); }
   public static string Text(IntPtr hwnd) { var text=new StringBuilder(8192);GetWindowText(hwnd,text,text.Capacity);return text.ToString(); }
   public static string[] Texts(int pid) { var texts=new HashSet<string>();foreach(var window in Windows(pid)){if(!IsWindowVisible(window))continue;texts.Add(Text(window));EnumChildWindows(window,(h,s)=>{texts.Add(Text(h));return true;},IntPtr.Zero);}return new List<string>(texts).ToArray(); }
   public static bool HasMenu(int pid) { foreach(var window in Windows(pid)){if(GetMenu(window)!=IntPtr.Zero)return true;}return false; }
@@ -183,10 +184,10 @@ public static class ErUpdateWindows {
     try{accessible.get_accDefaultAction(child);values.scan.activationReads++;}catch{values.scan.propertyErrors++;}
     try{string value=accessible.get_accValue(child);if(value!=null && value.StartsWith("http://127.0.0.1:",StringComparison.Ordinal))values.Add(values.urls,value);}catch{values.scan.propertyErrors++;}
   }
-  static void Walk(IAccessible accessible,Values values,ref int budget,int depth) {
+  static void Walk(IAccessible accessible,Values values,ref int budget,int depth,Action<IAccessible,object,int> inspect=null) {
     if(budget<=0){values.scan.budgetLimited=true;return;}
     if(depth>40){values.scan.depthLimited=true;return;}
-    budget--;values.scan.visited++;Properties(accessible,0,values);
+    budget--;values.scan.visited++;Properties(accessible,0,values);if(inspect!=null)inspect(accessible,0,depth);
     try{
       int available=accessible.accChildCount,count=Math.Min(available,Math.Max(0,budget));
       if(count<available)values.scan.budgetLimited=true;
@@ -196,15 +197,18 @@ public static class ErUpdateWindows {
       for(int i=0;i<Math.Min(got,count);i++){
         if(budget<=0){values.scan.budgetLimited=true;break;}
         var child=children[i] as IAccessible;
-        if(child!=null){Walk(child,values,ref budget,depth+1);continue;}
+        if(child!=null){Walk(child,values,ref budget,depth+1,inspect);continue;}
         if(!(children[i] is int))continue;
         values.scan.integerChildren++;
         // MSAA VT_I4 can identify a full accessible object, not only a leaf.
         // get_accChild returns null for a simple child: read both properties on
         // the parent with that child ID, rather than dropping values/subtrees.
         try{if((int)children[i]!=0)child=accessible.get_accChild(children[i]) as IAccessible;}catch{values.scan.propertyErrors++;}
-        if(child!=null && !Object.ReferenceEquals(child,accessible)){values.scan.resolvedIntegerChildren++;Walk(child,values,ref budget,depth+1);}
-        else{budget--;values.scan.visited++;Properties(accessible,children[i],values);}
+        if(child!=null && !Object.ReferenceEquals(child,accessible)){values.scan.resolvedIntegerChildren++;Walk(child,values,ref budget,depth+1,inspect);}
+        else{
+          if(depth>=40){values.scan.depthLimited=true;continue;}
+          budget--;values.scan.visited++;Properties(accessible,children[i],values);if(inspect!=null)inspect(accessible,children[i],depth+1);
+        }
       }
     }catch{values.scan.propertyErrors++;}
   }
@@ -232,7 +236,89 @@ public static class ErUpdateWindows {
     result.urls=new List<string>(values.urls).ToArray();result.names=new List<string>(values.names).ToArray();result.texts=new List<string>(values.texts).ToArray();
     return result;
   }
-  public static bool CloseRecovery(int pid) { foreach(var window in Windows(pid)){if(Text(window)!="EasyResearch update")continue;bool release=false;IntPtr close=IntPtr.Zero;EnumChildWindows(window,(h,s)=>{var text=Text(h).Replace("&","");if(text=="Open latest Release")release=true;if(text=="Close")close=h;return true;},IntPtr.Zero);if(release && close!=IntPtr.Zero){IntPtr result;SendMessageTimeout(close,0xF5,IntPtr.Zero,IntPtr.Zero,2,5000,out result);return true;}}return false; }
+  public class RecoveryDialog {
+    public string documentUrl,title,notice,releaseUrl;
+    public int closeButtons,enabledCloseButtons;
+    internal IAccessible close;internal object child;
+  }
+  public class RecoveryEvidence {
+    public int documents;public bool invoked;
+    public List<RecoveryDialog> dialogs=new List<RecoveryDialog>();public Scan scan;
+  }
+  class RecoveryScan {
+    public RecoveryEvidence result=new RecoveryEvidence();
+    string url,title,notice,release;
+    string[] documents=new string[41];RecoveryDialog[] dialogs=new RecoveryDialog[41];bool[] hidden=new bool[41];
+    public RecoveryScan(string url,string title,string notice,string release,Scan scan) {
+      this.url=url;this.title=title;this.notice=notice;this.release=release;result.scan=scan;
+    }
+    public static bool EnabledClose(IAccessible accessible,object child) {
+      return Convert.ToInt32(accessible.get_accRole(child))==43 && accessible.get_accName(child)=="Close"
+        && (Convert.ToInt32(accessible.get_accState(child)) & (1|0x8000|0x10000))==0
+        && !String.IsNullOrEmpty(accessible.get_accDefaultAction(child));
+    }
+    public void Visit(IAccessible accessible,object child,int depth) {
+      documents[depth]=depth==0?null:documents[depth-1];dialogs[depth]=depth==0?null:dialogs[depth-1];
+      hidden[depth]=depth!=0 && hidden[depth-1];
+      try {
+        int role=Convert.ToInt32(accessible.get_accRole(child)),state=Convert.ToInt32(accessible.get_accState(child));
+        hidden[depth]=hidden[depth] || (state & 0x8000)!=0;
+        if(hidden[depth])return;
+        string name=accessible.get_accName(child),value=null;
+        if(role==15 || role==30)value=accessible.get_accValue(child);
+        if((name!=null && name.Length>=8192) || (value!=null && value.Length>=8192)){result.scan.valueLimited=true;return;}
+        if(role==15) {
+          documents[depth]=value;dialogs[depth]=null;
+          if(value==url)result.documents++;
+        }
+        if(role==18) {
+          dialogs[depth]=null;
+          if(documents[depth]==url && name==title) {
+            if(result.dialogs.Count>=16){result.scan.budgetLimited=true;return;}
+            var dialog=new RecoveryDialog();dialog.documentUrl=documents[depth];dialog.title=name;
+            result.dialogs.Add(dialog);dialogs[depth]=dialog;
+          }
+        }
+        var current=dialogs[depth];
+        if(current==null || documents[depth]!=url)return;
+        if(name==notice)current.notice=name;
+        if(role==30 && name=="Open latest Release" && value==release)current.releaseUrl=value;
+        if(role==43 && name=="Close") {
+          current.closeButtons++;
+          if(EnabledClose(accessible,child)){current.enabledCloseButtons++;current.close=accessible;current.child=child;}
+        }
+      }catch{result.scan.propertyErrors++;}
+    }
+    public bool Ready() {
+      if(result.documents!=1 || result.dialogs.Count!=1 || result.scan.rootFailures!=0 || result.scan.propertyErrors!=0
+        || result.scan.budgetLimited || result.scan.depthLimited || result.scan.valueLimited)return false;
+      var dialog=result.dialogs[0];
+      return dialog.documentUrl==url && dialog.title==title && dialog.notice==notice && dialog.releaseUrl==release
+        && dialog.closeButtons==1 && dialog.enabledCloseButtons==1;
+    }
+  }
+  public static RecoveryEvidence Recovery(int pid,string url,string title,string notice,string release,bool perform,Action confirmOwner) {
+    var values=new Values();values.scan=new Scan();var scan=new RecoveryScan(url,title,notice,release,values.scan);
+    int budget=4096;
+    foreach(var window in Windows(pid)) {
+      if(++values.scan.handles>512){values.scan.budgetLimited=true;break;}
+      uint owner;GetWindowThreadProcessId(window,out owner);
+      var className=new StringBuilder(256);GetClassName(window,className,className.Capacity);
+      // Scan the main top-level client once. Rewalking child HWNDs would count
+      // the same document/dialog repeatedly and could authorize an ambiguous Close.
+      if(owner!=pid || !IsWindowVisible(window) || className.ToString()!="Chrome_WidgetWin_1")continue;
+      object value;var iid=new Guid("618736E0-3C3D-11CF-810C-00AA00389B71");
+      try{
+        if(AccessibleObjectFromWindow(window,0xFFFFFFFC,ref iid,out value)!=0 || !(value is IAccessible)){values.scan.rootFailures++;continue;}
+        values.scan.accessibleRoots++;Walk((IAccessible)value,values,ref budget,0,scan.Visit);
+      }catch{values.scan.rootFailures++;}
+    }
+    if(perform && scan.Ready()) {
+      confirmOwner();var dialog=scan.result.dialogs[0];
+      if(RecoveryScan.EnabledClose(dialog.close,dialog.child)){dialog.close.accDoDefaultAction(dialog.child);scan.result.invoked=true;}
+    }
+    return scan.result;
+  }
   public static void RequestExit(int pid) { foreach(var window in Windows(pid)){IntPtr result;SendMessageTimeout(window,0x11,IntPtr.Zero,IntPtr.Zero,2,5000,out result);} }
 }
 `;
@@ -366,11 +452,11 @@ export function formatInstalledWindowDiagnostic(options: ExpectedWindowDocument 
   return result;
 }
 
-export async function installedWindowEvidence(owner: NativeWindowOwner): Promise<InstalledWindowEvidence> {
+async function ownedNativeWindowCall(owner: NativeWindowOwner, expression: string, environment: NodeJS.ProcessEnv = {}): Promise<string> {
   assert(Number.isSafeInteger(owner.pid) && owner.pid > 0 && Number.isSafeInteger(owner.parentPid) && owner.parentPid > 0
     && owner.start.length > 0 && win32.isAbsolute(owner.executable), "Invalid native window owner identity");
   const identity = { pid: owner.pid, parentPid: owner.parentPid, start: owner.start, executable: owner.executable };
-  const text = await nativeFixtureCall(`
+  return nativeFixtureCall(`
     $expected=ConvertFrom-Json $env:ER_FIXTURE_WINDOW_OWNER;
     function Confirm-WindowOwner {
       $current=Get-CimInstance Win32_Process -Filter ('ProcessId='+[string]$expected.pid);
@@ -381,10 +467,16 @@ export async function installedWindowEvidence(owner: NativeWindowOwner): Promise
       }
     }
     Confirm-WindowOwner;
-    $sample=[ErUpdateWindows]::Evidence([int]$expected.pid);
+    ${expression}
     Confirm-WindowOwner;
+  `, { ...environment, ER_FIXTURE_WINDOW_OWNER: JSON.stringify(identity) }, "owned native window observation");
+}
+
+export async function installedWindowEvidence(owner: NativeWindowOwner): Promise<InstalledWindowEvidence> {
+  const text = await ownedNativeWindowCall(owner, `
+    $sample=[ErUpdateWindows]::Evidence([int]$expected.pid);
     @{owner=$expected;urls=@($sample.urls);names=@($sample.names);texts=@($sample.texts);windows=@($sample.windows);scan=$sample.scan}|ConvertTo-Json -Depth 6 -Compress
-  `, { ER_FIXTURE_WINDOW_OWNER: JSON.stringify(identity) }, "owned native window observation");
+  `);
   assert(Buffer.byteLength(text, "utf8") <= 2 * 1024 * 1024, "Native window evidence exceeds its transport bound");
   const evidence = JSON.parse(text.trim()) as InstalledWindowEvidence;
   assertWindowOwner(evidence.owner, owner);
@@ -398,8 +490,68 @@ export async function installedWindowEvidence(owner: NativeWindowOwner): Promise
     && typeof window.className === "string" && window.className.length < 256 && Number.isSafeInteger(window.result)), "Invalid native window metadata");
   return evidence;
 }
-export async function closeRecoveryReleaseDialog(pid: number): Promise<boolean> {
-  return (await nativeWindows(pid, "[Console]::Write([ErUpdateWindows]::CloseRecovery([int]$env:ER_FIXTURE_HOST_PID))")).trim() === "True";
+export interface InstalledRecoveryEvidence {
+  owner: NativeWindowOwner;
+  documents: number;
+  invoked: boolean;
+  dialogs: Array<{ documentUrl: string; title: string; notice: string | null; releaseUrl: string | null; closeButtons: number; enabledCloseButtons: number }>;
+  scan: InstalledWindowEvidence["scan"];
+}
+const RECOVERY_TITLE = "Updates";
+const RECOVERY_NOTICE = "Installation failed. Open latest Release.";
+
+export function assessInstalledRecoveryEvidence(evidence: InstalledRecoveryEvidence, owner: NativeWindowOwner, canonicalUrl: string): boolean {
+  assertWindowOwner(evidence.owner, owner);
+  assert(Number.isSafeInteger(evidence.documents) && evidence.documents >= 0 && evidence.documents <= 4096
+    && typeof evidence.invoked === "boolean" && Array.isArray(evidence.dialogs) && evidence.dialogs.length <= 16, "Invalid native recovery evidence");
+  assert(evidence.scan, "Missing native recovery scan");
+  for (const key of WINDOW_SCAN_COUNTS)
+    assert(Number.isSafeInteger(evidence.scan[key]) && evidence.scan[key] >= 0 && evidence.scan[key] <= 65536, "Invalid native recovery scan count");
+  for (const key of WINDOW_SCAN_LIMITS) assert(typeof evidence.scan[key] === "boolean", "Invalid native recovery scan limit");
+  for (const dialog of evidence.dialogs) {
+    assert(dialog && [dialog.documentUrl, dialog.title].every(value => typeof value === "string" && value.length < 8192)
+      && [dialog.notice, dialog.releaseUrl].every(value => value === null || (typeof value === "string" && value.length < 8192))
+      && [dialog.closeButtons, dialog.enabledCloseButtons].every(value => Number.isSafeInteger(value) && value >= 0 && value <= 4096),
+    "Invalid native recovery dialog");
+  }
+  const dialog = evidence.dialogs[0];
+  return evidence.documents === 1 && evidence.dialogs.length === 1 && evidence.scan.rootFailures === 0 && evidence.scan.propertyErrors === 0
+    && !WINDOW_SCAN_LIMITS.some(key => evidence.scan[key])
+    && dialog!.documentUrl === canonicalUrl && dialog!.title === RECOVERY_TITLE && dialog!.notice === RECOVERY_NOTICE
+    && dialog!.releaseUrl === LATEST_RELEASE_PAGE && dialog!.closeButtons === 1 && dialog!.enabledCloseButtons === 1;
+}
+
+async function installedRecoveryEvidence(owner: NativeWindowOwner, canonicalUrl: string, perform: boolean): Promise<InstalledRecoveryEvidence> {
+  const text = await ownedNativeWindowCall(owner, `
+    $confirm=[Action]{Confirm-WindowOwner};
+    $sample=[ErUpdateWindows]::Recovery([int]$expected.pid,$env:ER_FIXTURE_CANONICAL_URL,$env:ER_FIXTURE_RECOVERY_TITLE,
+      $env:ER_FIXTURE_RECOVERY_NOTICE,$env:ER_FIXTURE_RELEASE_URL,($env:ER_FIXTURE_RECOVERY_ACTION -ceq 'close'),$confirm);
+    @{owner=$expected;documents=$sample.documents;dialogs=@($sample.dialogs);invoked=$sample.invoked;scan=$sample.scan}|ConvertTo-Json -Depth 6 -Compress
+  `, { ER_FIXTURE_CANONICAL_URL: canonicalUrl, ER_FIXTURE_RECOVERY_TITLE: RECOVERY_TITLE, ER_FIXTURE_RECOVERY_NOTICE: RECOVERY_NOTICE,
+    ER_FIXTURE_RELEASE_URL: LATEST_RELEASE_PAGE, ER_FIXTURE_RECOVERY_ACTION: perform ? "close" : "observe" });
+  assert(Buffer.byteLength(text, "utf8") <= 256 * 1024, "Native recovery evidence exceeds its transport bound");
+  return JSON.parse(text.trim()) as InstalledRecoveryEvidence;
+}
+
+/** Observe the shared dialog, then rescan and act only on its unique enabled Close. */
+export async function closeRecoveryReleaseDialog(owner: NativeWindowOwner, canonicalUrl: string, options: {
+  onEvidence?: (evidence: InstalledRecoveryEvidence) => void;
+  read?: typeof installedRecoveryEvidence;
+} = {}): Promise<boolean> {
+  const url = new URL(canonicalUrl);
+  assert(url.protocol === "http:" && url.hostname === "127.0.0.1" && url.port && url.pathname === "/"
+    && url.hash.startsWith("#/work/") && !url.username && !url.password, "Recovery requires the installed canonical Work URL");
+  const read = options.read ?? installedRecoveryEvidence;
+  const observed = await read(owner, canonicalUrl, false);
+  const ready = assessInstalledRecoveryEvidence(observed, owner, canonicalUrl);
+  options.onEvidence?.(observed);
+  assert(!observed.invoked, "Recovery observation unexpectedly performed an action");
+  if (!ready) return false;
+  const acted = await read(owner, canonicalUrl, true);
+  const stillReady = assessInstalledRecoveryEvidence(acted, owner, canonicalUrl);
+  options.onEvidence?.(acted);
+  assert(!acted.invoked || stillReady, "Recovery action lacked the exact dialog evidence");
+  return acted.invoked && stillReady;
 }
 export async function requestInstalledHostExit(pid: number): Promise<void> {
   await nativeWindows(pid, "[ErUpdateWindows]::RequestExit([int]$env:ER_FIXTURE_HOST_PID)");

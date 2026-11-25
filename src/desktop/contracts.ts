@@ -10,6 +10,10 @@ export const DESKTOP_SMOKE_USER_DATA_ENV = "EASYRESEARCH_DESKTOP_SMOKE_USER_DATA
 export const DESKTOP_UPDATE_SNAPSHOT_CHANNEL = "desktop:update:snapshot";
 export const DESKTOP_UPDATE_ACTION_CHANNEL = "desktop:update:action";
 export const DESKTOP_UPDATE_EVENT_CHANNEL = "desktop:update:event";
+export const DESKTOP_UPDATE_OPEN_CHANNEL = "desktop:update:open";
+export const DESKTOP_UPDATE_OPEN_READY_CHANNEL = "desktop:update:open-ready";
+
+export type DesktopUpdateOpenIntent = "check" | "recovery";
 
 export type DesktopSidecarEvent =
   | { type: "desktop.setup"; message: string }

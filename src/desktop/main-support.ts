@@ -122,35 +122,3 @@ export function createTrayMenuTemplate(actions: {
     { label: "Exit", click: actions.exit },
   ];
 }
-
-export function renderLoadingDocument(status: string): string {
-  const safeStatus = escapeHtml(status);
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>EasyResearch</title>
-  <style>
-    :root { color-scheme: light; font-family: Georgia, 'Times New Roman', serif; background: #f3efe6; color: #28251f; }
-    body { min-height: 100vh; margin: 0; display: grid; place-items: center; }
-    main { width: min(30rem, calc(100vw - 3rem)); border: 1px solid #c8bead; background: #fffdf8; padding: 2rem; box-shadow: 0 18px 50px rgba(49, 42, 31, .12); }
-    h1 { margin: 0 0 .7rem; font-size: 1.65rem; font-weight: 600; letter-spacing: -.02em; }
-    p { margin: 0; color: #6c6254; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .rule { width: 4rem; height: 2px; margin: 1.1rem 0; background: #9f3d2f; }
-  </style>
-</head>
-<body><main><h1>EasyResearch</h1><div class="rule"></div><p>${safeStatus}</p></main></body>
-</html>`;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[character]!);
-}

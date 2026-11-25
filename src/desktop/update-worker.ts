@@ -1,7 +1,7 @@
 /** Compiled, process-only custodian. This graph imports no Pi, Electron or Web runtime. */
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { realpath, rename, rm, lstat, mkdir, readFile, unlink } from "node:fs/promises";
+import { realpath, rm, lstat, mkdir, readFile, unlink } from "node:fs/promises";
 import type { Readable } from "node:stream";
 import { dirname, join, win32 } from "node:path";
 import { acquireTransitionLease, adoptTransitionLease, serverLeasePath, type RuntimeLease } from "../cli/runtime-lease";
@@ -9,6 +9,7 @@ import { backupWindowsInstallation, regularUpdateFile, updateFileHash, writeUpda
 import { spawnDesktopUpdateOwner, ownDesktopInstallerJob, verifyDesktopSidecarVersion, waitForDesktopUpdateReadiness, exitedWithin, type OwnedDesktopInstaller, type OwnedUpdateProcess } from "./update-process";
 import { startWindowsUpdateJob } from "../runtime/windows-update-job";
 import { createDesktopSuccessorChannel } from "./update-successor-channel";
+import { captureDesktopRollbackDirectories } from "./update-rollback";
 import {
   UPDATE_EVENT_PREFIX, UPDATE_SUCCESSOR_ENV, UPDATE_WORKER_ENTRY, UPDATE_WORKER_TOKEN_ENV,
   validateUpdateHandoff, createDesktopRecoveryTicket, windowsNsisArguments, windowsInstallationLocation, validToken,
@@ -226,9 +227,9 @@ export async function runDesktopUpdateWorker(argv: readonly string[]): Promise<n
         await observe("rollback-server", () => waitForUpdateServerRelease(h.agentDir));
         await observe("rollback-quarantine", () => mkdir(quarantined, { mode: 0o700 }));
         ownsQuarantine = true;
-        try { await observe("rollback-remove-current", () => rename(original, join(quarantined, "installation"))); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        await observe("rollback-restore-files", () => rename(backup, original));
+        const moves = await observe("rollback-quarantine", () => captureDesktopRollbackDirectories(original, backup, quarantined));
+        await observe("rollback-remove-current", () => moves.quarantineCurrent());
+        await observe("rollback-restore-files", () => moves.restoreBackup());
         ownsBackup = false;
         backupComplete = false;
         for (const record of registryBackup) {

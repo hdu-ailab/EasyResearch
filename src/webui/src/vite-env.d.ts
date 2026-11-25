@@ -10,5 +10,6 @@ interface Window {
       action: import("../../runtime/update-contract").UpdateAction,
     ): Promise<import("../../runtime/update-contract").UpdateActionResult>;
     onUpdate?(listener: (snapshot: import("../../runtime/update-contract").UpdateSnapshot) => void): () => void;
+    onOpenUpdates?(listener: (intent: import("../../desktop/contracts").DesktopUpdateOpenIntent) => void): () => void;
   }>;
 }

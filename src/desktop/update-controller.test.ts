@@ -20,6 +20,25 @@ async function fixture() {
   return { controller, install, root };
 }
 
+it("projects a recovered installation failure without starting an operation and permits a later explicit check", async () => {
+  const { root } = await fixture();
+  const discover = vi.fn(async () => candidate);
+  const controller = createDesktopUpdateController({
+    currentVersion: "1.0.0", kind: "windows-x64.exe", stagingRoot: root,
+    recoveredInstallationFailure: true, discover,
+  });
+  expect(controller.snapshot()).toMatchObject({
+    phase: "failed", operationId: null, currentVersion: "1.0.0",
+    canInstall: false, canDownload: false, canActivate: false,
+    message: "Installation failed. Open latest Release.",
+  });
+  expect(discover).not.toHaveBeenCalled();
+  await controller.action({ action: "check" });
+  expect(discover).toHaveBeenCalledOnce();
+  expect(controller.snapshot()).toMatchObject({ phase: "available", latestVersion: candidate.version, message: undefined });
+  await controller.close();
+});
+
 it("fences stale/duplicate actions while keeping one operation id and increasing revisions", async () => {
   const { controller, install } = await fixture();
   const snapshots: number[] = []; controller.subscribe((s) => snapshots.push(s.revision));

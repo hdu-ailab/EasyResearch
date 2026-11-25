@@ -1,0 +1,381 @@
+.er-update-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: safe center;
+  justify-content: center;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: clamp(0.5rem, 3vw, 1.5rem);
+  background: rgb(0 0 0 / 24%);
+}
+
+.er-update-dialog {
+  display: flex;
+  flex-direction: column;
+  inline-size: 100%;
+  max-inline-size: 32rem;
+  max-block-size: calc(100dvh - clamp(1rem, 6vw, 3rem));
+  min-inline-size: 0;
+  border: 1px solid var(--color-v2-grey-200);
+  border-radius: 0.875rem;
+  background: var(--color-v2-background-bg-base);
+  color: var(--color-v2-text-text-base);
+  box-shadow: var(--v2-elevation-overlay);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.er-update-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-block-end: 1px solid var(--color-v2-grey-200);
+}
+
+.er-update-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.375rem 0.875rem;
+  min-inline-size: 0;
+}
+
+.er-update-identity h2 {
+  color: var(--color-v2-text-text-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.er-update-close {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 2rem;
+  min-block-size: 2rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  color: var(--color-v2-icon-icon-muted);
+}
+
+.er-update-close:hover {
+  background: var(--color-v2-grey-100);
+}
+
+.er-update-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-block-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 1.5rem;
+  overflow-wrap: anywhere;
+}
+
+.er-update-status {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+.er-update-status h3 {
+  min-inline-size: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.er-update-phase-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  inline-size: 2.75rem;
+  block-size: 2.75rem;
+  border: 1px solid var(--color-v2-grey-200);
+  border-radius: 0.75rem;
+  color: var(--color-v2-text-text-accent);
+  background: var(--color-v2-background-bg-deep);
+}
+
+.er-update-status:where([data-phase="current"]) .er-update-phase-icon {
+  color: var(--color-v2-status-success);
+}
+
+.er-update-status:where([data-phase="failed"]) .er-update-phase-icon {
+  color: var(--color-v2-status-error);
+}
+
+.er-update-versions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: 1rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--color-v2-grey-200);
+  border-radius: 0.625rem;
+  background: var(--color-v2-background-bg-deep);
+}
+
+.er-update-versions dt,
+.er-update-command label {
+  margin-block-end: 0.25rem;
+  color: var(--color-v2-text-text-muted);
+  font-size: 0.75rem;
+}
+
+.er-update-versions dd {
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.er-update-progress progress {
+  --er-update-progress-fill: var(--color-v2-blue-600);
+  --er-update-progress-track: var(--color-v2-grey-200);
+  --er-update-progress-radius: 999px;
+  --er-update-progress-duration: 1.8s;
+  --er-update-progress-direction: alternate;
+  display: block;
+  appearance: none;
+  container-type: inline-size;
+  inline-size: 100%;
+  block-size: 0.5rem;
+  overflow: clip;
+  border: 0 solid;
+  border-radius: var(--er-update-progress-radius);
+  background: var(--er-update-progress-track);
+}
+
+.er-update-progress progress:indeterminate {
+  --er-update-progress-animation: er-update-progress-slide var(--er-update-progress-duration) ease-in-out infinite
+    var(--er-update-progress-direction);
+}
+
+.er-update-progress progress:dir(rtl) {
+  --er-update-progress-direction: alternate-reverse;
+}
+
+.er-update-progress progress::-webkit-progress-bar {
+  background: transparent;
+}
+
+.er-update-progress progress::-webkit-progress-value {
+  border-radius: var(--er-update-progress-radius);
+  background: var(--er-update-progress-fill);
+  animation: var(--er-update-progress-animation, none);
+}
+
+.er-update-progress progress::-moz-progress-bar {
+  border-radius: var(--er-update-progress-radius);
+  background: var(--er-update-progress-fill);
+  animation: var(--er-update-progress-animation, none);
+}
+
+@keyframes er-update-progress-slide {
+  from {
+    inline-size: 30%;
+    margin-right: auto;
+    translate: 0;
+  }
+  to {
+    inline-size: 30%;
+    margin-right: auto;
+    translate: 70cqi;
+  }
+}
+
+.er-update-progress-details {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  margin-block-start: 0.5rem;
+  color: var(--color-v2-text-text-muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.er-update-message {
+  white-space: pre-wrap;
+  color: var(--color-v2-text-text-muted);
+}
+
+.er-update-error {
+  color: var(--color-v2-status-error);
+}
+
+.er-update-confirmation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--color-v2-grey-300);
+  border-inline-start: 3px solid var(--color-v2-status-warning);
+  border-radius: 0.5rem;
+  background: var(--color-v2-background-bg-deep);
+}
+
+.er-update-command {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.er-update-command textarea {
+  inline-size: 100%;
+  min-block-size: 5rem;
+  resize: vertical;
+  padding: 0.75rem;
+  border: 1px solid var(--color-v2-grey-300);
+  border-radius: 0.5rem;
+  background: var(--color-v2-background-bg-deep);
+  font: 0.75rem / 1.6 var(--font-mono);
+}
+
+.er-update-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  color: var(--color-v2-text-text-muted);
+  font-size: 0.75rem;
+}
+
+.er-update-footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  max-block-size: 45dvh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 1rem 1.25rem;
+  border-block-start: 1px solid var(--color-v2-grey-200);
+}
+
+.er-update-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4375rem;
+  min-block-size: 2.25rem;
+  min-inline-size: 0;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--color-v2-grey-300);
+  border-radius: 0.5rem;
+  background: var(--color-v2-background-bg-base);
+  color: var(--color-v2-text-text-base);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.er-update-button:where(:not(:disabled)):hover {
+  background: var(--color-v2-grey-100);
+}
+
+.er-update-primary {
+  border-color: var(--color-v2-blue-600);
+  background: var(--color-v2-blue-600);
+  color: var(--color-v2-background-bg-base);
+}
+
+.er-update-primary:where(:not(:disabled)):hover {
+  border-color: var(--color-v2-blue-700);
+  background: var(--color-v2-blue-700);
+}
+
+.er-update-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.er-update-release {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-block-size: 2.25rem;
+  margin-inline-end: auto;
+  color: var(--color-v2-text-text-accent);
+  font-size: 0.75rem;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.er-update-dialog :where(button, a, textarea):focus-visible {
+  outline: 2px solid var(--color-v2-blue-600);
+  outline-offset: 3px;
+}
+
+.er-update-dialog svg {
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .er-update-spinner {
+    animation: er-update-spin 1.2s linear infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .er-update-progress progress {
+    --er-update-progress-duration: 10s;
+  }
+}
+
+@keyframes er-update-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (pointer: coarse), (width < 480px) {
+  .er-update-dialog :where(button, a) {
+    min-block-size: 2.75rem;
+  }
+  .er-update-close {
+    min-inline-size: 2.75rem;
+  }
+  .er-update-body {
+    padding: 1rem;
+  }
+  .er-update-header,
+  .er-update-footer {
+    padding: 0.75rem 1rem;
+  }
+}
+
+@media (forced-colors: active) {
+  .er-update-progress progress {
+    --er-update-progress-fill: Highlight;
+    --er-update-progress-track: Canvas;
+    outline: 1px solid CanvasText;
+    forced-color-adjust: none;
+  }
+  .er-update-dialog,
+  .er-update-button,
+  .er-update-phase-icon,
+  .er-update-confirmation,
+  .er-update-command textarea {
+    border-color: ButtonText;
+  }
+  .er-update-primary,
+  .er-update-primary:where(:not(:disabled)):hover {
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+    forced-color-adjust: none;
+  }
+  .er-update-dialog :where(button, a, textarea):focus-visible {
+    outline-color: Highlight;
+  }
+}

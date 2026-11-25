@@ -5,7 +5,6 @@ import {
   desktopWindowOptions,
   handleMainWindowClose,
   isCurrentDesktopDocument,
-  renderLoadingDocument,
 } from "./main-support";
 import { beginDesktopExit, createDesktopLifecycleState } from "./lifecycle";
 
@@ -42,15 +41,6 @@ describe("desktop BrowserWindow options", () => {
     expect(isCurrentDesktopDocument(`${origin}/`, origin, true, false)).toBe(false);
     expect(isCurrentDesktopDocument(`${origin}/unauthorized`, origin, true, true)).toBe(false);
     expect(isCurrentDesktopDocument("http://127.0.0.1:43124/", origin, true, true)).toBe(false);
-  });
-});
-
-describe("desktop loading document", () => {
-  it("escapes setup status and applies a restrictive content policy", () => {
-    const html = renderLoadingDocument('<script>alert("x")</script>');
-    expect(html).toContain("default-src 'none'");
-    expect(html).toContain("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;");
-    expect(html).not.toContain('<script>alert("x")</script>');
   });
 });
 

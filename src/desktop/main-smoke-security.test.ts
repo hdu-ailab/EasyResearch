@@ -80,6 +80,7 @@ it.each([
       isDestroyed(): boolean;
       getURL(): string;
       getOSProcessId(): number;
+      mainFrame: { readonly url: string };
       executeJavaScript(code: string): Promise<unknown>;
     };
 
@@ -111,6 +112,7 @@ it.each([
         querySelectorAll: (selector: string) => selector === "[data-session-tab-id]" ? [tab]
           : selector === "[data-session-surface]" ? [surface] : [],
       };
+      const currentWindow = this;
       this.webContents = Object.assign(new EventEmitter(), {
         session: { webRequest: { onBeforeSendHeaders() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {} },
         setWindowOpenHandler() {},
@@ -118,6 +120,7 @@ it.each([
         isDestroyed: () => this.destroyed,
         getURL: () => this.url,
         getOSProcessId: () => rendererPid,
+        mainFrame: { get url() { return currentWindow.url; } },
         executeJavaScript: async (code: string) => {
           const fetch = async (path: string) => {
             if (path !== "/api/status") throw new Error("Unexpected fixture renderer request");
