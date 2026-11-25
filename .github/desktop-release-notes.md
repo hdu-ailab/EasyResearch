@@ -2,19 +2,21 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.24 highlights
+## 0.1.25 highlights
 
-- Add **in-product updates** through the version button. Supported global npm installations can install and activate a verified update; failures provide an installation-scope-aware manual command. Windows per-user Desktop installations can download, install and restart, with the latest Release available on failure. macOS and Linux Desktop support verified downloads for manual installation.
-- Improve the **Skill marketplace** with website and namespaced sources, complete supporting files, card summaries, author links and actionable installation recovery.
-- Use a research-focused EasyResearch identity and shorter, consistent Agent instructions while preserving custom system prompts and role-specific capabilities.
-- Remove the Windows/Linux desktop menu strip. Keep English and Chinese Windows language packs and remove unused locales, saving about **45 MiB** of installed locale files.
+- Separate **Skills**, **Skill marketplace** and **Tools** in Settings. Installed Skills use categorized cards with edit, disable/enable and delete actions.
+- Load marketplace details only on demand. The plus button installs directly and becomes a checkmark after success; installation verifies discovery and refreshes the installed list immediately.
+- Apply user Tool source/helper updates through the existing idle reload lifecycle. User tools default to Research Assistant; other Agents require explicit tool names.
+- Show scoped extension-load failures and registration issues separately, preserving healthy tools and offering refresh recovery. Hidden tools are no longer advertised as callable.
+- Fix Skill title hover feedback, action-menu dismissal and stale editor responses; align human messages consistently on the right.
 
-## 0.1.24 更新
+## 0.1.25 更新
 
-- 点击版本号即可使用 **应用内更新**。支持的全局 npm 安装可直接安装并启用已校验的新版本，失败时提供适用于原安装位置的手动命令。Windows 当前用户桌面安装支持下载、安装和重启，失败时可打开最新 Release；macOS 和 Linux 桌面版支持下载校验后手动安装。
-- 改进 **Skill 市场**：支持网站及命名空间来源、完整配套文件、卡片摘要、作者链接和安装失败恢复。
-- 使用面向科研任务的 EasyResearch 身份，精简并统一各 Agent 指令，同时保留自定义系统提示词和角色权限。
-- 移除 Windows/Linux 桌面菜单栏。Windows 保留中英文语言包，裁掉其余语言包，减少约 **45 MiB** 安装占用。
+- 设置中拆分 **技能、技能市场、工具** 三个入口。已安装技能采用分类卡片，支持编辑、禁用/启用及删除。
+- 市场详情改为按需加载，加号直接安装，成功后显示勾号；安装会核验技能发现结果，并立即刷新已安装列表。
+- 自建工具源码及辅助文件的变化接入现有空闲重载机制。默认向研究助手开放，其他 Agent 通过显式工具名称授权。
+- 按作用域分别显示扩展加载失败与注册问题，保留正常工具并提供刷新恢复；隐藏工具不再被误列为可调用。
+- 修复技能名称悬停反馈、操作菜单误关闭和旧编辑请求覆盖问题，并统一真人消息的右侧对齐。
 
 ## Downloads
 
@@ -26,7 +28,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.24
+version=0.1.25
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -34,7 +36,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.24
+version=0.1.25
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 
