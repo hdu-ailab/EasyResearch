@@ -294,7 +294,7 @@ export function ProviderSettingsPanel({
 
 function formatToolsSkills(t: Translate, agent: AgentDto): string {
   return t("settings.agents.toolsSkills")
-    .replace("{tools}", String(agent.effectiveTools?.length ?? agent.tools?.length ?? 0))
+    .replace("{tools}", String(agent.effectiveTools?.length ?? 0))
     .replace("{skills}", String(agent.effectiveSkills?.length ?? agent.skills?.length ?? 0));
 }
 
@@ -444,28 +444,5 @@ export function SkillDiagnosticsPanel({
         </p>
       )}
     </section>
-  );
-}
-
-export function ToolsSettingsPanel({ tools }: { tools: readonly string[] }) {
-  const { t } = useI18n();
-  return (
-    <div className="flex flex-col gap-4">
-      <PanelHeading>{t("settings.resources.tools")}</PanelHeading>
-      <div className="flex flex-wrap gap-1.5">
-        {tools.length > 0 ? (
-          tools.map((tool) => (
-            <span
-              key={tool}
-              className="rounded-md border border-v2-grey-200 px-2 py-1 font-mono text-[12px] text-v2-text-text-base"
-            >
-              {tool}
-            </span>
-          ))
-        ) : (
-          <p className="text-[12px] text-v2-text-text-faint">{t("settings.resources.noTools")}</p>
-        )}
-      </div>
-    </div>
   );
 }

@@ -2,6 +2,7 @@ import { lstat, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ChokidarOptions } from "chokidar";
 import { watchConfigurationResources } from "./configuration-resource-watcher";
+import { createExtensionWatchFilter, extensionWatchAnchors } from "./extension-resources";
 import type { ConfigurationWatchImplementation } from "./live-configuration";
 import {
   type AcceptedSkillDescriptor,
@@ -20,6 +21,7 @@ export interface ResourceWatchChange {
   agentsChanged?: boolean;
   modelsChanged?: boolean;
   skillsChanged?: boolean;
+  extensionsChanged?: boolean;
   projectCwds?: readonly string[];
   availabilityChanged?: boolean;
 }
@@ -91,6 +93,7 @@ type WatchScope =
       readonly anchor: string;
       readonly agentsDir: string;
       readonly skillsDir: string;
+      readonly extensionsDir: string;
       readonly settingsPath: string;
       readonly modelsPath: string;
       readonly authPath: string;
@@ -117,6 +120,7 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
     anchor: agentDir,
     agentsDir: join(agentDir, "agents"),
     skillsDir: join(agentDir, "skills"),
+    extensionsDir: join(agentDir, "extensions"),
     settingsPath: join(agentDir, "settings.json"),
     modelsPath: join(agentDir, "models.json"),
     authPath: join(agentDir, "auth.json"),
@@ -181,6 +185,19 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
       : scope.kind === "home" ? join(homeDir, ".agents", "skills") : agentDir;
     const reportScopeError = () => reportError(location);
     if (admissionClosed) throw new WatcherManagerClosingError();
+    const anchors = initialWatchAnchors(scope);
+    // These are metadata-only native parent anchors, not recursive Chokidar roots.
+    // The injected watcher seam retains its original resource-root contract.
+    if (!dependencies.watch && scope.kind !== "home") {
+      const root = scope.kind === "global" ? scope.extensionsDir : join(scope.canonicalAnchor, ".easyresearch", "extensions");
+      try {
+        anchors.push(...await extensionWatchAnchors(root));
+      } catch (error) {
+        reportScopeError();
+        throw error;
+      }
+      if (admissionClosed) throw new WatcherManagerClosingError();
+    }
     let readySettled = false;
     let waitingForExactAnchor = false;
     let settleReady!: () => void;
@@ -204,6 +221,7 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
       let watcher: ConfigurationWatcher | undefined;
       const pendingDependencies = new Set<string>();
       const filters = new Map<string, ReturnType<typeof createSkillWatchFilter>>();
+      const extensionFilters = new Map<string, ReturnType<typeof createExtensionWatchFilter>>();
       let filterErrorReported = false;
       const addDependencies = (paths: readonly string[]): void => {
         if (!watcher) {
@@ -224,8 +242,19 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
           return false;
         }
       };
-      const anchors = initialWatchAnchors(scope);
-      const options = watcherOptions(scope, skillAllowed);
+      const extensionAllowed = (root: string, path: string): boolean => {
+        if (!isWithin(root, path)) return false;
+        let filter = extensionFilters.get(root);
+        if (!filter) extensionFilters.set(root, filter = createExtensionWatchFilter(root));
+        try {
+          return filter(path);
+        } catch {
+          if (!filterErrorReported) reportScopeError();
+          filterErrorReported = true;
+          return false;
+        }
+      };
+      const options = watcherOptions(scope, skillAllowed, extensionAllowed);
       watcher = (dependencies.watch
         ? dependencies.watch(anchors, options)
         : watchConfigurationResources(anchors, options, [scope.kind === "global" ? scope.anchor
@@ -248,13 +277,15 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
           void serialize(() => refreshProjectAnchor(scope, instance)).catch(() => {});
           return;
         }
-        const change = classifyPath(scope, path, skillAllowed);
+        const change = classifyPath(scope, path, skillAllowed, extensionAllowed);
         if (!change) return;
         reportChange(change);
-        const discoveryChanged = event !== "change" || basename(path) === "SKILL.md"
+        const discoveryChanged = (change.skillsChanged && (event !== "change" || basename(path) === "SKILL.md"
           || SKILL_IGNORE_CONTROL_FILES.has(basename(path))
-          || [...filters.values()].some((filter) => filter.affectsDiscovery(path));
-        if (change.skillsChanged && discoveryChanged && (readySettled || event === "change" || event.startsWith("unlink"))) {
+          || [...filters.values()].some((filter) => filter.affectsDiscovery(path))))
+          || (change.extensionsChanged && (event !== "change"
+            || [...extensionFilters.values()].some((filter) => filter.affectsDiscovery(path))));
+        if (discoveryChanged && (readySettled || event === "change" || event.startsWith("unlink"))) {
           if (instance.refreshQueued) return;
           instance.refreshQueued = true;
           void serialize(async () => {
@@ -429,11 +460,11 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
     try {
       canonicalAnchor = await projectCanonicalAnchor(scope.cwd);
     } catch {
-      reportChange({ skillsChanged: true, projectCwds: [scope.cwd] });
+      reportChange({ skillsChanged: true, extensionsChanged: true, projectCwds: [scope.cwd] });
       return;
     }
     if (canonicalAnchor === scope.canonicalAnchor) {
-      reportChange({ skillsChanged: true, projectCwds: [scope.cwd] });
+      reportChange({ skillsChanged: true, extensionsChanged: true, projectCwds: [scope.cwd] });
       return;
     }
 
@@ -452,18 +483,18 @@ export function createConfigurationWatcherManager(dependencies: WatcherDependenc
     try {
       await installStableProjectWatcher(scope, record, replacement);
       if (projects.get(scope.cwd) === record) {
-        reportChange({ skillsChanged: true, projectCwds: [scope.cwd] });
+        reportChange({ skillsChanged: true, extensionsChanged: true, projectCwds: [scope.cwd] });
       }
     } catch (error) {
       if (error instanceof ProjectAnchorUnavailableError) {
         if (projects.get(scope.cwd) === record) {
-          reportChange({ skillsChanged: true, projectCwds: [scope.cwd] });
+          reportChange({ skillsChanged: true, extensionsChanged: true, projectCwds: [scope.cwd] });
         }
         return;
       }
       await degradeProjectWatcher(record, replacement);
       if (projects.get(scope.cwd) === record) {
-        reportChange({ skillsChanged: true, projectCwds: [scope.cwd] });
+        reportChange({ skillsChanged: true, extensionsChanged: true, projectCwds: [scope.cwd] });
       }
     }
   };
@@ -774,13 +805,13 @@ class ProjectAnchorUnavailableError extends Error {
 
 type SkillWatchFilter = (root: string, path: string) => boolean;
 
-function watcherOptions(scope: WatchScope, skillAllowed: SkillWatchFilter): ChokidarOptions {
+function watcherOptions(scope: WatchScope, skillAllowed: SkillWatchFilter, extensionAllowed: SkillWatchFilter): ChokidarOptions {
   return {
     ignoreInitial: true,
     depth: WATCH_DEPTH,
     followSymlinks: false,
     atomic: true,
-    ignored: (candidate) => !isAllowedPath(scope, resolve(String(candidate)), skillAllowed),
+    ignored: (candidate) => !isAllowedPath(scope, resolve(String(candidate)), skillAllowed, extensionAllowed),
     awaitWriteFinish: {
       stabilityThreshold: STABILITY_THRESHOLD_MS,
       pollInterval: 50,
@@ -806,7 +837,7 @@ function isMissingPathError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
-function isAllowedPath(scope: WatchScope, path: string, skillAllowed: SkillWatchFilter): boolean {
+function isAllowedPath(scope: WatchScope, path: string, skillAllowed: SkillWatchFilter, extensionAllowed: SkillWatchFilter): boolean {
   if (scope.kind === "project") {
     for (const anchor of watchAnchors(scope)) {
       const configurationDir = join(anchor, ".easyresearch");
@@ -815,6 +846,7 @@ function isAllowedPath(scope: WatchScope, path: string, skillAllowed: SkillWatch
         path === anchor
         || path === configurationDir
         || path === join(configurationDir, "settings.json")
+        || extensionAllowed(join(configurationDir, "extensions"), path)
         || path === skillsDir
         || skillAllowed(skillsDir, path)
       ) return true;
@@ -832,7 +864,8 @@ function isAllowedPath(scope: WatchScope, path: string, skillAllowed: SkillWatch
       path === scope.agentsDir ||
       isDirectMarkdown(path, scope.agentsDir) ||
       path === scope.skillsDir ||
-      skillAllowed(scope.skillsDir, path)
+      skillAllowed(scope.skillsDir, path) ||
+      extensionAllowed(scope.extensionsDir, path)
     );
   }
   if (scope.kind === "home") {
@@ -843,17 +876,28 @@ function isAllowedPath(scope: WatchScope, path: string, skillAllowed: SkillWatch
   return false;
 }
 
-function classifyPath(scope: WatchScope, path: string, skillAllowed: SkillWatchFilter): ResourceWatchChange | undefined {
-  if (!isAllowedPath(scope, path, skillAllowed) || path === scope.anchor) return undefined;
+function classifyPath(scope: WatchScope, path: string, skillAllowed: SkillWatchFilter, extensionAllowed: SkillWatchFilter): ResourceWatchChange | undefined {
+  if (!isAllowedPath(scope, path, skillAllowed, extensionAllowed) || path === scope.anchor) return undefined;
   if (scope.kind === "global") {
     if (path === scope.settingsPath) return {};
     if (path === scope.modelsPath) return { modelsChanged: true };
     if (path === scope.authPath || path === scope.modelsStorePath) return { availabilityChanged: true };
     if (path === scope.agentsDir || isDirectMarkdown(path, scope.agentsDir)) return { agentsChanged: true };
     if (path === scope.skillsDir || isWithin(scope.skillsDir, path)) return { skillsChanged: true };
+    if (isWithin(scope.extensionsDir, path)) return { extensionsChanged: true };
     return undefined;
   }
   if (scope.kind === "home") return { skillsChanged: true };
+  for (const anchor of watchAnchors(scope)) {
+    const configurationDir = join(anchor, ".easyresearch");
+    if (path === configurationDir) return { skillsChanged: true, extensionsChanged: true, projectCwds: [scope.cwd] };
+    if (path === join(configurationDir, "settings.json")) {
+      return { skillsChanged: true, extensionsChanged: true, projectCwds: [scope.cwd] };
+    }
+    if (isWithin(join(configurationDir, "extensions"), path)) {
+      return { extensionsChanged: true, projectCwds: [scope.cwd] };
+    }
+  }
   return { skillsChanged: true, projectCwds: [scope.cwd] };
 }
 

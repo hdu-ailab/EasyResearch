@@ -185,7 +185,7 @@ function SkillInvocationContent({ invocation }: { invocation: NonNullable<SteerV
   );
 }
 
-/** User bubbles and unboxed assistant prose share left-aligned metadata.
+/** Human bubbles and metadata align right; assistant and labeled dispatch rows align left.
  * Both roles retain message time and Copy;
  * human messages with tree metadata also gain Edit and a version switcher. Skill-invoked
  * messages render a compact card instead of the expanded content. */
@@ -1069,9 +1069,9 @@ export const ChatTranscript = forwardRef<ChatTranscriptHandle, ChatTranscriptPro
         <div
           role="status"
           aria-label={t("transcript.steerQueuedLabel")}
-          className="shrink-0 border-t border-v2-grey-200/70 bg-v2-background-bg-base/85 px-4 py-2 backdrop-blur"
+          className="shrink-0 border-t border-v2-grey-200/70 bg-v2-background-bg-base/85 py-2 backdrop-blur"
         >
-          <ul className="mx-auto flex w-full max-w-[1000px] flex-col items-start gap-1.5">
+          <ul className="mx-auto flex w-full max-w-[1000px] flex-col items-start gap-1.5 px-4">
             {steers.map((steer) => (
               <li key={steer.key} className="v2-steer-queued er-chat-message" data-message-role="user">
                 <span className="er-chat-message-label">{t("transcript.you")}</span>

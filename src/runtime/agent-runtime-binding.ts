@@ -21,6 +21,7 @@ import type {
 import { DEFAULT_GLOBAL_COMPACTION_POLICY } from "./compaction-policy";
 import type { ProviderTimeoutSettingsDto } from "../web/contracts";
 import { SHARED_AGENT_GUIDANCE } from "./system-prompt";
+import type { RuntimeToolSnapshot } from "./runtime-tool-inventory";
 
 const SAFE_APPLY_ERROR = "Agent runtime configuration could not be applied. Retry after fixing the configuration.";
 const SAFE_MISSING_AGENT = "The configured Agent is not available in the current valid configuration.";
@@ -42,6 +43,8 @@ export interface AgentRuntimeBindingSession {
   abort(): Promise<void>;
   rebindModel(model: Model<any> | undefined): void;
   setThinkingLevel(level: ThinkingLevel): void;
+  toolSnapshot?(): Pick<RuntimeToolSnapshot, "tools" | "errors">;
+  installToolPolicy?(agent: () => AgentConfig, changed: () => void): () => void;
 }
 
 export interface EnsureCurrentOptions {
@@ -66,6 +69,7 @@ export interface AgentRuntimeBinding {
   attach(session: AgentRuntimeBindingSession): Promise<void>;
   ensureCurrent(options?: EnsureCurrentOptions): Promise<void>;
   reapplyCompaction(): Promise<void>;
+  refreshTools?(): void;
   /** Close application admission and drain it, retaining models for Pi shutdown. */
   close(): Promise<void>;
   dispose(): Promise<void>;
@@ -85,7 +89,7 @@ export interface AgentRuntimeBindingOptions {
   >, "availabilityEpoch" | "synchronize"> & {
     readonly availabilityEpoch?: number;
     synchronize(options?: { projectCwds?: readonly string[] }): Promise<unknown>;
-  } & Partial<Pick<LiveConfiguration, "compactionPolicy" | "providerTimeoutSettings">>;
+  } & Partial<Pick<LiveConfiguration, "compactionPolicy" | "providerTimeoutSettings" | "updateRuntimeTools">>;
   agentName: string;
   cwd: string;
   createModelRuntime(): Promise<AgentRuntimeModelRuntime>;
@@ -148,6 +152,24 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
   let childSelection = options.childSelection && { ...options.childSelection };
   let selectionRevision = 0;
   let appliedSelectionRevision = -1;
+  const inventoryOwner = {};
+  let detachToolPolicy: (() => void) | undefined;
+
+  const publishTools = (): void => {
+    if (!session?.toolSnapshot || !applied || runtimeStatus !== "clean" || disposed || closing) return;
+    try {
+      options.live.updateRuntimeTools?.(inventoryOwner, {
+        cwd: options.cwd, agentName: applied.definition.name, generation: applied.generation, ...session.toolSnapshot(),
+      });
+    } catch {
+      // Registry observation is not allowed to fail an owned runtime operation.
+    }
+  };
+  const refreshTools = (): void => {
+    detachToolPolicy?.();
+    detachToolPolicy = session?.installToolPolicy?.(() => requireApplied().definition, publishTools);
+    publishTools();
+  };
 
   const requireApplied = (): AppliedRuntimeState => {
     if (runtimeStatus === "poisoned") throw new Error(SAFE_APPLY_ERROR);
@@ -429,6 +451,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         await modelRuntimeCandidate.commit();
         markRuntimeApplied(candidate.generation);
         appliedSelectionRevision = candidateSelectionRevision;
+        publishTools();
       } catch {
         try {
           await modelRuntimeCandidate.rollback();
@@ -547,6 +570,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
     generation() {
       return requireApplied().generation;
     },
+    refreshTools,
     current() {
       return requireApplied().definition;
     },
@@ -582,6 +606,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
       const acceptedGeneration = options.live.generation;
       if (acceptedGeneration > current.generation) markRuntimePending(acceptedGeneration);
       session = attached;
+      refreshTools();
       if (!sameModel(attached.model, current.model)) attached.rebindModel(current.model);
       unsubscribe = options.live.subscribe((event) => {
         if (closing) return;
@@ -618,6 +643,7 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         projectAfterCurrentTransaction();
       });
       await ensureCurrent();
+      publishTools();
     },
     ensureCurrent,
     async reapplyCompaction() {
@@ -644,6 +670,9 @@ export function createAgentRuntimeBinding(options: AgentRuntimeBindingOptions): 
         !projectRegistration
       ) return Promise.resolve();
       disposed = true;
+      detachToolPolicy?.();
+      detachToolPolicy = undefined;
+      options.live.updateRuntimeTools?.(inventoryOwner, undefined);
       disposePromise = (async () => {
         const errors: unknown[] = [];
         try {

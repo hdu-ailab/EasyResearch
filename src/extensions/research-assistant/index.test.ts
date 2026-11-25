@@ -30,6 +30,5 @@ describe("createResearchAssistantExtension", () => {
     expect(setActiveTools).toHaveBeenCalledWith(["read", "subagent"]);
     expect(resources).toEqual({ skillPaths: ["/skills/research-project-workflow"] });
     expect(ensureCurrent).toHaveBeenCalledWith();
-    expect(handlers.has("before_agent_start")).toBe(false);
   });
 });

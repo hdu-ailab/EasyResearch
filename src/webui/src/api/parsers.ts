@@ -60,6 +60,7 @@ import type {
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
   TimelineEntryAppendedEventDto,
+  ToolDiagnosticDto,
   TranscriptHistoryDto,
   TranscriptPageDto,
   TranscriptTimelineEntryDto,
@@ -843,6 +844,17 @@ export function parseTimelineEntryAppendedEvent(value: unknown): TimelineEntryAp
   };
 }
 
+function parseToolDiagnostic(value: unknown): ToolDiagnosticDto {
+  const source = record(value, "tool diagnostic");
+  const kind = requiredString(source, "kind");
+  if (kind !== "load" && kind !== "registration") throw new Error("Invalid API response: tool diagnostic kind");
+  if (source.scope !== undefined && source.scope !== "global" && source.scope !== "project")
+    throw new Error("Invalid API response: tool diagnostic scope");
+  const path = requiredString(source, "path");
+  if (path.length === 0 || path.length > 4096) throw new Error("Invalid API response: tool diagnostic path");
+  return { kind, path, ...(source.scope === undefined ? {} : { scope: source.scope }) };
+}
+
 export function parseAgent(value: unknown): AgentDto {
   const source = record(value, "agent");
   if (source.thinking !== undefined && !isThinkingLevel(source.thinking)) {
@@ -855,7 +867,7 @@ export function parseAgent(value: unknown): AgentDto {
   const subagents = source.subagents === undefined ? undefined : stringArray(source.subagents, "subagents");
   const skills = source.skills === undefined ? undefined : stringArray(source.skills, "skills");
   const effectiveTools =
-    source.effectiveTools === undefined ? (tools ?? []) : stringArray(source.effectiveTools, "effectiveTools");
+    source.effectiveTools === undefined ? [] : stringArray(source.effectiveTools, "effectiveTools");
   const effectiveSkills =
     source.effectiveSkills === undefined ? (skills ?? []) : stringArray(source.effectiveSkills, "effectiveSkills");
   const missingSkills = stringArray(source.missingSkills, "missingSkills");
@@ -873,6 +885,12 @@ export function parseAgent(value: unknown): AgentDto {
     ...(typeof source.effectiveModel === "string" ? { effectiveModel: source.effectiveModel } : {}),
     ...(isThinkingLevel(source.thinking) ? { thinking: source.thinking } : {}),
     effectiveTools,
+    ...(source.toolDiagnostics === undefined
+      ? {}
+      : { toolDiagnostics: arrayOf(source.toolDiagnostics, "toolDiagnostics", parseToolDiagnostic) }),
+    ...(source.toolDiagnosticsTruncated === undefined
+      ? {}
+      : { toolDiagnosticsTruncated: requiredBoolean(source, "toolDiagnosticsTruncated") }),
     effectiveSkills,
     missingSkills,
     ...(tools !== undefined ? { tools } : {}),
@@ -922,6 +940,9 @@ export function parseConfigurationEvent(value: unknown): PublicConfigurationEven
     if (source.availabilityChanged !== undefined && source.availabilityChanged !== true) {
       throw new Error("Invalid API response: availabilityChanged must be true");
     }
+    if (source.toolsChanged !== undefined && source.toolsChanged !== true) {
+      throw new Error("Invalid API response: toolsChanged must be true");
+    }
     return {
       type: "config.updated",
       bootId,
@@ -933,6 +954,7 @@ export function parseConfigurationEvent(value: unknown): PublicConfigurationEven
       ...(availabilityEpoch === undefined ? {} : { availabilityEpoch }),
       ...(source.availabilityChanged === true ? { availabilityChanged: true } : {}),
       ...(source.apiUsageChanged === true ? { apiUsageChanged: true } : {}),
+      ...(source.toolsChanged === true ? { toolsChanged: true } : {}),
       ...(projectWatchLeaseId === undefined ? {} : { projectWatchLeaseId }),
     };
   }

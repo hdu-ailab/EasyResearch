@@ -628,6 +628,40 @@ describe("api transport", () => {
     expect(agents[0]?.missingSkills).toEqual(["missing-skill"]);
   });
 
+  it("owns scoped Tool inventory reads through an AbortSignal and preserves structured diagnostic kinds", async () => {
+    const diagnostic = {
+      kind: "registration",
+      scope: "project",
+      path: "/exact/project/.easyresearch/extensions/mixed.ts",
+    };
+    fetchMock.mockResolvedValueOnce(
+      Response.json([
+        {
+          name: "search",
+          description: "Search",
+          source: "global",
+          missingSkills: [],
+          tools: ["not_registered"],
+          effectiveTools: ["registered_survivor"],
+          toolDiagnostics: [diagnostic],
+          toolDiagnosticsTruncated: true,
+        },
+      ]),
+    );
+    const controller = new AbortController();
+    const agents = await listAgents("/exact/project", controller.signal);
+    expect(fetchMock).toHaveBeenCalledWith("/api/agents?cwd=%2Fexact%2Fproject", { signal: controller.signal });
+    expect(agents[0]).toMatchObject({
+      effectiveTools: ["registered_survivor"],
+      toolDiagnostics: [diagnostic],
+      toolDiagnosticsTruncated: true,
+    });
+    const requests = fetchMock.mock.calls.length;
+    controller.abort();
+    await expect(listAgents("/exact/project", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).toHaveBeenCalledTimes(requests);
+  });
+
   it.each([
     ["absent", undefined],
     ["not an array", "missing-skill"],

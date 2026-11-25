@@ -49,10 +49,10 @@ import {
   GeneralSettingsPanel,
   type MissingSkillDiagnostic,
   ProviderSettingsPanel,
-  ToolsSettingsPanel,
 } from "./SettingsPanels";
 import { SkillMarketplacePanel } from "./SkillMarketplacePanel";
 import { SkillsSettingsPanel } from "./SkillsSettingsPanel";
+import { ToolsSettingsPanel } from "./ToolsSettingsPanel";
 
 export interface SettingsModalProps {
   initialMarketplace?: boolean;
@@ -177,6 +177,8 @@ export function SettingsModal({
   const [resourcesRevision, setResourcesRevision] = useState(0);
   const [skillDeletion, setSkillDeletion] = useState<{ id: string; revision: number } | null>(null);
   const [diagnosticScope, setDiagnosticScope] = useState("global");
+  const [toolScope, setToolScope] = useState("global");
+  const [toolMutationRevision, setToolMutationRevision] = useState(0);
   const [diagnosticAgents, setDiagnosticAgents] = useState<AgentDto[]>([]);
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Array<{ cwd: string }>>([]);
@@ -341,8 +343,16 @@ export function SettingsModal({
   }, [configurationGeneration, diagnosticScope, refreshDiagnostics]);
 
   useEffect(() => {
-    onProjectInterestChange(diagnosticScope === "global" ? undefined : diagnosticScope);
-  }, [diagnosticScope, onProjectInterestChange]);
+    const scope =
+      isMobile && !mobileDetailOpen
+        ? "global"
+        : active === "tools"
+          ? toolScope
+          : active === "skills"
+            ? diagnosticScope
+            : "global";
+    onProjectInterestChange(scope === "global" ? undefined : scope);
+  }, [active, diagnosticScope, toolScope, isMobile, mobileDetailOpen, onProjectInterestChange]);
 
   useEffect(
     () => () => {
@@ -423,15 +433,19 @@ export function SettingsModal({
 
   const refreshAgents = async () => {
     const request = ++configurationRequest.current;
-    const resources = await listAgentResources();
+    const [resources, registered] = await Promise.all([listAgentResources(), listAgents()]);
     if (request !== configurationRequest.current) return;
     const next = resources.map((resource) => ({
       ...resource,
+      effectiveTools: registered.find((agent) => agent.name === resource.name)?.effectiveTools ?? [],
+      toolDiagnostics: registered.find((agent) => agent.name === resource.name)?.toolDiagnostics,
+      toolDiagnosticsTruncated: registered.find((agent) => agent.name === resource.name)?.toolDiagnosticsTruncated,
       effectiveModel: agents.find((agent) => agent.name === resource.name)?.effectiveModel,
     }));
     setResourceAgents(resources);
     setAgents(next);
     setAgentModal((current) => (current ? (next.find((agent) => agent.name === current.name) ?? null) : null));
+    setDetailsAgent((current) => (current ? (next.find((agent) => agent.name === current.name) ?? null) : null));
   };
 
   const openAgentEditor = async (name: string) => {
@@ -448,6 +462,7 @@ export function SettingsModal({
     setBusy(true);
     try {
       await writeAgentResource(agentEditor.name, content);
+      setToolMutationRevision((revision) => revision + 1);
       await Promise.all([refreshAgents(), refreshDiagnostics(diagnosticScope)]);
       setAgentEditor(null);
     } catch (cause) {
@@ -461,10 +476,19 @@ export function SettingsModal({
     try {
       const resource = await readAgentResource(agent.name);
       const content = setEnableFrontmatter(resource.content ?? "", !agent.enabled);
-      const savedAgent = await writeAgentResource(agent.name, content);
+      const saved = await writeAgentResource(agent.name, content);
+      setToolMutationRevision((revision) => revision + 1);
+      const registered = (await listAgents()).find((entry) => entry.name === saved.name);
+      const savedAgent = {
+        ...saved,
+        effectiveTools: registered?.effectiveTools ?? [],
+        toolDiagnostics: registered?.toolDiagnostics,
+        toolDiagnosticsTruncated: registered?.toolDiagnosticsTruncated,
+      };
       setResourceAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
       setAgents((current) => current.map((item) => (item.name === savedAgent.name ? savedAgent : item)));
       setAgentModal((current) => (current?.name === savedAgent.name ? savedAgent : current));
+      setDetailsAgent((current) => (current?.name === savedAgent.name ? savedAgent : current));
       await refreshDiagnostics(diagnosticScope);
     } catch (cause) {
       setCategoryError("agents", cause);
@@ -477,12 +501,12 @@ export function SettingsModal({
     setBusy(true);
     try {
       const created = await createAgentResource(name);
+      setToolMutationRevision((revision) => revision + 1);
       setAddAgentOpen(false);
       setNewAgentName("");
       setAgentEditor(created);
-      setAgentModal(created);
+      setAgentModal({ ...created, effectiveTools: [] });
       setResourceAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
-      setAgents((current) => [...current.filter((item) => item.name !== created.name), created]);
       await Promise.all([refreshAgents(), refreshDiagnostics(diagnosticScope)]);
     } catch (cause) {
       setCategoryError("agents", cause);
@@ -555,7 +579,7 @@ export function SettingsModal({
         diagnosticScope === "global" ? {} : { projectCwds: [diagnosticScope] },
       );
       if (request !== manualRefreshRequest.current) return;
-      await refreshConfiguration(result.error);
+      await Promise.all([refreshConfiguration(result.error), refreshDiagnostics(diagnosticScope)]);
     } catch (cause) {
       if (request === manualRefreshRequest.current) setCategoryError("agents", cause);
     } finally {
@@ -570,7 +594,15 @@ export function SettingsModal({
     setBusy(true);
     setCategoryError("agents", null);
     try {
-      const saved = await patchAgent(name, patch);
+      const resource = await patchAgent(name, patch);
+      setToolMutationRevision((revision) => revision + 1);
+      const registered = (await listAgents()).find((entry) => entry.name === resource.name);
+      const saved = {
+        ...resource,
+        effectiveTools: registered?.effectiveTools ?? [],
+        toolDiagnostics: registered?.toolDiagnostics,
+        toolDiagnosticsTruncated: registered?.toolDiagnosticsTruncated,
+      };
       const replace = <T extends AgentDto>(rows: T[]): T[] =>
         rows.map((agent) => (agent.name === saved.name ? ({ ...agent, ...saved } as T) : agent));
       setAgents(replace);
@@ -596,9 +628,6 @@ export function SettingsModal({
   });
   const researchAssistant = roster.find((agent) => agent.name === RESEARCH_ASSISTANT_AGENT);
   const researchAssistantModel = researchAssistant?.model ?? researchAssistant?.effectiveModel;
-  const toolInventory = [...new Set(roster.flatMap((agent) => agent.effectiveTools ?? agent.tools ?? []))].sort(
-    (a, b) => a.localeCompare(b),
-  );
   const missingSkills = new Map<string, string[]>();
   for (const agent of diagnosticAgents) {
     for (const skill of agent.missingSkills ?? []) {
@@ -678,7 +707,16 @@ export function SettingsModal({
         }}
       />
     ),
-    tools: <ToolsSettingsPanel tools={toolInventory} />,
+    tools: (
+      <ToolsSettingsPanel
+        active={active === "tools" && (!isMobile || mobileDetailOpen)}
+        scope={toolScope}
+        projects={projects}
+        configurationGeneration={configurationGeneration}
+        mutationRevision={toolMutationRevision}
+        onScopeChange={setToolScope}
+      />
+    ),
   };
   const panelCategories: readonly SettingsCategory[] = [
     "general",
@@ -792,7 +830,7 @@ export function SettingsModal({
       {detailsAgent && (
         <AgentResourceDetailsDialog
           agentName={agentDisplayName(t, detailsAgent.name)}
-          tools={detailsAgent.effectiveTools ?? detailsAgent.tools ?? []}
+          tools={detailsAgent.effectiveTools ?? []}
           skills={detailsAgent.effectiveSkills ?? detailsAgent.skills ?? []}
           onClose={() => setDetailsAgent(null)}
         />

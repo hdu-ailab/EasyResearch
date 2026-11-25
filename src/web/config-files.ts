@@ -5,6 +5,7 @@ import type { ConfigEntryDto, ConfigScope } from "./contracts";
 import { getAgentDir, importPiAuthStorage } from "../runtime/pi-import";
 import { parsePiSettingsJson } from "../runtime/pi-settings-json";
 import { isSkillDescriptorRelativePath } from "../runtime/resource-fingerprint";
+import { isStandardExtensionSource } from "../runtime/extension-resources";
 
 export class ConfigPathError extends Error {}
 
@@ -41,6 +42,8 @@ export interface AuthoritativeConfigChange {
   agentsChanged?: true;
   modelsChanged?: true;
   skillsChanged?: true;
+  extensionsChanged?: true;
+  projectCwds?: readonly string[];
   availabilityChanged?: true;
 }
 
@@ -207,7 +210,10 @@ export class ConfigFileService {
         () => this.writeNow(input, undefined, { notify: false })));
       return this.notifyPersistedWrite(storePath ? { ...input, path: basename(storePath) } : input, false);
     }
-    if (input.scope === "project" && (isProjectSkillDescriptorInput(input) || isPiSettingsWrite(input)) && input.cwd && this.options.acquireProject) {
+    if (input.scope === "project" && input.cwd && this.options.acquireProject && (
+      isProjectSkillDescriptorInput(input) || isPiSettingsWrite(input)
+      || isStandardExtensionSource(join(input.cwd, ".easyresearch"), join(input.cwd, ".easyresearch", input.path))
+    )) {
       const registration = await this.options.acquireProject(input.cwd);
       try {
         return await this.writeNow(input, this.projectWriteContext(input.cwd));
@@ -337,10 +343,9 @@ export class ConfigFileService {
     }
     const target = resolveAllowedConfigPath(root, input.path, "write");
     const skillDescriptor = isSkillDescriptorTarget(root, target);
-    const projectDescriptor = input.scope === "project" && (skillDescriptor || isPiSettingsWrite(input));
-    const stableProject = projectDescriptor && input.cwd
-      ? (projectContext ?? this.projectWriteContext(input.cwd))
-      : undefined;
+    const extensionSource = isStandardExtensionSource(root, join(root, input.path));
+    const projectResource = input.scope === "project" && (skillDescriptor || isPiSettingsWrite(input) || extensionSource);
+    const stableProject = projectContext ?? (projectResource && input.cwd ? this.projectWriteContext(input.cwd) : undefined);
     if (stableProject) this.assertProjectUnchanged(stableProject);
     fs.mkdirSync(dirname(target), { recursive: true });
     const tempPath = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
@@ -370,13 +375,13 @@ export class ConfigFileService {
       fs.rmSync(tempPath, { force: true });
     }
     if (!persisted || options.notify === false) return undefined;
-    return this.notifyPersistedWrite(input, skillDescriptor);
+    return this.notifyPersistedWrite(input, skillDescriptor, extensionSource);
   }
 
-  private async notifyPersistedWrite(input: ConfigWriteInput, skillDescriptor: boolean): Promise<unknown> {
-    const change = authoritativeChange(input, skillDescriptor);
+  private async notifyPersistedWrite(input: ConfigWriteInput, skillDescriptor: boolean, extensionSource = false): Promise<unknown> {
+    const change = authoritativeChange(input, skillDescriptor, extensionSource);
     const authoritativeOutcome = change ? await this.options.onAuthoritativeWrite?.(change) : undefined;
-    if (input.scope === "project" && (skillDescriptor || isPiSettingsWrite(input)) && input.cwd) {
+    if (input.scope === "project" && (skillDescriptor || isPiSettingsWrite(input) || extensionSource) && input.cwd) {
       return await this.options.synchronizeProject?.(input.cwd) ?? authoritativeOutcome;
     }
     return authoritativeOutcome;
@@ -477,7 +482,12 @@ function isProjectSkillDescriptorInput(input: ConfigWriteInput): boolean {
 function authoritativeChange(
   input: ConfigWriteInput,
   skillDescriptor: boolean,
+  extensionSource: boolean,
 ): AuthoritativeConfigChange | undefined {
+  if (extensionSource) return {
+    extensionsChanged: true,
+    ...(input.scope === "project" && input.cwd ? { projectCwds: [input.cwd] } : {}),
+  };
   if (input.scope !== "global") return undefined;
   const path = normalize(input.path);
   if (path === "models.json") return { modelsChanged: true };

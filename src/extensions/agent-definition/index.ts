@@ -1,6 +1,6 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { AgentRuntimeBinding } from "../../runtime/agent-runtime-binding";
-import { normalizeLocalShellTools } from "../../runtime/platform-tools";
+import { selectAgentTools } from "../../subagent/agents";
 
 /** Apply the binding through Pi's real reload lifecycle for any Agent role. */
 export function createAgentDefinitionExtension(
@@ -10,10 +10,15 @@ export function createAgentDefinitionExtension(
   return (pi) => {
     pi.on("session_start", () => {
       const agent = binding.current();
-      const activeTools = agent.tools === undefined
-        ? pi.getAllTools().map(({ name }) => name)
-        : normalizeLocalShellTools(agent.tools, platform);
+      const activeTools = selectAgentTools(agent, pi.getAllTools(), platform);
       pi.setActiveTools(activeTools);
+      binding.refreshTools?.();
+    });
+    pi.on("before_agent_start", (event) => {
+      // File extensions run before this host inline extension. Pi applies this
+      // loadout directly, so filtering runtime.setActiveTools alone is insufficient.
+      const allowed = new Set(selectAgentTools(binding.current(), pi.getAllTools(), platform));
+      event.systemPromptOptions.selectedTools = event.systemPromptOptions.selectedTools.filter(name => allowed.has(name));
     });
     pi.on("resources_discover", () => ({ skillPaths: binding.skillPaths() }));
     pi.on("model_select", async (_event, ctx) => {

@@ -1571,6 +1571,117 @@ describe("App routing", () => {
     expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
   });
 
+  it("switches the Settings project interest between independent Tools and Skills scopes while retaining Work", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listStatus).mockResolvedValue(persisted);
+    vi.mocked(api.listConfigProjects).mockResolvedValue({
+      home: "/tmp/agent",
+      projects: [{ cwd: "/papers/tool-project" }, { cwd: "/papers/skill-project" }],
+    });
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    await renderWork();
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-a",
+        generation: 1,
+        agentsChanged: false,
+        modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: false,
+        projectWatchLeaseId: "settings-owner-lease",
+      }),
+    );
+    const revisions: number[] = [];
+    const expectInterests = async (cwds: string[]) => {
+      await waitFor(() =>
+        expect(configurationApi.replaceConfigurationProjectWatches).toHaveBeenLastCalledWith("settings-owner-lease", {
+          revision: expect.any(Number),
+          cwds,
+        }),
+      );
+      revisions.push(vi.mocked(configurationApi.replaceConfigurationProjectWatches).mock.calls.at(-1)![1].revision);
+    };
+    await expectInterests(["/p"]);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Tools" }));
+    await user.selectOptions(await screen.findByRole("combobox", { name: "Tool scope" }), "/papers/tool-project");
+    await expectInterests(["/p", "/papers/tool-project"]);
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(screen.getByRole("combobox", { name: "Skill diagnostic scope" })).toHaveValue("global");
+    await expectInterests(["/p"]);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Skill diagnostic scope" }), "/papers/skill-project");
+    await expectInterests(["/p", "/papers/skill-project"]);
+    await user.click(screen.getByRole("tab", { name: "Tools" }));
+    expect(screen.getByRole("combobox", { name: "Tool scope" })).toHaveValue("/papers/tool-project");
+    await expectInterests(["/p", "/papers/tool-project"]);
+    await user.click(screen.getByRole("tab", { name: "Conversation" }));
+    await expectInterests(["/p"]);
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(screen.getByRole("combobox", { name: "Skill diagnostic scope" })).toHaveValue("/papers/skill-project");
+    await expectInterests(["/p", "/papers/skill-project"]);
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await expectInterests(["/p"]);
+    expect(revisions.every((revision, index) => index === 0 || revision > revisions[index - 1]!)).toBe(true);
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+    expect(unsubscribeFn).not.toHaveBeenCalled();
+    expect(api.stopSession).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the Tools page from same-generation inventory publication without a synchronization request", async () => {
+    const user = userEvent.setup();
+    let recovered = false;
+    vi.mocked(api.listAgents).mockImplementation(async () => [
+      {
+        name: "research-assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "/bundled/research-assistant.md",
+        effectiveTools: [recovered ? "repaired_tool" : "healthy_tool"],
+        effectiveSkills: [],
+        missingSkills: [],
+        toolDiagnostics: recovered ? [] : [{ kind: "load", path: "/agent/extensions/broken.ts", scope: "global" }],
+      },
+    ]);
+    render(<App />);
+    await workspace();
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-a",
+        generation: 4,
+        agentsChanged: true,
+        modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: false,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("tab", { name: "Tools" }));
+    const tools = screen.getByRole("region", { name: "Tools" });
+    expect(await within(tools).findByText("/agent/extensions/broken.ts")).toBeVisible();
+    expect(within(tools).getByText("healthy_tool")).toBeVisible();
+    recovered = true;
+    act(() =>
+      configurationHandlers.onEvent({
+        type: "config.updated",
+        bootId: "boot-a",
+        generation: 4,
+        agentsChanged: false,
+        modelsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: false,
+        toolsChanged: true,
+      }),
+    );
+    expect(await within(tools).findByText("repaired_tool")).toBeVisible();
+    expect(within(tools).queryByText("/agent/extensions/broken.ts")).toBeNull();
+    expect(api.refreshConfigurationResources).not.toHaveBeenCalled();
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+  });
+
   it("forwards one accepted configuration generation to open Settings and the mounted Work surface", async () => {
     const user = userEvent.setup();
     vi.mocked(api.listAgents).mockResolvedValue([

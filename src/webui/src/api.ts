@@ -232,8 +232,8 @@ export function checkForUpdate(): Promise<UpdateCheckDto> {
   return requestJson(routes.updateCheck(), parseUpdateCheck);
 }
 
-export function listAgents(cwd?: string): Promise<AgentDto[]> {
-  return requestJson(routes.agents(cwd), parseAgents);
+export function listAgents(cwd?: string, signal?: AbortSignal): Promise<AgentDto[]> {
+  return requestJson(routes.agents(cwd), parseAgents, signal ? { signal } : undefined);
 }
 
 export function patchAgent(name: string, patch: AgentConfigurationPatch): Promise<AgentDto> {

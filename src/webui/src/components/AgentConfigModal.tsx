@@ -53,7 +53,7 @@ export function AgentConfigModal({
   const dialogRef = useRef<HTMLDivElement>(null);
   const { zIndex, dialogProps } = useModalLayer(onClose, dialogRef);
   const name = agentDisplayName(t, agent.name);
-  const tools = agent.effectiveTools ?? agent.tools ?? [];
+  const tools = agent.effectiveTools ?? [];
   const skills = agent.effectiveSkills ?? agent.skills ?? [];
   const selectedModel = modelOptions.find((model) => `${model.provider}/${model.id}` === modelValue);
   return (

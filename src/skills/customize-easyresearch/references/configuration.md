@@ -209,11 +209,37 @@ and `logs/easyresearch-YYYY-MM-DD.log`; these are not alternate config files.
 
 ## Extensions and other resources
 
-User extensions are TypeScript files at `extensions/*.ts` or
-`extensions/<name>/index.ts` under the global/project config root, or explicit
-entries in the settings `extensions` array. The entry default-exports a function
-receiving Pi's `ExtensionAPI`. Extensions run with full system permissions;
-review their behavior before enabling them.
+For Tool creation, updates, Agent grants, deletion and load troubleshooting, read
+the [Tool reference](tools.md). Its example uses Pi 1.6's native `ExtensionAPI`,
+`api.registerTool` and host-provided `typebox`. Scripts and Skill instructions
+are not automatically registered Tools.
+
+Prefer global `~/.easyresearch/agent/extensions/<name>.ts`, or
+`<exact-session-cwd>/.easyresearch/extensions/<name>/index.ts` for explicit
+project scope. A directory entry may import local helpers. Existing explicit
+paths in the native settings `extensions` array remain supported; do not add a
+second tool store. Extensions execute inside the host with its system permissions.
+
+Missing/empty `tools` enables registered user tools for `research-assistant`,
+but only controlled bundled capabilities for other Agents. A non-empty list
+stays restrictive for every Agent. Explicitly granting another Agent a tool
+requires preserving its existing abilities: retain an existing strict list, or
+first obtain its effective bundled list before replacing an empty list.
+
+Standard global/exact-cwd extension regular files/directories and in-scope
+TS/JS/JSON helpers join automatic add/change/remove/atomic-replacement monitoring.
+Idle runtimes reload; active runs retain their accepted implementation through
+all turns, retries and summaries until native settlement or the next idle preflight.
+Creation during a run cannot make the new tool callable later in that same run. Use Settings
+Refresh for recovery, not polling or forced interruption. Explicit local
+`settings.extensions` paths and symlink targets are checked by Settings Refresh
+and idle preflight, without automatic-watching guarantees. A selected file covers
+only itself; a selected directory covers its in-scope code/JSON files, not imports
+outside that scope or `node_modules`.
+
+Normal upgrades preserve user extension directories. They are outside the
+replaced bundled tree and the per-version same-name Agent/Skill `.bak`
+retirement. Check matching Pi API compatibility after an upgrade.
 
 Startup refuses a non-empty `packages` array and extension entries resolving
 inside foreign `~/.pi`. Do not enable a package or foreign config path as a
@@ -222,15 +248,15 @@ Bundled extensions use post-bootstrap in-process factories, not materialized
 TypeScript sources or spawned Pi processes.
 
 Prompt templates and themes belong in their corresponding global/project
-resource directories. For full schemas or extension APIs, consult the Pi docs
-matching EasyResearch's installed runtime version. In a source checkout these
-are `.docs/pi/docs/settings.md`, `models.md`, `skills.md`, `extensions.md`,
-`prompt-templates.md`, and `themes.md`; EasyResearch overrides are documented in
-`.docs/architecture.md`, `.docs/agents.md`, and `.docs/pi-backend-parity.md`.
-These `.docs/` paths are developer-only, not paths to assume exist in a paper
-project or npm installation. Outside a checkout, use the available matching
-Pi documentation; if it is unavailable, obtain it before inventing an API.
-Upstream `.pi` examples must use EasyResearch's roots, not the upstream roots.
+resource directories and retain their documented application timing.
+For matching Pi schemas/APIs, prefer `<agentDir>/bundled/pi/docs/`, including
+`settings.md`, `models.md`, `skills.md`, `extensions.md`, `prompt-templates.md`
+and `themes.md`. Read the exact `@earendil-works/pi-coding-agent` dependency pin
+from `<agentDir>/bundled/pi/package.json`; that manifest's own version identifies
+EasyResearch, not Pi. In a source checkout use the exact installed dependency's
+docs. Developer-only `.docs/` is not a runtime prerequisite. If local docs are
+missing, obtain that exact version's docs before inventing an API. Adapt upstream
+config-root examples to EasyResearch's roots and use EasyResearch's idle lifecycle.
 
 ## Web editor integration
 
@@ -244,9 +270,18 @@ For Web integrations, `PATCH /api/agents/:name` accepts
 property and restores fallback; the endpoint preserves unrelated Pi settings.
 Direct file edits remove the property instead of writing a sentinel value.
 `GET /api/agents` exposes effective/configured tools, Skills, model, and thinking
-without the system prompt; exact cwd changes Skill resolution, not Agent scope.
+without the system prompt. Its `effectiveTools` projects actually registered
+user tools and `toolDiagnostics` carries safe load diagnostics when present.
+Exact cwd changes project Skill/extension resolution, not the global Agent scope.
+Settings does not execute extension factories just to render a list or guess
+callable tool names from TypeScript filenames. Before a real session loads an
+extension, its absence from callable inventory is expected. A busy old runtime
+may retain its earlier registration until settlement; inspect the target runtime
+and scope before interpreting a stale or missing row.
 Settings Refresh synchronizes resources before refetching, so use it for stale
 views rather than assuming a browser reload applied the configuration.
+This metadata API is not a Tool execution test. Verify through a real Agent call
+after runtime application; there is no separate user-Tool verification endpoint.
 
 ## Diagnostics
 

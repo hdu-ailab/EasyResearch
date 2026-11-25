@@ -5,6 +5,7 @@ import { fileReferenceEn, fileReferenceZh } from "./file-reference-messages";
 import { officePreviewEn, officePreviewZh } from "./office-preview-messages";
 import { skillMarketEn, skillMarketZh } from "./skill-marketplace-messages";
 import { skillsEn, skillsZh } from "./skills-messages";
+import { toolsEn, toolsZh } from "./tools-messages";
 import { updateEn, updateZh } from "./update-messages";
 
 export const en = {
@@ -15,6 +16,7 @@ export const en = {
   ...officePreviewEn,
   ...skillMarketEn,
   ...skillsEn,
+  ...toolsEn,
   "context.title": "Context manager",
   "context.compactAll": "Compress whole session",
   "context.compactError": "Could not request session compression. Try again.",
@@ -301,6 +303,7 @@ export const en = {
   "settings.agents.automaticThinking": "Automatic (highest supported)",
   "settings.agents.inheritThinking": "inherit (Research Assistant's thinking)",
   "settings.resources.tools": "Tools",
+  "settings.resources.toolScope": "Tool scope",
   "settings.resources.skills": "Skills",
   "settings.resources.noTools": "No tools configured.",
   "settings.resources.noSkills": "No skills configured.",
@@ -745,6 +748,7 @@ export const zhCN: Record<MessageKey, string> = {
   ...officePreviewZh,
   ...skillMarketZh,
   ...skillsZh,
+  ...toolsZh,
   ...updateZh,
   "context.title": "上下文管理",
   "context.compactAll": "压缩整个会话",
@@ -1021,6 +1025,7 @@ export const zhCN: Record<MessageKey, string> = {
   "settings.agents.automaticThinking": "自动（模型支持的最高强度）",
   "settings.agents.inheritThinking": "继承（研究助手思考强度）",
   "settings.resources.tools": "工具",
+  "settings.resources.toolScope": "工具范围",
   "settings.resources.skills": "技能",
   "settings.resources.noTools": "没有已配置的工具。",
   "settings.resources.noSkills": "没有已配置的技能。",

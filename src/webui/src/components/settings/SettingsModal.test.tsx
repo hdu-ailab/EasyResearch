@@ -2303,6 +2303,73 @@ describe("SettingsModal", () => {
     expect(onProjectInterestChange).toHaveBeenLastCalledWith(undefined);
   });
 
+  it("retains independent Tool and Skill scopes and gives the project interest only to the active page", async () => {
+    const user = userEvent.setup();
+    const interest = vi.fn();
+    render(settingsElement(undefined, undefined, 1, null, interest));
+    await selectCategory(user, "Skills");
+    const skillScope = screen.getByRole("combobox", { name: "Skill diagnostic scope" });
+    await user.selectOptions(skillScope, "/papers/project-a");
+    await user.click(screen.getByRole("button", { name: "Writing" }));
+    expect(interest).toHaveBeenLastCalledWith("/papers/project-a");
+    await selectCategory(user, "Tools");
+    const toolScope = screen.getByRole("combobox", { name: "Tool scope" });
+    expect(toolScope).toHaveValue("global");
+    expect(interest).toHaveBeenLastCalledWith(undefined);
+    await user.selectOptions(toolScope, "/papers/project-b");
+    expect(interest).toHaveBeenLastCalledWith("/papers/project-b");
+    await selectCategory(user, "Skills");
+    expect(skillScope).toHaveValue("/papers/project-a");
+    expect(screen.getByRole("button", { name: "Writing" })).toHaveAttribute("aria-pressed", "true");
+    expect(interest).toHaveBeenLastCalledWith("/papers/project-a");
+    await selectCategory(user, "Agents");
+    expect(interest).toHaveBeenLastCalledWith(undefined);
+    await selectCategory(user, "Tools");
+    expect(toolScope).toHaveValue("/papers/project-b");
+    expect(interest).toHaveBeenLastCalledWith("/papers/project-b");
+    act(() => {
+      vi.stubGlobal("innerWidth", 390);
+      fireEvent(window, new Event("resize"));
+    });
+    expect(interest).toHaveBeenLastCalledWith(undefined);
+    await user.click(screen.getByRole("button", { name: "Tools" }));
+    expect(screen.getByRole("combobox", { name: "Tool scope" })).toHaveValue("/papers/project-b");
+    expect(interest).toHaveBeenLastCalledWith("/papers/project-b");
+    await user.click(screen.getByRole("button", { name: "Back to settings" }));
+    expect(interest).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("loads registered Tools independently of failed provider/model roster metadata", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listModels).mockRejectedValue(new Error("Model catalog unavailable"));
+    vi.mocked(api.listAgentResources).mockRejectedValue(new Error("Agent editor metadata unavailable"));
+    vi.mocked(api.listAgents).mockResolvedValue([
+      {
+        name: "research-assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "/bundled/research-assistant.md",
+        effectiveTools: ["healthy_tool"],
+        effectiveSkills: [],
+        missingSkills: [],
+        toolDiagnostics: [
+          { kind: "load", path: "/agent/extensions/a.ts", scope: "global" },
+          { kind: "load", path: "/agent/extensions/b.ts", scope: "global" },
+        ],
+      },
+    ]);
+    renderSettings();
+    await selectCategory(user, "Tools");
+    const tools = screen.getByRole("region", { name: "Tools" });
+    expect(await within(tools).findByText("healthy_tool")).toBeVisible();
+    expect(within(tools).getByText("2 tool extensions failed to load. Loaded tools remain available.")).toBeVisible();
+    expect(within(tools).queryByRole("alert")).toBeNull();
+    await selectCategory(user, "Agents");
+    expect(screen.getByRole("alert")).toHaveTextContent("Agent editor metadata unavailable");
+  });
+
   it("awaits selected-project synchronization before Settings Refresh and keeps a safe refresh error visible", async () => {
     const user = userEvent.setup();
     const synchronization = deferred<Awaited<ReturnType<typeof api.refreshConfigurationResources>>>();
@@ -2531,10 +2598,19 @@ describe("SettingsModal", () => {
   it("refreshes current Global diagnostics after a successful Agent save", async () => {
     const user = userEvent.setup();
     const metadata = vi.mocked(api.listAgents).getMockImplementation()!;
-    vi.mocked(api.listAgents)
-      .mockImplementationOnce(metadata)
-      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["before-save"] }] as never)
-      .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["after-save"] }] as never);
+    const write = vi.mocked(api.writeAgentResource).getMockImplementation()!;
+    let saved = false;
+    vi.mocked(api.listAgents).mockImplementation(async (cwd) =>
+      (await metadata(cwd)).map((agent) => ({
+        ...agent,
+        missingSkills: agent.name === "search" ? [saved ? "after-save" : "before-save"] : [],
+      })),
+    );
+    vi.mocked(api.writeAgentResource).mockImplementation(async (...args) => {
+      const result = await write(...args);
+      saved = true;
+      return result;
+    });
     renderSettings();
     await selectCategory(user, "Skills");
     expect(await screen.findByText("before-save")).toBeVisible();
@@ -2785,6 +2861,63 @@ describe("SettingsModal", () => {
     expect(within(details).getByText("paper-search")).toBeTruthy();
   });
 
+  it("shows scoped registered tools and load diagnostics, then removes tools after a configuration refresh", async () => {
+    const user = userEvent.setup();
+    let removed = false;
+    vi.mocked(api.listAgents).mockImplementation(async (cwd) => [
+      {
+        name: "research-assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "research-assistant.md",
+        tools: ["unregistered"],
+        effectiveTools: ["read", ...(!removed ? [cwd ? "project_tool" : "global_tool"] : [])],
+        effectiveSkills: [],
+        missingSkills: [],
+        toolDiagnostics: [{ kind: "load", path: "/agent/extensions/broken.ts", scope: "global" }],
+      },
+    ]);
+    const view = render(settingsElement());
+    await selectCategory(user, "Tools");
+    expect(await screen.findByText("global_tool")).toBeVisible();
+    expect(screen.queryByText("unregistered")).toBeNull();
+    expect(screen.getByText("/agent/extensions/broken.ts")).toBeVisible();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Tool scope" }), "/papers/project-a");
+    expect(await screen.findByText("project_tool")).toBeVisible();
+    expect(screen.queryByText("global_tool")).toBeNull();
+    removed = true;
+    view.rerender(settingsElement(undefined, undefined, 2));
+    await waitFor(() => expect(screen.queryByText("project_tool")).toBeNull());
+  });
+
+  it("recovers scoped Tool inventory on manual Refresh without a new configuration event", async () => {
+    const user = userEvent.setup();
+    let removed = false;
+    vi.mocked(api.listAgents).mockImplementation(async (cwd) => [
+      {
+        name: "research-assistant",
+        description: "Coordinates",
+        enabled: true,
+        builtin: true,
+        source: "bundled",
+        filePath: "research-assistant.md",
+        effectiveTools: ["read", ...(cwd && !removed ? ["project_tool"] : [])],
+        effectiveSkills: [],
+        missingSkills: [],
+      },
+    ]);
+    renderSettings();
+    await selectCategory(user, "Tools");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Tool scope" }), "/papers/project-a");
+    expect(await screen.findByText("project_tool")).toBeVisible();
+    removed = true;
+    await user.click(screen.getByRole("button", { name: "Refresh tools" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh tools" })).not.toBeDisabled());
+    expect(screen.queryByText("project_tool")).toBeNull();
+  });
+
   it("opens the agent config modal with the enable switch, model, thinking, and edit controls", async () => {
     const user = userEvent.setup();
     renderSettings();
@@ -2837,6 +2970,130 @@ describe("SettingsModal", () => {
       "---\nname: search\ndescription: Searches\nenable: false\n---\nPrompt\n",
     );
   });
+
+  it("keeps registration-backed tools after an Agent mutation returns configured-only metadata", async () => {
+    const user = userEvent.setup();
+    let enabled = true;
+    const accepted = {
+      name: "search",
+      description: "Searches",
+      enabled: true,
+      builtin: true,
+      source: "bundled" as const,
+      filePath: "search.md",
+      effectiveTools: ["registered_tool"],
+      effectiveSkills: [],
+      missingSkills: [],
+    };
+    vi.mocked(api.listAgents).mockImplementation(async () => [{ ...accepted, enabled }]);
+    vi.mocked(api.readAgentResource).mockResolvedValue({
+      ...accepted,
+      content: "---\nname: search\ndescription: Search\nenable: true\n---\nSearch.",
+    });
+    vi.mocked(api.writeAgentResource).mockImplementation(async () => {
+      enabled = false;
+      return { ...accepted, enabled, effectiveTools: ["not_registered"] };
+    });
+    renderSettings();
+    const dialog = await openAgentConfig(user, "Search");
+    await user.click(within(dialog).getByRole("switch", { name: "Enable Search" }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole("switch", { name: "Enable Search" })).toHaveAttribute("aria-checked", "false"),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "View tools & skills details" }));
+    const details = screen.getByRole("dialog", { name: "Search resources" });
+    expect(within(details).getByText("registered_tool")).toBeVisible();
+    expect(within(details).queryByText("not_registered")).toBeNull();
+  });
+
+  it.each(["create", "edit", "enable", "model"] as const)(
+    "refetches registered tools for Agent details and Tools after %s, rather than publishing mutation-response tools",
+    async (mutation) => {
+      const user = userEvent.setup();
+      let changed = false;
+      let created = false;
+      const nativeAgent = (name: string) => ({
+        name,
+        description: "Research role",
+        enabled: true,
+        builtin: name === "search",
+        source: "global" as const,
+        filePath: `/agent/agents/${name}.md`,
+        model: "openai/gpt-4o",
+        effectiveModel: "openai/gpt-4o",
+        effectiveTools: [changed ? "fresh_registered" : "previous_registered"],
+        effectiveSkills: [],
+        missingSkills: [],
+        toolDiagnostics: [
+          { kind: "registration" as const, path: "/agent/extensions/mixed.ts", scope: "global" as const },
+        ],
+        toolDiagnosticsTruncated: true,
+      });
+      const resource = (name: string) => ({
+        ...nativeAgent(name),
+        effectiveTools: ["configured_only"],
+        toolDiagnostics: [],
+        toolDiagnosticsTruncated: false,
+        content: `---\nname: ${name}\ndescription: Research role\nenable: true\n---\nPrompt`,
+      });
+      vi.mocked(api.listAgents).mockImplementation(async () => [
+        nativeAgent("search"),
+        ...(created ? [nativeAgent("reviewer")] : []),
+      ]);
+      vi.mocked(api.listAgentResources).mockImplementation(async () => [
+        resource("search"),
+        ...(created ? [resource("reviewer")] : []),
+      ]);
+      vi.mocked(api.readAgentResource).mockImplementation(async (name) => resource(name));
+      vi.mocked(api.writeAgentResource).mockImplementation(async (name) => {
+        changed = true;
+        return resource(name);
+      });
+      vi.mocked(api.createAgentResource).mockImplementation(async (name) => {
+        changed = true;
+        created = true;
+        return resource(name);
+      });
+      vi.mocked(api.patchAgent).mockImplementation(async (name, patch) => {
+        changed = true;
+        return { ...resource(name), ...(patch.model ? { model: patch.model } : {}) };
+      });
+      renderSettings();
+      if (mutation === "create") {
+        await selectCategory(user, "Agents");
+        await user.click(screen.getByRole("button", { name: "Add agent" }));
+        await user.type(screen.getByRole("textbox", { name: "Agent filename" }), "reviewer");
+        await user.click(screen.getByRole("button", { name: "Create" }));
+        await screen.findByRole("textbox", { name: "Agent Markdown" });
+        await user.keyboard("{Escape}");
+      } else {
+        const config = await openAgentConfig(user, "Search");
+        if (mutation === "edit") {
+          await user.click(within(config).getByRole("button", { name: "Edit Search" }));
+          await user.click(await screen.findByRole("button", { name: "Save agent" }));
+          await waitFor(() => expect(screen.queryByRole("textbox", { name: "Agent Markdown" })).toBeNull());
+        } else if (mutation === "enable") {
+          await user.click(within(config).getByRole("switch", { name: "Enable Search" }));
+        } else {
+          await selectModelOption(user, config, "Search", "anthropic/claude-sonnet-4");
+        }
+      }
+      const config = await screen.findByRole("dialog", { name: "Agents" });
+      await user.click(within(config).getByRole("button", { name: "View tools & skills details" }));
+      const details = screen.getByRole("dialog", {
+        name: mutation === "create" ? "reviewer resources" : "Search resources",
+      });
+      expect(await within(details).findByText("fresh_registered")).toBeVisible();
+      expect(within(details).queryByText("configured_only")).toBeNull();
+      await user.keyboard("{Escape}{Escape}");
+      await selectCategory(user, "Tools");
+      expect(await screen.findByText("fresh_registered")).toBeVisible();
+      expect(screen.queryByText("configured_only")).toBeNull();
+      expect(
+        screen.getByText("At least 1 tool extensions have registration issues. Loaded tools remain available."),
+      ).toBeVisible();
+    },
+  );
 
   it("stacks the details dialog above the agent config modal and Esc unwinds top-down", async () => {
     const user = userEvent.setup();

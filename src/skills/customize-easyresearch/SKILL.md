@@ -3,7 +3,8 @@ name: customize-easyresearch
 description: >-
   Use when editing or troubleshooting EasyResearch's own agents, skills,
   settings.json, models.json, auth.json, extensions, prompts, themes, or
-  .easyresearch configuration; also for API timeouts, retries, transport,
+  .easyresearch configuration; also when creating, updating, enabling or removing
+  custom Tools, or for API timeouts, retries, transport,
   compaction, thinking budgets, image settings, mounting skills, or explaining
   config scope and precedence. Not for paper research, experiments, writing,
   figures, or review themselves.
@@ -27,7 +28,8 @@ Global root: `~/.easyresearch/agent/`. Project root:
 | Skills | Project `skills/` > global `skills/` > optional home `~/.agents/skills/` > bundled Skills |
 | General settings | Project `settings.json` deep-merges over global, except global-only policies |
 | Models and credentials | Global `models.json` and `auth.json` |
-| Extensions, prompts, themes | Respective global/project directories and Pi settings resource entries |
+| User Tools | Pi extensions in global `extensions/` or exact-project `extensions/`; see [Tools](references/tools.md) |
+| Prompts, themes, explicit extensions | Respective global/project directories and Pi settings resource entries |
 
 Same-name Agent/Skill resources replace lower layers completely; distinct names
 append. The optional home Skill layer requires global
@@ -60,8 +62,9 @@ JSON templates, defaults, provider limitations, and application timing.
    timeout does not impose a whole-task deadline.
 4. State whether the setting requires a new/recreated runtime or has a supported
    live-update path. Do not seed a full template into existing settings or claim
-   saving changed an in-flight request. For extension authoring, Web APIs, or
-   diagnostics, consult the same reference only as needed.
+   saving changed an in-flight request. For extension authoring, read the
+   [Tool reference](references/tools.md); consult the configuration reference for
+   Web APIs or diagnostics as needed.
 
 ## Editing Agents and Skills
 
@@ -88,7 +91,7 @@ source URLs, unresolved gaps, and complete, partial, or blocked status.
 | Field | Meaning |
 | --- | --- |
 | `enable` | Defaults true; literal false disables specialist/custom selection |
-| `tools` | Missing, YAML-empty, or `[]`: all controlled tools; non-empty: strict allowlist |
+| `tools` | Missing, YAML-empty, or `[]`: Research Assistant loads controlled bundled and registered user tools; other Agents load controlled bundled tools only. Non-empty: strict allowlist of registered names |
 | `skills` | Missing, YAML-empty, or `[]`: all controlled Skills; non-empty: resolved-name allowlist |
 | `subagents` | Omitted: all eligible enabled Agents; `[]`: leaf; non-empty: allowlist |
 | `model`, `thinking` | Ignored in Markdown; do not migrate these fields into settings |
@@ -157,6 +160,36 @@ Create the Skill in the chosen scope and add its resolved name to the Agent's
 explicit `skills` list. If the Agent already loads all Skills, no list edit is
 needed. A project Skill can override content without creating a project Agent.
 
+## Creating and updating Tools
+
+Read the [Tool reference](references/tools.md) before creating, updating,
+authorizing, deleting, or diagnosing a user Tool. It contains a complete Pi 1.6
+example, matching-version documentation lookup, lifecycle rules, and verification.
+
+1. Use an existing tool or Skill procedure when it already meets the request.
+   A callable new Tool requires a TypeScript extension whose default export
+   receives `ExtensionAPI` and calls `api.registerTool` with a parameter schema
+   and execution function. A script or Skill does not register itself as a Tool.
+2. Default to `~/.easyresearch/agent/extensions/<name>.ts` for cross-project use
+   and normal upgrade preservation. Honor project scope with
+   `<exact-session-cwd>/.easyresearch/extensions/<name>/index.ts`; keep local
+   helpers beside that entry. Preserve existing files and use a unique registered
+   name. No installation, bundled-tree, package, or application-source edit is needed.
+3. Default activation belongs to `research-assistant`. Leave other Agents alone
+   unless the user explicitly names them. Preserve a strict main-Agent list.
+   When granting another Agent a Tool, append to its existing non-empty list;
+   for a missing/empty list, first identify and show its effective bundled names,
+   then retain them in the new explicit list together with the new Tool.
+4. Publish the source, then distinguish **saved**, **runtime-applied**, and
+   **actually invoked**. Standard extension entries and local helpers refresh
+   automatically while idle. The creating run retains its old tools through all
+   turns, retries and summaries; a later turn in that same run is not a new run.
+   Finish naturally and verify in a subsequent run after application.
+5. Use Settings' actual registration-backed tools and safe load diagnostics, then
+   perform a small real Agent/tool call. Do not claim success from a filename,
+   allowlist entry or saved file, invent a verification API, or sleep/poll/restart
+   to force the new tool into the creating run.
+
 ## Model configuration
 
 1. Inspect the existing provider entry, then probe its model catalog and consult
@@ -189,14 +222,18 @@ claim, not proof that a real request honors it.
 - Recheck scope, preserve unknown Pi fields, validate JSON/frontmatter, and avoid
   overwriting concurrent changes. Web Config validates JSON and writes atomically
   within its selected root; do not bypass its path boundary.
-- Valid global Agent definitions, `agentDefaults`, `models.json`, and controlled
-  mutable Skill descriptor edits refresh Settings/Work automatically. Idle
+- Valid global Agent definitions, `agentDefaults`, `models.json`, controlled
+  mutable Skill descriptors, and standard user extension sources/local helpers
+  participate in live configuration. Idle
   runtimes reload; running Agents retain their accepted configuration through the
   whole run, including tool turns, retries and summaries, then apply pending changes
   after native settlement while idle or before the next run. A child model
-  override follows the same idle-safe application boundary. Use Settings Refresh for recovery,
-  not a routine restart. This covers global, enabled home, and owned exact-cwd
-  project Skills, not automatic re-reading of every auxiliary reference file.
+  override follows the same idle-safe application boundary. Settings/Work refresh
+  accepted configuration automatically; callable Tool inventory additionally needs
+  an actual successful runtime registration. Use Settings Refresh for recovery,
+  not a routine restart. Skill descriptor monitoring covers global, enabled home,
+  and owned exact-cwd project Skills, not automatic re-reading of every auxiliary
+  reference file. Tool monitoring scope is described in the Tool reference.
 - Other settings/resources retain their documented new-session/restart behavior;
   network proxy changes require a daemon restart. Do not promise universal hot
   reload. Check the configuration reference for the affected setting.

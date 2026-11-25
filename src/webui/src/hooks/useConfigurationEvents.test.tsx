@@ -77,6 +77,34 @@ beforeEach(() => {
 });
 
 describe("useConfigurationEvents", () => {
+  it("refreshes tool inventory at the same runtime generation without clearing a configuration error", () => {
+    const { result } = renderHook(() => useConfigurationEvents());
+    act(() => handlers.onEvent(updated(4)));
+    act(() =>
+      handlers.onEvent({
+        type: "config.error",
+        bootId: "boot-a",
+        generation: 4,
+        message: "Configuration issue",
+      }),
+    );
+    const revision = result.current.revision;
+    act(() =>
+      handlers.onEvent({
+        ...updated(4),
+        agentsChanged: false,
+        skillsChanged: false,
+        runtimeChanged: false,
+        toolsChanged: true,
+      } as PublicConfigurationEvent),
+    );
+    expect(result.current).toMatchObject({
+      generation: 4,
+      revision: revision + 1,
+      error: "Configuration issue",
+    });
+  });
+
   it("owns one connection, keeps generations monotonic, and clears errors on recovery", () => {
     const view = renderHook(() => useConfigurationEvents());
     expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();

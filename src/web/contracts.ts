@@ -1,5 +1,7 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { BackgroundTask } from "../background/contracts";
+import type { ToolDiagnosticDto } from "../runtime/tool-diagnostics";
+export type { ToolDiagnosticDto } from "../runtime/tool-diagnostics";
 export type { BackgroundTask, BackgroundTasksChangedEvent } from "../background/contracts";
 import type {
   SubagentJobStatus,
@@ -516,6 +518,8 @@ export interface ConfigurationUpdatedEvent {
   availabilityChanged?: true;
   /** Present only when ADR-098 display state changed after startup. */
   apiUsageChanged?: true;
+  /** Successful runtime registry publication; does not require a resource reload. */
+  toolsChanged?: true;
   projectWatchLeaseId?: string;
 }
 
@@ -561,6 +565,8 @@ export interface AgentDto {
   thinking?: ThinkingLevel;
   tools?: string[];
   effectiveTools: string[];
+  toolDiagnostics?: ToolDiagnosticDto[];
+  toolDiagnosticsTruncated?: boolean;
   subagents?: string[];
   skills?: string[];
   effectiveSkills: string[];

@@ -76,6 +76,7 @@ import { smokeImmutablePublisher } from "./smoke-immutable-publisher";
 import { createKeylessSearchSmoke, KEYLESS_HOSTS, runInvalidKeylessSearchSmoke, runKeylessSearchSmoke, startKeylessSmokeOrigin } from "./smoke-keyless-search";
 import { SMOKE_KEYLESS_CA } from "./smoke-keyless-tls";
 import { createContextManagementSmoke, runContextManagementSmoke } from "./smoke-context-management";
+import { createCustomToolsSmoke, runCustomToolsSmoke } from "./smoke-custom-tools";
 import { backgroundSmokeCommand, createBackgroundExecutionSmoke, runBackgroundExecutionSmoke, writeBackgroundExecutionScripts } from "./smoke-background-execution";
 import { createRemoteSshBackgroundSmoke } from "./smoke-ssh-background";
 
@@ -112,6 +113,7 @@ const setupRunId = randomUUID();
 const writeRecoverySmoke = createWriteRecoverySmoke(setupRunId);
 const llmRetrySmoke = createLlmRetryFixture({ runId: setupRunId, directory: join(root, "llm-retry-fixture"), venv: true });
 const contextManagementSmoke = createContextManagementSmoke(setupRunId);
+const customToolsSmoke = createCustomToolsSmoke(setupRunId);
 const googleCredentialsPath = join(root, "gaxios-adc.json");
 const firstRunStdoutPath = join(root, "first-run-stdout.txt");
 const firstRunStderrPath = join(root, "first-run-stderr.txt");
@@ -419,6 +421,16 @@ const modelServer = Bun.serve({
     }
     if (llmRetrySmoke.laneFor(body)) return llmRetrySmoke.respond(body);
     if (contextManagementSmoke.matches(body)) return contextManagementSmoke.respond(body);
+    if (customToolsSmoke.matches(body)) {
+      try {
+        const action = await customToolsSmoke.select(body);
+        return action.kind === "tool"
+          ? openAiStream({ toolCall: { id: action.id, name: action.name, arguments: action.arguments } })
+          : openAiStream({ text: action.text });
+      } catch (error) {
+        return Response.json({ error: { message: safeSmokeDiagnostic(error) } }, { status: 400 });
+      }
+    }
     if (keylessSmoke.laneFor(body)) {
       try {
         const action = keylessSmoke.select(body);
@@ -1385,6 +1397,9 @@ function smokeProgressDiagnostics(): string {
     keylessFailure: keylessSmoke.failure ? safeSmokeDiagnostic(keylessSmoke.failure) : undefined,
     keylessProviderRequests: keylessOrigin.records,
     keylessFixtureFailures: keylessOrigin.failures.map(safeSmokeDiagnostic),
+    customToolRequests: customToolsSmoke.requests,
+    customToolEvidence: customToolsSmoke.evidence,
+    customToolFailure: customToolsSmoke.failure ? safeSmokeDiagnostic(customToolsSmoke.failure) : undefined,
     gaxiosRequests,
     vertexProviderRequests,
     smokeModelState,
@@ -2491,6 +2506,8 @@ try {
   await runLlmRetrySmoke({ base, root, agentDir, deadline: firstRunDeadline, fixture: llmRetrySmoke });
   await runContextManagementSmoke({ base, root, deadline: firstRunDeadline, fixture: contextManagementSmoke });
   console.log("[smoke] context fold/pair-delete, original history, stale/busy admission, next request and native compaction passed");
+  await runCustomToolsSmoke({ base, root, agentDir, deadline: firstRunDeadline, fixture: customToolsSmoke });
+  console.log("[smoke] compiled external TypeScript tools, native schemas/results, specialist opt-in, idle/busy helper reload, project isolation, diagnostics and removal passed");
 
   writeFileSync(join(agentDir, "agents", `${keylessAgentName}.md`), [
     "---", `name: ${keylessAgentName}`, "description: Native keyless tool acceptance", "enable: true",
@@ -2924,6 +2941,7 @@ try {
     + remoteBackgroundSmoke.scenario.requests
     + llmRetrySmoke.requests
     + contextManagementSmoke.requests.length
+    + customToolsSmoke.requests
     + keylessSmoke.requests
     + writeRecoverySmoke.requests
     + loopbackProviderRequests
@@ -3007,6 +3025,7 @@ try {
   }
 } finally {
   backgroundSmoke.release();
+  customToolsSmoke.release();
   try {
     await remoteBackgroundSmoke.close();
   } catch (error) {

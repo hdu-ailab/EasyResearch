@@ -458,7 +458,7 @@ describe("API response parsers", () => {
         model: "openai/gpt-4o",
         effectiveModel: "openai/gpt-4o",
         thinking: "high",
-        effectiveTools: ["web"],
+        effectiveTools: [],
         effectiveSkills: ["arxiv"],
         missingSkills: [],
       },
@@ -519,6 +519,47 @@ describe("API response parsers", () => {
           missingSkills: [],
         },
       ]),
+    ).toThrow();
+  });
+
+  it("parses structured Tool diagnostics without inventing inventory from configured names", () => {
+    const source = {
+      name: "search",
+      description: "Finds papers",
+      source: "global",
+      tools: ["missing_tool"],
+      missingSkills: [],
+    };
+    const diagnostics = [
+      { kind: "load", path: "/agent/extensions/missing.ts", scope: "global", message: "must not be projected" },
+      { kind: "registration", path: "/papers/a/.easyresearch/extensions/mixed.ts", scope: "project" },
+      { kind: "load", path: "/external/tool.ts" },
+    ];
+    const result = parseAgentResource({ ...source, toolDiagnostics: diagnostics, toolDiagnosticsTruncated: true });
+    expect(result.effectiveTools).toEqual([]);
+    expect(result.tools).toEqual(["missing_tool"]);
+    expect(result.toolDiagnostics).toEqual(diagnostics.map(({ message: _message, ...diagnostic }) => diagnostic));
+    expect(result.toolDiagnosticsTruncated).toBe(true);
+    expect(parseAgentResource({ ...source, toolDiagnosticsTruncated: false }).toolDiagnosticsTruncated).toBe(false);
+    expect(parseAgentResource({ ...source, effectiveTools: ["registered_tool"] }).effectiveTools).toEqual([
+      "registered_tool",
+    ]);
+  });
+
+  it.each([
+    { toolDiagnostics: ["legacy string"] },
+    { toolDiagnostics: [{ kind: "invocation", path: "/tool.ts" }] },
+    { toolDiagnostics: [{ kind: "load", path: "/tool.ts", scope: "unknown" }] },
+    { toolDiagnostics: [{ kind: "load", path: "/tool.ts", scope: null }] },
+    { toolDiagnostics: [{ kind: "load", path: 12 }] },
+    { toolDiagnostics: [{ kind: "load", path: "" }] },
+    { toolDiagnostics: [null] },
+    { toolDiagnostics: {} },
+    { toolDiagnosticsTruncated: "true" },
+    { toolDiagnosticsTruncated: null },
+  ])("rejects malformed Tool diagnostic metadata: %j", (metadata) => {
+    expect(() =>
+      parseAgentResource({ name: "search", description: "Search", source: "global", missingSkills: [], ...metadata }),
     ).toThrow();
   });
 
