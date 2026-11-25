@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { bundledSourceRoot } from "../runtime/bundled-assets";
 import { importPi } from "../runtime/pi-import";
 import {
@@ -15,6 +15,7 @@ import { ConfigServiceError } from "./config-files";
 import { starterAgentMarkdown } from "./agent-markdown";
 import { isThinkingLevel } from "../thinking-levels";
 import { skillMarketplaceIdentity } from "./skill-marketplace-install";
+import { isSkillResourceEnabled, removeSkillResourceOverrides, setSkillResourceEnabled, skillResourceEntries, type SkillPatternScope } from "../runtime/skill-resource-policy";
 
 /**
  * Resolve the writable user-layer Agent file. Bundled content is written
@@ -128,7 +129,7 @@ export async function createGlobalAgent(config: ConfigFileService, name: string)
 }
 
 export interface SkillResourceOptions {
-  skillPolicy: { enableDotAgentsSkill: boolean };
+  skillPolicy: { enableDotAgentsSkill: boolean; resourceOverrides?: readonly string[] };
   homeDir?: string;
   bundledSkillsDir?: string;
 }
@@ -189,6 +190,9 @@ async function discoverGlobalSkills(
       if (selected.has(name)) continue;
       selected.set(name, {
         name,
+        description: await skillDescription(candidate.skillPath),
+        enabled: isSkillResourceEnabled(candidate.skillPath, options.skillPolicy.resourceOverrides ?? [], skillScope(config, source, options)),
+        canDelete: verifiedGlobalSkillDirectory(config, { ...candidate, source }) !== undefined,
         source,
         path: candidate.path,
         skillPath: candidate.skillPath,
@@ -203,11 +207,120 @@ async function discoverGlobalSkills(
 function publicSkillResource(skill: DiscoveredSkillResource): SkillResourceDto {
   return {
     name: skill.name,
+    description: skill.description ?? "",
+    enabled: skill.enabled ?? true,
+    canDelete: skill.canDelete ?? false,
     source: skill.source,
     path: skill.path,
     skillPath: skill.skillPath,
     marketplaceId: skillMarketplaceIdentity(skill),
   };
+}
+
+async function skillDescription(path: string): Promise<string> {
+  const { parseFrontmatter } = await importPi();
+  try {
+    const description = parseFrontmatter<Record<string, unknown>>(readFileSync(path, "utf8")).frontmatter.description;
+    return typeof description === "string" ? description.trim().slice(0, 4000) : "";
+  } catch { return ""; }
+}
+
+function skillScope(config: ConfigFileService, source: SkillResourceDto["source"], options: SkillResourceOptions): SkillPatternScope {
+  return {
+    baseDir: source === "home" ? join(options.homeDir ?? homedir(), ".agents") : config.globalRoot,
+    homeDir: options.homeDir,
+  };
+}
+
+/** A dedicated physical directory below the writable root, never an alias or root itself. */
+function verifiedGlobalSkillDirectory(config: ConfigFileService, skill: Pick<SkillResourceDto, "source" | "path" | "skillPath">): string | undefined {
+  if (skill.source !== "global" || skill.path === skill.skillPath || dirname(skill.skillPath) !== skill.path || basename(skill.skillPath) !== "SKILL.md") return;
+  const child = relative(join(config.globalRoot, "skills"), skill.path);
+  if (!child || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) return;
+  try {
+    let target = realpathSync(config.globalRoot);
+    for (const part of ["skills", ...child.split(sep)]) {
+      target = join(target, part);
+      const stat = lstatSync(target);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return;
+    }
+    const descriptor = lstatSync(join(target, "SKILL.md"));
+    if (descriptor.isSymbolicLink() || !descriptor.isFile()) return;
+    return target;
+  } catch { return; }
+}
+
+export async function patchGlobalSkill(config: ConfigFileService, name: string, enabled: boolean, options: SkillResourceOptions): Promise<SkillResourceDto> {
+  return serializeSkillWrite(config, name, async () => {
+    const skill = (await discoverGlobalSkills(config, options)).find((item) => item.name === name);
+    if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
+    const snapshot = snapshotPath(skill.skillPath);
+    const entries = await config.mutateGlobalSettings((settings) => {
+      if (!samePathSnapshot(snapshot, snapshotPath(skill.skillPath))) throw new ConfigServiceError(409, "Skill changed before updating its state.", "SKILL_TARGET_CHANGED");
+      let current: string[];
+      try { current = skillResourceEntries(settings); }
+      catch { throw new ConfigServiceError(409, "Repair the skills resource array in settings.json first.", "CONFIG_INVALID"); }
+      const next = setSkillResourceEnabled(current, skill.skillPath, enabled, skillScope(config, skill.source, options));
+      return { settings: { ...settings, skills: next }, result: next, write: JSON.stringify(current) !== JSON.stringify(next) };
+    }, { notify: false });
+    await config.notifySkillChange();
+    return readGlobalSkill(config, name, { ...options, skillPolicy: { ...options.skillPolicy, resourceOverrides: entries } });
+  });
+}
+
+export async function deleteGlobalSkill(config: ConfigFileService, name: string, options: SkillResourceOptions): Promise<{ deleted: true; name: string }> {
+  return serializeSkillWrite(config, name, async () => {
+    const skill = (await discoverGlobalSkills(config, options)).find((item) => item.name === name);
+    if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
+    const target = verifiedGlobalSkillDirectory(config, skill);
+    if (!target) throw new ConfigServiceError(409, "Only a physical global Skill directory can be deleted.", "SKILL_NOT_DELETABLE");
+    const initial = snapshotPath(target);
+    const descriptor = snapshotPath(skill.skillPath);
+    const ownedOverrides = await config.mutateGlobalSettings((settings) => {
+      let entries: string[];
+      try { entries = skillResourceEntries(settings); }
+      catch { throw new ConfigServiceError(409, "Repair the skills resource array in settings.json first.", "CONFIG_INVALID"); }
+      const remaining = new Set(removeSkillResourceOverrides(entries, skill.skillPath, skillScope(config, skill.source, options)));
+      return { settings, result: entries.filter((entry) => !remaining.has(entry)), write: false };
+    }, { notify: false });
+    // Recheck the complete identity after asynchronous discovery and before moving custody.
+    const latest = (await discoverGlobalSkills(config, options)).find((item) => item.name === name);
+    if (!latest || resolve(latest.skillPath) !== resolve(skill.skillPath)
+      || verifiedGlobalSkillDirectory(config, latest) !== target || !samePathSnapshot(initial, snapshotPath(target))
+      || !samePathSnapshot(descriptor, snapshotPath(skill.skillPath))) {
+      throw new ConfigServiceError(409, "Skill changed before deletion.", "SKILL_TARGET_CHANGED");
+    }
+    const retired = join(realpathSync(config.globalRoot), `.skill-delete-${randomUUID()}`);
+    renameSync(target, retired);
+    try {
+      await config.mutateGlobalSettings((settings) => {
+        let entries: string[];
+        try { entries = skillResourceEntries(settings); }
+        catch { throw new ConfigServiceError(409, "Repair the skills resource array in settings.json first.", "CONFIG_INVALID"); }
+        const owned = [...ownedOverrides];
+        const next = entries.filter((entry) => {
+          const index = owned.indexOf(entry);
+          if (index < 0) return true;
+          owned.splice(index, 1);
+          return false;
+        });
+        return { settings: { ...settings, skills: next }, result: undefined, write: next.length !== entries.length };
+      }, { notify: false });
+    } catch (error) {
+      const custody = snapshotPath(retired);
+      if (!existsSync(target) && custody?.dev === initial?.dev && custody?.ino === initial?.ino) renameSync(retired, target);
+      else throw new ConfigServiceError(409, `Skill deletion could not finish; preserved files remain at ${retired}.`, "SKILL_DELETE_INCOMPLETE");
+      throw error;
+    }
+    const custody = snapshotPath(retired);
+    if (!custody || custody.dev !== initial?.dev || custody.ino !== initial?.ino) {
+      throw new ConfigServiceError(409, "Skill deletion custody changed. Files were preserved for recovery.", "SKILL_DELETE_INCOMPLETE");
+    }
+    try { rmSync(retired, { recursive: true }); }
+    catch { throw new ConfigServiceError(409, `Skill was removed from discovery, but retained files at ${retired} need cleanup.`, "SKILL_DELETE_INCOMPLETE"); }
+    await config.notifySkillChange();
+    return { deleted: true, name };
+  });
 }
 
 export async function listGlobalSkills(
@@ -249,6 +362,7 @@ export async function writeGlobalSkill(
     if (!skill) throw new ConfigServiceError(404, `unknown skill: ${name}`);
     let skillPath = skill.skillPath;
     let materialization: SkillAssetMaterialization | undefined;
+    let copiedPolicy: { before: string[] | undefined; after: string[] } | undefined;
     if (skill.source === "bundled" || skill.source === "home") {
       if (skill.path === skill.skillPath) {
         skillPath = join(config.globalRoot, "skills", `${name}.md`);
@@ -264,17 +378,38 @@ export async function writeGlobalSkill(
       }
     }
     try {
+      if (skill.source !== "global" && skill.enabled === false) {
+        copiedPolicy = await config.mutateGlobalSettings((settings) => {
+          const before = skillResourceEntries(settings);
+          const after = setSkillResourceEnabled(before, skillPath, false, { baseDir: config.globalRoot, homeDir: options.homeDir });
+          return {
+            settings: { ...settings, skills: after }, result: { before: settings.skills === undefined ? undefined : before, after },
+            write: JSON.stringify(before) !== JSON.stringify(after),
+          };
+        }, { notify: false });
+      }
       await config.write({ scope: "global", path: skillPath.slice(config.globalRoot.length + 1), content });
       materialization?.commit();
     } catch (error) {
       materialization?.rollback();
+      if (copiedPolicy && !existsSync(skillPath)) {
+        const policy = copiedPolicy;
+        await config.mutateGlobalSettings((settings) => {
+          if (JSON.stringify(settings.skills) !== JSON.stringify(policy.after)) return { settings, result: undefined, write: false };
+          const restored = { ...settings };
+          if (policy.before === undefined) delete restored.skills;
+          else restored.skills = policy.before;
+          return { settings: restored, result: undefined };
+        }, { notify: false });
+      }
       throw error;
     }
-    return readGlobalSkill(config, name, options);
+    return readGlobalSkill(config, name, copiedPolicy
+      ? { ...options, skillPolicy: { ...options.skillPolicy, resourceOverrides: copiedPolicy.after } } : options);
   });
 }
 
-function serializeSkillWrite<T>(
+export function serializeSkillWrite<T>(
   config: ConfigFileService,
   name: string,
   operation: () => Promise<T>,

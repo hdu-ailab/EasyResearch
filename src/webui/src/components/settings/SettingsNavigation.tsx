@@ -3,7 +3,15 @@ import { Fragment, type KeyboardEvent, useRef } from "react";
 import type { MessageKey } from "../../i18n/messages";
 import { useI18n } from "../../i18n/useI18n";
 
-export type SettingsCategory = "general" | "network" | "conversation" | "providers" | "agents" | "resources";
+export type SettingsCategory =
+  | "general"
+  | "network"
+  | "conversation"
+  | "providers"
+  | "agents"
+  | "skills"
+  | "marketplace"
+  | "tools";
 
 export interface SettingsNavigationProps {
   active: SettingsCategory;
@@ -24,7 +32,9 @@ const categories: readonly Category[] = [
   { id: "providers", label: "settings.category.providers", group: "studio.environment" },
   { id: "network", label: "settings.category.network" },
   { id: "agents", label: "settings.category.agents" },
-  { id: "resources", label: "settings.category.resources" },
+  { id: "skills", label: "settings.category.skills" },
+  { id: "marketplace", label: "skillMarket.title" },
+  { id: "tools", label: "settings.resources.tools" },
 ];
 
 export function SettingsNavigation({

@@ -128,7 +128,7 @@ describe("listGlobalSkills", () => {
 
     const listed = await listGlobalSkills(config, skillResourceOptions({ bundledSkillsDir }));
 
-    expect(listed).toEqual([
+    expect(listed).toMatchObject([
       {
         name: "alpha",
         source: "global",
@@ -207,7 +207,7 @@ describe("listGlobalSkills", () => {
 
     const listed = await listGlobalSkills(config, skillResourceOptions());
 
-    expect(listed).toEqual([
+    expect(listed).toMatchObject([
       {
         name: "nested-bundled",
         source: "bundled",

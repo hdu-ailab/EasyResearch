@@ -18,6 +18,7 @@ export const THIRD_PARTY_NOTICE_ROOTS = [
   { name: "@betteroffice/xlsx", version: "0.3.0" },
   { name: "axios", version: "1.19.0" },
   { name: "google-auth-library", version: "10.9.1" },
+  { name: "minimatch", version: "11.0.3" },
   { name: "open-websearch", version: "2.1.11" },
   { name: "ssh2", version: "1.17.0" },
   { name: "undici", version: "8.9.0" },

@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { ConfigServiceError, resolveAllowedConfigPath } from "./config-files";
 import { MARKET_RECEIPT, parseMarketId, safeSkillPath, validMarketRevision } from "./skill-marketplace-source";
 import type { SkillResourceDto } from "./contracts";
+import createIgnore from "ignore";
+import { createSkillWatchFilter, SKILL_IGNORE_FILE_NAMES } from "../runtime/resource-fingerprint";
 
 export function skillMarketplaceIdentity(skill: SkillResourceDto): string | undefined {
   if (skill.source !== "global" || skill.path === skill.skillPath) return;
@@ -19,6 +21,21 @@ export function skillMarketplaceIdentity(skill: SkillResourceDto): string | unde
 }
 
 export interface SkillInstallFile { path: string; bytes: Buffer; executable?: boolean }
+
+export function assertSkillInstallDiscoverable(globalRoot: string, name: string, files: readonly SkillInstallFile[]): void {
+  const root = join(globalRoot, "skills");
+  if (!createSkillWatchFilter(root)(join(root, name))) {
+    throw new ConfigServiceError(409, "Global Skill discovery excludes this directory. Check its ignore files or ancestor SKILL.md before installing.", "SKILL_MARKET_NOT_DISCOVERABLE");
+  }
+  const ignores = createIgnore();
+  for (const name of SKILL_IGNORE_FILE_NAMES) {
+    const file = files.find((file) => file.path === name);
+    if (file) ignores.add(file.bytes.toString("utf8"));
+  }
+  if (ignores.ignores("SKILL.md")) {
+    throw new ConfigServiceError(422, "The source's ignore files exclude SKILL.md. Repair the source before installing; no files were installed.", "SKILL_MARKET_NOT_DISCOVERABLE");
+  }
+}
 
 /** No awaits after exclusive reservation: readers only discover the final descriptor. */
 export function publishNewSkill(globalRoot: string, name: string, files: readonly SkillInstallFile[]): void {

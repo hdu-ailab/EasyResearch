@@ -48,9 +48,10 @@ import { parseProviderTimeoutSettings } from "./provider-timeout-settings";
 import { ConfigurationSourceError } from "./configuration-source-error";
 import {
   fingerprintGlobalSkillResources,
-  fingerprintSkillRoot,
+  fingerprintProjectSkillResources,
   type AcceptedSkillDescriptor,
 } from "./resource-fingerprint";
+import { skillResourceOverrides } from "./skill-resource-policy";
 
 export type { ConfigurationErrorEvent, ConfigurationEvent, ConfigurationUpdatedEvent } from "../web/contracts";
 
@@ -77,6 +78,7 @@ export interface ConfigurationFingerprint {
   homeSkills: string | null;
   globalSkillDescriptors: readonly AcceptedSkillDescriptor[];
   homeSkillDescriptors: readonly AcceptedSkillDescriptor[] | null;
+  skillResourceOverrides?: readonly string[];
   diagnostic?: string;
   invalidSettingsLayers?: {
     agentDefaults?: true;
@@ -134,6 +136,7 @@ export interface ConfigurationChange {
 
 export interface SkillResolutionPolicy {
   enableDotAgentsSkill: boolean;
+  resourceOverrides?: readonly string[];
 }
 
 export interface LiveConfigurationOptions {
@@ -299,6 +302,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
 
   const skillPolicyFor = (fingerprint: ConfigurationFingerprint | undefined): SkillResolutionPolicy => ({
     enableDotAgentsSkill: fingerprint?.homeSkills !== null && fingerprint !== undefined,
+    ...(fingerprint?.skillResourceOverrides?.length ? { resourceOverrides: [...fingerprint.skillResourceOverrides] } : {}),
   });
   const acceptedSkillPolicy = (): SkillResolutionPolicy => skillPolicyFor(currentFingerprint);
 
@@ -502,7 +506,8 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           currentFingerprint === undefined ||
           projectSkillsChanged ||
           candidate.globalSkills !== currentFingerprint.globalSkills ||
-          candidate.homeSkills !== currentFingerprint.homeSkills;
+          candidate.homeSkills !== currentFingerprint.homeSkills ||
+          !isDeepStrictEqual(candidate.skillResourceOverrides ?? [], currentFingerprint.skillResourceOverrides ?? []);
         const apiUsageChanged = currentFingerprint !== undefined
           && !isDeepStrictEqual(nextApiUsageSettings, currentApiUsageSettings);
         const runtimeChanged = agentsChanged
@@ -692,11 +697,8 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
         publishWatcherError(path);
       },
       fingerprintProject(cwd) {
-        return fingerprintSkillRoot(
-          join(cwd, ".easyresearch", "skills"),
-          `project:${cwd}`,
-          skillSnapshotRoot,
-        ).catch(() => { throw new ConfigurationSourceError(join(cwd, ".easyresearch", "skills"), "read"); });
+        return fingerprintProjectSkillResources(cwd, skillSnapshotRoot)
+          .catch(() => { throw new ConfigurationSourceError(join(cwd, ".easyresearch"), "read"); });
       },
     });
   } catch (error) {
@@ -816,6 +818,7 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
           agentDir,
           cwd,
           enableDotAgentsSkill: acceptedSkillPolicy().enableDotAgentsSkill,
+          skillResourceOverrides: currentFingerprint!.skillResourceOverrides ?? [],
           acceptedSkillDescriptors: {
             global: currentFingerprint!.globalSkillDescriptors,
             home: currentFingerprint!.homeSkillDescriptors,
@@ -899,6 +902,7 @@ export async function fingerprintConfiguration(
     }
   }
   let enableDotAgentsSkill = false;
+  let resourceOverrides: string[] = [];
   let compactionPolicy = parseGlobalCompactionPolicy({});
   let apiUsageSettings = parseGlobalApiUsageSettings({});
   let sessionTitleSettings = parseGlobalSessionTitleSettings({});
@@ -920,6 +924,7 @@ export async function fingerprintConfiguration(
     const policy = (easyresearch as { enable_dot_agents_skill?: unknown } | undefined)?.enable_dot_agents_skill;
     if (policy !== undefined && typeof policy !== "boolean") throw new Error("Invalid Skill discovery policy.");
     enableDotAgentsSkill = isDotAgentsSkillEnabled(settings);
+    resourceOverrides = skillResourceOverrides(settings);
   } catch {
     diagnostic ??= settingsDiagnostic;
     invalidSettingsLayers.skillPolicy = true;
@@ -1017,6 +1022,7 @@ export async function fingerprintConfiguration(
     .update(JSON.stringify(providerTimeoutSettings))
     .update(globalSkills)
     .update(homeSkills ?? "disabled")
+    .update(JSON.stringify(resourceOverrides))
     .update(diagnostic ?? "valid")
     .update("\0")
     .update(Object.keys(invalidSettingsLayers).sort(compareNames).join("\0"))
@@ -1036,6 +1042,7 @@ export async function fingerprintConfiguration(
     homeSkills,
     globalSkillDescriptors,
     homeSkillDescriptors,
+    skillResourceOverrides: resourceOverrides,
     ...(diagnostic ? { diagnostic } : {}),
     ...(Object.keys(invalidSettingsLayers).length > 0 ? { invalidSettingsLayers } : {}),
   };
@@ -1069,6 +1076,7 @@ function sameFingerprint(left: ConfigurationFingerprint, right: ConfigurationFin
     isDeepStrictEqual(left.providerTimeoutSettings, right.providerTimeoutSettings) &&
     left.globalSkills === right.globalSkills &&
     left.homeSkills === right.homeSkills &&
+    isDeepStrictEqual(left.skillResourceOverrides ?? [], right.skillResourceOverrides ?? []) &&
     left.diagnostic === right.diagnostic &&
     left.invalidSettingsLayers?.agentDefaults === right.invalidSettingsLayers?.agentDefaults &&
     left.invalidSettingsLayers?.compaction === right.invalidSettingsLayers?.compaction &&

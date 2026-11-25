@@ -80,6 +80,7 @@ export interface DiscoveryOptions {
   homeDir?: string;
   enableDotAgentsSkill?: boolean;
   acceptedSkillDescriptors?: AcceptedSkillDescriptors;
+  skillResourceOverrides?: readonly string[];
   platform?: NodeJS.Platform;
 }
 
@@ -260,6 +261,7 @@ export function resolveAgentCatalog(
       bundledSkillsDir: options.bundledSkillsDir,
       enableDotAgentsSkill: options.enableDotAgentsSkill,
       acceptedSkillDescriptors: options.acceptedSkillDescriptors,
+      resourceOverrides: options.skillResourceOverrides,
       includeProject,
     });
     return {

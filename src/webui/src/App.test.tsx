@@ -6,11 +6,18 @@ import packageJson from "../../../package.json";
 import type { SessionSnapshotDto } from "../../web/contracts";
 import { App } from "./App";
 import * as api from "./api";
+import * as marketApi from "./api/skill-marketplace";
 import { I18nProvider } from "./i18n/I18nProvider";
 import { STORAGE_KEY } from "./preferences";
 import { PreferencesProvider } from "./preferences/PreferencesProvider";
 import { hydrateTranscript, observerFor } from "./testing/transcriptTest";
 
+vi.mock("./api/skill-marketplace", () => ({
+  getSkillMarket: vi.fn().mockResolvedValue({ skills: [] }),
+  getSkillMarketDetail: vi.fn(),
+  getSkillMarketDescription: vi.fn(),
+  installMarketSkill: vi.fn(),
+}));
 vi.mock("./api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api")>();
   return {
@@ -179,6 +186,9 @@ describe("App routing", () => {
   });
 
   beforeEach(() => {
+    vi.mocked(marketApi.getSkillMarket).mockClear();
+    vi.mocked(marketApi.getSkillMarketDetail).mockClear();
+    vi.mocked(marketApi.getSkillMarketDescription).mockClear();
     window.history.replaceState(null, "", "#/");
     vi.mocked(api.listStatus).mockReset();
     vi.mocked(api.checkForUpdate).mockReset().mockResolvedValue({ latestVersion: null });
@@ -254,6 +264,27 @@ describe("App routing", () => {
   const tabButton = (id: string) =>
     document.querySelector<HTMLButtonElement>(`[role="tab"][data-session-tab-id="${id}"]`)!;
   const sessionSurface = (id: string) => document.querySelector<HTMLElement>(`[data-session-surface="${id}"]`)!;
+
+  it("opens Discover directly in the marketplace and preserves the Work draft, hash and configuration subscription", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "#/work/s1?cwd=%2Fp");
+    await renderWork();
+    const input = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(input, { target: { value: "Research draft @" } });
+    await user.click(screen.getByRole("option", { name: "Discover more skills" }));
+    expect(screen.getByRole("tab", { name: "Skill marketplace" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("searchbox", { name: "Search skills" })).toBeVisible();
+    expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp&settings=1");
+    expect(api.sendPrompt).not.toHaveBeenCalled();
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(window.location.hash).toBe("#/work/s1?cwd=%2Fp"));
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(input);
+    expect(input).toHaveValue("Research draft @");
+    expect(api.connectConfigurationEvents).toHaveBeenCalledOnce();
+    expect(marketApi.getSkillMarketDetail).not.toHaveBeenCalled();
+    expect(marketApi.getSkillMarketDescription).not.toHaveBeenCalled();
+  });
 
   function multipleSessions() {
     const sessions = ["s1", "s2", "s3"].map((id) => ({
@@ -1493,7 +1524,7 @@ describe("App routing", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(screen.getByRole("tab", { name: "Skills and tools" }));
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
     await user.selectOptions(
       await screen.findByRole("combobox", { name: "Skill diagnostic scope" }),
       "/papers/settings",

@@ -1,8 +1,10 @@
-import { listGlobalSkills, type SkillResourceOptions } from "./agent-resources";
+import { listGlobalSkills, serializeSkillWrite, type SkillResourceOptions } from "./agent-resources";
+import { existsSync, lstatSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { ConfigServiceError, type ConfigFileService } from "./config-files";
 import type { SkillResourceDto } from "./contracts";
 import type { MarketSkillDto, SkillMarketCatalogDto, SkillMarketDetailDto, SkillMarketInstalledDto, SkillMarketView } from "./skill-marketplace-contracts";
-import { publishNewSkill, skillMarketplaceIdentity, type SkillInstallFile } from "./skill-marketplace-install";
+import { assertSkillInstallDiscoverable, publishNewSkill, skillMarketplaceIdentity, type SkillInstallFile } from "./skill-marketplace-install";
 import { MARKET_RECEIPT, marketError, parseMarketId, skillInstallDirectory, validMarketRevision, SkillMarketplaceSource, type SkillSourceSnapshot } from "./skill-marketplace-source";
 
 interface CacheEntry<T> { expires: number; value: T }
@@ -72,39 +74,49 @@ export class SkillMarketplace {
       if (this.installing.has(snapshot.name)) marketError("This skill is already being installed.", 409, "SKILL_MARKET_CONFLICT");
       this.installing.add(snapshot.name);
       try {
-        const resources = await listGlobalSkills(this.options.config, this.options.skillOptions());
-        const detail = this.detailDto(snapshot, resources);
-        if (detail.state === "installed") return { id, name: snapshot.name };
-        if (detail.state === "conflict") marketError("A skill with this name is already available. Existing files were preserved.", 409, "SKILL_MARKET_CONFLICT");
-        const files: SkillInstallFile[] = [];
-        let next = 0;
-        const downloadAbort = new AbortController();
-        const downloadSignal = AbortSignal.any([signal, downloadAbort.signal]);
-        const workers = Array.from({ length: Math.min(4, snapshot.files.length) }, async () => {
-          try {
-            for (;;) {
-              const file = snapshot.files[next++];
-              if (!file) return;
-              downloadSignal.throwIfAborted();
-              const bytes = file.path === "SKILL.md" ? snapshot.descriptorBytes : await this.source.file(snapshot, file, downloadSignal);
-              files.push({ path: file.path, bytes, executable: file.executable });
-            }
-          } catch (error) { downloadAbort.abort(error); throw error; }
+        return await serializeSkillWrite(this.options.config, snapshot.name, async () => {
+          signal.throwIfAborted();
+          const resources = await listGlobalSkills(this.options.config, this.options.skillOptions());
+          const detail = this.detailDto(snapshot, resources);
+          if (detail.state === "installed") {
+            await this.notifyInstalled();
+            await this.verifyInstalled(snapshot);
+            return { id, name: snapshot.name };
+          }
+          if (this.physicalTarget(snapshot) && skillMarketplaceIdentity(this.targetResource(snapshot)) === id) this.notDiscoverable();
+          if (detail.state === "conflict") marketError("A skill with this name is already available. Existing files were preserved.", 409, "SKILL_MARKET_CONFLICT");
+          const files: SkillInstallFile[] = [];
+          let next = 0;
+          const downloadAbort = new AbortController();
+          const downloadSignal = AbortSignal.any([signal, downloadAbort.signal]);
+          const workers = Array.from({ length: Math.min(4, snapshot.files.length) }, async () => {
+            try {
+              for (;;) {
+                const file = snapshot.files[next++];
+                if (!file) return;
+                downloadSignal.throwIfAborted();
+                const bytes = file.path === "SKILL.md" ? snapshot.descriptorBytes : await this.source.file(snapshot, file, downloadSignal);
+                files.push({ path: file.path, bytes, executable: file.executable });
+              }
+            } catch (error) { downloadAbort.abort(error); throw error; }
+          });
+          const settled = await Promise.allSettled(workers);
+          const failed = settled.find((result) => result.status === "rejected");
+          if (failed?.status === "rejected") throw failed.reason;
+          signal.throwIfAborted();
+          // Recheck after network awaits; other editors/installs may have added this identity.
+          const latest = await listGlobalSkills(this.options.config, this.options.skillOptions());
+          if (latest.some((skill) => skill.name.toLowerCase() === snapshot.name.toLowerCase())) {
+            marketError("A skill with this name was added while downloading. Existing files were preserved.", 409, "SKILL_MARKET_CONFLICT");
+          }
+          signal.throwIfAborted();
+          files.push({ path: MARKET_RECEIPT, bytes: Buffer.from(JSON.stringify({ version: 1, id, name: snapshot.name, commit: snapshot.commit })) });
+          assertSkillInstallDiscoverable(this.options.config.globalRoot, skillInstallDirectory(snapshot.name), files);
+          publishNewSkill(this.options.config.globalRoot, skillInstallDirectory(snapshot.name), files);
+          await this.notifyInstalled();
+          await this.verifyInstalled(snapshot);
+          return { id, name: snapshot.name };
         });
-        const settled = await Promise.allSettled(workers);
-        const failed = settled.find((result) => result.status === "rejected");
-        if (failed?.status === "rejected") throw failed.reason;
-        signal.throwIfAborted();
-        // Recheck after network awaits; other editors/installs may have added this identity.
-        const latest = await listGlobalSkills(this.options.config, this.options.skillOptions());
-        if (latest.some((skill) => skill.name.toLowerCase() === snapshot.name.toLowerCase())) {
-          marketError("A skill with this name was added while downloading. Existing files were preserved.", 409, "SKILL_MARKET_CONFLICT");
-        }
-        signal.throwIfAborted();
-        files.push({ path: MARKET_RECEIPT, bytes: Buffer.from(JSON.stringify({ version: 1, id, name: snapshot.name, commit: snapshot.commit })) });
-        publishNewSkill(this.options.config.globalRoot, skillInstallDirectory(snapshot.name), files);
-        await this.options.notify();
-        return { id, name: snapshot.name };
       } finally { this.installing.delete(snapshot.name); }
     });
   }
@@ -120,14 +132,55 @@ export class SkillMarketplace {
 
   private detailDto(snapshot: SkillSourceSnapshot, resources: SkillResourceDto[]): SkillMarketDetailDto {
     const existing = resources.find((skill) => skill.name.toLowerCase() === snapshot.name.toLowerCase());
+    const exact = this.exactInstalled(snapshot, resources);
     return {
       id: snapshot.id, name: snapshot.name, description: snapshot.description,
       content: snapshot.content, commit: snapshot.commit, directory: snapshot.directory,
       files: snapshot.files.map((file) => file.path),
       sourceType: snapshot.sourceType,
       sourceUrl: snapshot.sourceUrl,
-      state: !existing ? "available" : skillMarketplaceIdentity(existing) === snapshot.id ? "installed" : "conflict",
+      state: exact ? "installed" : existing || existsSync(this.targetResource(snapshot).path) ? "conflict" : "available",
     };
+  }
+
+  private targetResource(snapshot: SkillSourceSnapshot): SkillResourceDto {
+    const path = join(this.options.config.globalRoot, "skills", skillInstallDirectory(snapshot.name));
+    return { name: snapshot.name, source: "global", path, skillPath: join(path, "SKILL.md") };
+  }
+
+  private exactInstalled(snapshot: SkillSourceSnapshot, resources: SkillResourceDto[]): boolean {
+    const target = this.targetResource(snapshot);
+    if (!this.physicalTarget(snapshot)) return false;
+    return resources.some((skill) => skill.source === "global" && skill.name === snapshot.name
+      && resolve(skill.skillPath) === resolve(target.skillPath) && skillMarketplaceIdentity(skill) === snapshot.id);
+  }
+
+  private physicalTarget(snapshot: SkillSourceSnapshot): boolean {
+    const target = this.targetResource(snapshot);
+    try {
+      if (lstatSync(join(this.options.config.globalRoot, "skills")).isSymbolicLink()
+        || !lstatSync(target.path).isDirectory() || lstatSync(target.path).isSymbolicLink()
+        || !lstatSync(target.skillPath).isFile() || lstatSync(target.skillPath).isSymbolicLink()) return false;
+    } catch { return false; }
+    return true;
+  }
+
+  private notDiscoverable(): never {
+    return marketError("Skill files are saved, but the installed descriptor is not selected by global discovery. Check ignore files, ancestor SKILL.md and name conflicts, then refresh Settings. Existing files were preserved.", 409, "SKILL_MARKET_NOT_DISCOVERABLE");
+  }
+
+  private async verifyInstalled(snapshot: SkillSourceSnapshot): Promise<void> {
+    const resources = await listGlobalSkills(this.options.config, this.options.skillOptions()).catch(() => this.notDiscoverable());
+    if (!this.exactInstalled(snapshot, resources)) this.notDiscoverable();
+  }
+
+  private async notifyInstalled(): Promise<void> {
+    try {
+      const outcome = await this.options.notify();
+      if (outcome && typeof outcome === "object" && "status" in outcome && (outcome.status === "rejected" || outcome.status === "closed")) throw new Error("rejected");
+    } catch {
+      marketError("Skill files are saved, but configuration could not be accepted. Repair configuration and refresh Settings. Existing files were preserved.", 409, "CONFIG_REJECTED");
+    }
   }
 
   private async snapshot(id: string, signal: AbortSignal, commit?: string): Promise<SkillSourceSnapshot> {

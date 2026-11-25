@@ -1,6 +1,6 @@
 import { Activity, ChevronRight, KeyRound, Languages, Minus, Plus, RefreshCw, UserPlus } from "lucide-react";
-import { useId, useState } from "react";
-import type { AgentDto, AuthProviderInfoDto, SkillResourceDto } from "../../../../web/contracts";
+import { useId } from "react";
+import type { AgentDto, AuthProviderInfoDto } from "../../../../web/contracts";
 import { agentDisplayName, type Translate } from "../../i18n/agents";
 import { useI18n } from "../../i18n/useI18n";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, FILES_FONT_MAX, FILES_FONT_MIN } from "../../preferences";
@@ -12,14 +12,13 @@ import { ProviderTimeoutSetting } from "../ProviderTimeoutSetting";
 import { SessionTitleSetting } from "../SessionTitleSetting";
 import { ActionGlyph } from "../studio/ActionGlyph";
 import { StudioThemePicker } from "../studio/StudioThemePicker";
-import { SkillMarketplacePanel } from "./SkillMarketplacePanel";
 import { TimelineDetailSettings } from "./TimelineDetailSettings";
 
 const sectionClass = "rounded-[10px] border border-v2-grey-200 bg-v2-background-bg-base";
 const buttonClass =
   "flex h-7 w-7 items-center justify-center rounded-md border border-v2-grey-200 text-v2-text-text-base transition-colors hover:bg-v2-grey-100 disabled:opacity-40";
 
-function PanelHeading({ children }: { children: string }) {
+export function PanelHeading({ children }: { children: string }) {
   return (
     <h2
       tabIndex={-1}
@@ -390,127 +389,82 @@ export interface MissingSkillDiagnostic {
   agentNames: readonly string[];
 }
 
-export interface ResourceSettingsPanelProps {
-  active?: boolean;
-  initialMarketplace?: boolean;
-  onInstalled?(): void;
-  tools: readonly string[];
-  skills: readonly SkillResourceDto[];
+export interface SkillDiagnosticsPanelProps {
   projects: readonly { cwd: string }[];
   diagnosticScope: string;
   diagnostics: readonly MissingSkillDiagnostic[];
   diagnosticError: string | null;
   onScopeChange(scope: string): void;
-  onEditSkill(name: string): void;
 }
 
-export function ResourceSettingsPanel({
-  active = true,
-  initialMarketplace = false,
-  onInstalled = () => undefined,
-  tools,
-  skills,
+export function SkillDiagnosticsPanel({
   projects,
   diagnosticScope,
   diagnostics,
   diagnosticError,
   onScopeChange,
-  onEditSkill,
-}: ResourceSettingsPanelProps) {
+}: SkillDiagnosticsPanelProps) {
   const { t } = useI18n();
-  const [market, setMarket] = useState(initialMarketplace);
+  return (
+    <section className={`${sectionClass} p-4`} aria-label={t("skills.diagnostics")}>
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("skills.diagnostics")}</h3>
+        <select
+          aria-label={t("settings.resources.diagnosticScope")}
+          className="h-7 min-w-0 max-w-[240px] rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-blue-600 focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600"
+          value={diagnosticScope}
+          onChange={(event) => onScopeChange(event.target.value)}
+        >
+          <option value="global">{t("config.global")}</option>
+          {projects.map((project) => (
+            <option key={project.cwd} value={project.cwd}>
+              {project.cwd}
+            </option>
+          ))}
+        </select>
+      </div>
+      {diagnostics.length > 0 && (
+        <div className="mt-2 flex flex-col gap-1.5">
+          {diagnostics.map(({ skill, agentNames }) => (
+            <div
+              key={skill}
+              className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-v2-grey-200 px-3 py-2"
+            >
+              <span className="font-mono text-[12px] text-v2-text-text-base">{skill}</span>
+              <span className="min-w-0 text-right text-[11px] text-v2-text-text-muted">
+                {t("settings.resources.missingFor").replace("{agents}", agentNames.join(", "))}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {diagnosticError && (
+        <p className="mt-2 text-[12px] text-v2-status-error" role="alert">
+          {diagnosticError}
+        </p>
+      )}
+    </section>
+  );
+}
+
+export function ToolsSettingsPanel({ tools }: { tools: readonly string[] }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col gap-4">
-      <SkillMarketplacePanel
-        active={active && market}
-        showMarketplace={market}
-        title={<PanelHeading>{t("settings.category.resources")}</PanelHeading>}
-        controls={
-          <fieldset className="er-market-switch">
-            <legend className="sr-only">{t("settings.resources.skills")}</legend>
-            <button type="button" aria-pressed={!market} onClick={() => setMarket(false)}>
-              {t("skillMarket.installed").replace("{n}", String(skills.length))}
-            </button>
-            <button type="button" aria-pressed={market} onClick={() => setMarket(true)}>
-              {t("skillMarket.browse")}
-            </button>
-          </fieldset>
-        }
-        skills={skills}
-        onInstalled={onInstalled}
-      />
-      <div hidden={market} className="flex flex-col gap-4">
-        <section className={`${sectionClass} p-4`} aria-label={t("settings.resources.tools")}>
-          <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.tools")}</h3>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {tools.length > 0 ? (
-              tools.map((tool) => (
-                <span
-                  key={tool}
-                  className="rounded-md border border-v2-grey-200 px-2 py-1 font-mono text-[11px] text-v2-text-text-base"
-                >
-                  {tool}
-                </span>
-              ))
-            ) : (
-              <span className="text-[12px] text-v2-text-text-faint">{t("settings.resources.noTools")}</span>
-            )}
-          </div>
-        </section>
-        <section className={`${sectionClass} p-4`} aria-label={t("settings.resources.skills")}>
-          <div className="flex min-w-0 items-center justify-between gap-3">
-            <h3 className="text-[12px] font-semibold text-v2-text-text-base">{t("settings.resources.skills")}</h3>
-            <select
-              aria-label={t("settings.resources.diagnosticScope")}
-              className="h-7 min-w-0 max-w-[240px] rounded-md border border-v2-grey-200 bg-v2-background-bg-base px-2 text-[12px] text-v2-text-text-base outline-none focus:border-v2-blue-600 focus:outline-2 focus:outline-offset-2 focus:outline-v2-blue-600"
-              value={diagnosticScope}
-              onChange={(event) => onScopeChange(event.target.value)}
+      <PanelHeading>{t("settings.resources.tools")}</PanelHeading>
+      <div className="flex flex-wrap gap-1.5">
+        {tools.length > 0 ? (
+          tools.map((tool) => (
+            <span
+              key={tool}
+              className="rounded-md border border-v2-grey-200 px-2 py-1 font-mono text-[12px] text-v2-text-text-base"
             >
-              <option value="global">{t("config.global")}</option>
-              {projects.map((project) => (
-                <option key={project.cwd} value={project.cwd}>
-                  {project.cwd}
-                </option>
-              ))}
-            </select>
-          </div>
-          {diagnostics.length > 0 && (
-            <div className="mt-2 flex flex-col gap-1.5">
-              {diagnostics.map(({ skill, agentNames }) => (
-                <div
-                  key={skill}
-                  className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-v2-grey-200 px-3 py-2"
-                >
-                  <span className="font-mono text-[12px] text-v2-text-text-base">{skill}</span>
-                  <span className="min-w-0 text-right text-[11px] text-v2-text-text-muted">
-                    {t("settings.resources.missingFor").replace("{agents}", agentNames.join(", "))}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          {diagnosticError && (
-            <p className="mt-2 text-[12px] text-v2-status-error" role="alert">
-              {diagnosticError}
-            </p>
-          )}
-          <div className="mt-2 flex flex-col gap-2">
-            {skills.map((skill) => (
-              <div key={skill.name} className="flex items-center gap-2 rounded-md border border-v2-grey-200 px-3 py-2">
-                <span className="font-mono text-[12px]">{skill.name}</span>
-                <span className="text-[11px] text-v2-text-text-faint">{skill.source}</span>
-                <button
-                  type="button"
-                  className="ml-auto text-[12px] text-v2-blue-600 hover:underline"
-                  aria-label={t("settings.resources.editSkill").replace("{name}", skill.name)}
-                  onClick={() => onEditSkill(skill.name)}
-                >
-                  {t("settings.resources.editSkill").replace("{name}", skill.name)}
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
+              {tool}
+            </span>
+          ))
+        ) : (
+          <p className="text-[12px] text-v2-text-text-faint">{t("settings.resources.noTools")}</p>
+        )}
       </div>
     </div>
   );

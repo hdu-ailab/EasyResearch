@@ -141,6 +141,15 @@ export class ConfigFileService {
     return this.agentDir;
   }
 
+  async notifySkillChange(): Promise<void> {
+    try {
+      const outcome = await this.options.onAuthoritativeWrite?.({ skillsChanged: true });
+      if (outcome && typeof outcome === "object" && "status" in outcome && (outcome.status === "rejected" || outcome.status === "closed")) throw new Error("rejected");
+    } catch {
+      throw new ConfigServiceError(409, "Skill changes were saved but configuration could not be accepted. Repair configuration and refresh Settings.", "CONFIG_REJECTED");
+    }
+  }
+
   async list(input: ConfigListInput): Promise<ConfigEntryDto[]> {
     const root = this.rootFor(input.scope, input.cwd);
     const dirPath = input.path
@@ -198,7 +207,7 @@ export class ConfigFileService {
         () => this.writeNow(input, undefined, { notify: false })));
       return this.notifyPersistedWrite(storePath ? { ...input, path: basename(storePath) } : input, false);
     }
-    if (isProjectSkillDescriptorInput(input) && input.cwd && this.options.acquireProject) {
+    if (input.scope === "project" && (isProjectSkillDescriptorInput(input) || isPiSettingsWrite(input)) && input.cwd && this.options.acquireProject) {
       const registration = await this.options.acquireProject(input.cwd);
       try {
         return await this.writeNow(input, this.projectWriteContext(input.cwd));
@@ -328,7 +337,7 @@ export class ConfigFileService {
     }
     const target = resolveAllowedConfigPath(root, input.path, "write");
     const skillDescriptor = isSkillDescriptorTarget(root, target);
-    const projectDescriptor = input.scope === "project" && skillDescriptor;
+    const projectDescriptor = input.scope === "project" && (skillDescriptor || isPiSettingsWrite(input));
     const stableProject = projectDescriptor && input.cwd
       ? (projectContext ?? this.projectWriteContext(input.cwd))
       : undefined;
@@ -367,7 +376,7 @@ export class ConfigFileService {
   private async notifyPersistedWrite(input: ConfigWriteInput, skillDescriptor: boolean): Promise<unknown> {
     const change = authoritativeChange(input, skillDescriptor);
     const authoritativeOutcome = change ? await this.options.onAuthoritativeWrite?.(change) : undefined;
-    if (input.scope === "project" && skillDescriptor && input.cwd) {
+    if (input.scope === "project" && (skillDescriptor || isPiSettingsWrite(input)) && input.cwd) {
       return await this.options.synchronizeProject?.(input.cwd) ?? authoritativeOutcome;
     }
     return authoritativeOutcome;

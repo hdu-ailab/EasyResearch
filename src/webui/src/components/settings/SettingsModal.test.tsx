@@ -2,12 +2,37 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../../api";
+import * as marketApi from "../../api/skill-marketplace";
 import { I18nProvider } from "../../i18n/I18nProvider";
 import { readPreferences, STORAGE_KEY } from "../../preferences";
 import { PreferencesProvider } from "../../preferences/PreferencesProvider";
 import { getTimelineDetail, TIMELINE_PRESETS } from "../../timeline-detail";
 import { SettingsModal, type SettingsModalProps } from "./SettingsModal";
 
+vi.mock("../../api/skill-marketplace", () => ({
+  getSkillMarket: vi.fn(),
+  getSkillMarketDetail: vi.fn(),
+  getSkillMarketDescription: vi.fn(),
+  installMarketSkill: vi.fn(),
+}));
+const marketSkill = {
+  id: "example/skills/research",
+  source: "example/skills",
+  slug: "research",
+  name: "Research",
+  supported: true,
+  installs: 12,
+};
+const installedSkill = {
+  name: "research",
+  description: "Find literature",
+  source: "global" as const,
+  enabled: true,
+  canDelete: true,
+  path: "/agent/skills/research",
+  skillPath: "/agent/skills/research/SKILL.md",
+  marketplaceId: marketSkill.id,
+};
 vi.mock("../../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api")>();
   return {
@@ -35,6 +60,8 @@ vi.mock("../../api", async (importOriginal) => {
     listSkillResources: vi.fn(),
     readSkillResource: vi.fn(),
     writeSkillResource: vi.fn(),
+    patchSkillResource: vi.fn(),
+    deleteSkillResource: vi.fn(),
     listAuthProviders: vi.fn(),
     logoutProvider: vi.fn(),
     refreshConfigurationResources: vi.fn(),
@@ -42,6 +69,25 @@ vi.mock("../../api", async (importOriginal) => {
 });
 
 beforeEach(() => {
+  vi.mocked(marketApi.getSkillMarket)
+    .mockReset()
+    .mockResolvedValue({ skills: [marketSkill] });
+  vi.mocked(marketApi.getSkillMarketDetail)
+    .mockReset()
+    .mockResolvedValue({
+      id: marketSkill.id,
+      name: installedSkill.name,
+      description: installedSkill.description,
+      content: "# Research",
+      commit: "a".repeat(40),
+      directory: "research",
+      files: ["SKILL.md"],
+      state: "available",
+    });
+  vi.mocked(marketApi.getSkillMarketDescription).mockReset().mockRejectedValue(new Error("Offline"));
+  vi.mocked(marketApi.installMarketSkill)
+    .mockReset()
+    .mockResolvedValue({ id: marketSkill.id, name: installedSkill.name });
   vi.stubGlobal("innerWidth", 1200);
   window.localStorage.clear();
   vi.mocked(api.patchAgent).mockReset();
@@ -86,6 +132,8 @@ beforeEach(() => {
   vi.mocked(api.listSkillResources).mockReset();
   vi.mocked(api.readSkillResource).mockReset();
   vi.mocked(api.writeSkillResource).mockReset();
+  vi.mocked(api.patchSkillResource).mockReset();
+  vi.mocked(api.deleteSkillResource).mockReset();
   vi.mocked(api.listAuthProviders).mockReset();
   vi.mocked(api.logoutProvider).mockReset().mockResolvedValue(undefined);
   vi.mocked(api.refreshConfigurationResources).mockReset().mockResolvedValue({ generation: 1, error: null });
@@ -270,6 +318,11 @@ async function selectCategory(user: ReturnType<typeof userEvent.setup>, name: st
   if (tab.getAttribute("aria-selected") !== "true") await user.click(tab);
 }
 
+async function openSkillEditor(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(await screen.findByRole("button", { name: `Actions for ${name}` }));
+  await user.click(screen.getByRole("menuitem", { name: `Edit skill ${name}` }));
+}
+
 async function openAgentConfig(user: ReturnType<typeof userEvent.setup>, name: string) {
   await selectCategory(user, "Agents");
   const panel = screen.getByRole("tabpanel", { name: "Agents" });
@@ -299,6 +352,355 @@ function deferred<T>() {
 }
 
 describe("SettingsModal", () => {
+  it("exposes peer Skills, marketplace and Tools tabs with independent drafts and owned reads", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await selectCategory(user, "Skills");
+    await user.click(screen.getByRole("button", { name: "Writing" }));
+    expect(screen.queryByRole("heading", { name: "paper-search" })).toBeNull();
+    await selectCategory(user, "Skill marketplace");
+    const search = screen.getByRole("searchbox", { name: "Search skills" });
+    await user.click(screen.getByRole("button", { name: "Research" }));
+    await user.type(search, " draft");
+    expect(screen.queryByRole("button", { name: "Marketplace" })).toBeNull();
+    const latestRead = vi.mocked(marketApi.getSkillMarket).mock.calls.at(-1)!;
+    await selectCategory(user, "Tools");
+    expect(latestRead[2]?.aborted).toBe(true);
+    expect(screen.getByRole("heading", { name: "Tools" })).toBeVisible();
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    await selectCategory(user, "Skill marketplace");
+    expect(search).toHaveValue("research draft");
+    expect(screen.getByRole("button", { name: "Research" })).toHaveAttribute("aria-pressed", "true");
+    await selectCategory(user, "Skills");
+    expect(screen.getByRole("button", { name: "Writing" })).toHaveAttribute("aria-pressed", "true");
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("tab", { name: "Skill marketplace" })).toHaveFocus();
+    await user.keyboard("{End}");
+    expect(screen.getByRole("tab", { name: "Tools" })).toHaveFocus();
+    expect(marketApi.getSkillMarketDetail).not.toHaveBeenCalled();
+    expect(marketApi.getSkillMarketDescription).not.toHaveBeenCalled();
+  });
+
+  it("exposes all three mobile entries and restores the selected row on internal Back", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    renderSettings(undefined, onClose);
+    for (const name of ["Skills", "Skill marketplace", "Tools"]) {
+      const row = screen.getByRole("button", { name });
+      await user.click(row);
+      expect(screen.queryByRole("tab")).toBeNull();
+      if (name === "Skill marketplace") expect(screen.getByRole("searchbox")).toHaveFocus();
+      else expect(screen.getByRole("heading", { name })).toHaveFocus();
+      await user.click(screen.getByRole("button", { name: "Back to settings" }));
+      expect(row).toHaveFocus();
+    }
+    expect(onClose).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("opens the composer shortcut directly on the mobile marketplace search", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    render(
+      <PreferencesProvider>
+        <I18nProvider>
+          <SettingsModal {...defaultModalProps} initialMarketplace />
+        </I18nProvider>
+      </PreferencesProvider>,
+    );
+    expect(screen.getByRole("searchbox", { name: "Search skills" })).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Marketplace" })).toBeNull();
+    expect(await screen.findAllByRole("button", { name: "View Research" })).toHaveLength(2);
+  });
+
+  it("closes only an open Skill menu on Escape, keeping Settings and its focus owner", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    renderSettings(undefined, onClose);
+    await selectCategory(user, "Skills");
+    const trigger = await screen.findByRole("button", { name: "Actions for paper-search" });
+    trigger.focus();
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes installed cards immediately after plus and rejects pre-install resource reads", async () => {
+    const user = userEvent.setup();
+    const stale = deferred<Awaited<ReturnType<typeof api.listSkillResources>>>();
+    const fresh = deferred<Awaited<ReturnType<typeof api.listSkillResources>>>();
+    vi.mocked(api.listSkillResources)
+      .mockResolvedValueOnce([])
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(fresh.promise);
+    const view = renderSettings();
+    await selectCategory(user, "Skill marketplace");
+    view.rerender(settingsElement(undefined, undefined, 2));
+    await waitFor(() => expect(api.listSkillResources).toHaveBeenCalledTimes(2));
+    const oldSignal = vi.mocked(api.listSkillResources).mock.calls[1]![0]!;
+    await user.click((await screen.findAllByRole("button", { name: "Add Research" }))[0]!);
+    await screen.findAllByRole("button", { name: "View installed Research" });
+    expect(api.listSkillResources).toHaveBeenCalledTimes(3);
+    expect(oldSignal.aborted).toBe(true);
+    await act(async () => stale.resolve([]));
+    expect(screen.getAllByRole("button", { name: "View installed Research" })).toHaveLength(2);
+    await act(async () => fresh.resolve([installedSkill]));
+    await selectCategory(user, "Skills");
+    expect(screen.getByRole("heading", { name: "research" })).toBeVisible();
+    expect(screen.getByRole("article")).toHaveAttribute("data-skill-name", "research");
+    expect(screen.getByText("Find literature")).toBeVisible();
+    expect(marketApi.getSkillMarketDescription).not.toHaveBeenCalled();
+  });
+
+  it("keeps disabled resources listed and clears the exact marketplace check after deletion", async () => {
+    const user = userEvent.setup();
+    let rows = [installedSkill];
+    vi.mocked(api.listSkillResources).mockImplementation(async () => rows);
+    vi.mocked(api.patchSkillResource).mockImplementation(async (_name, enabled) => {
+      rows = rows.map((row) => ({ ...row, enabled }));
+      return rows[0]!;
+    });
+    vi.mocked(api.deleteSkillResource).mockImplementation(async (name) => {
+      rows = [];
+      return { deleted: true, name };
+    });
+    renderSettings();
+    await selectCategory(user, "Skills");
+    await user.click(screen.getByRole("button", { name: "Actions for research" }));
+    await user.click(screen.getByRole("menuitem", { name: "Disable" }));
+    expect(api.patchSkillResource).toHaveBeenCalledWith("research", false);
+    expect(await screen.findByText("Disabled")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Actions for research" }));
+    await user.click(screen.getByRole("menuitem", { name: "Enable" }));
+    expect(api.patchSkillResource).toHaveBeenLastCalledWith("research", true);
+    await waitFor(() => expect(screen.queryByText("Disabled")).toBeNull());
+    await selectCategory(user, "Skill marketplace");
+    expect(await screen.findAllByRole("button", { name: "View installed Research" })).toHaveLength(2);
+    await selectCategory(user, "Skills");
+    await user.click(screen.getByRole("button", { name: "Actions for research" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Delete research?" })).getByRole("button", { name: "Delete" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Delete research?" })).toBeNull());
+    expect(api.deleteSkillResource).toHaveBeenCalledExactlyOnceWith("research");
+    expect(screen.queryByRole("heading", { name: "research" })).toBeNull();
+    await selectCategory(user, "Skill marketplace");
+    expect(await screen.findAllByRole("button", { name: "Add Research" })).toHaveLength(2);
+  });
+
+  it("finishes explicit plus installation after navigation while its selected source read is pending", async () => {
+    const user = userEvent.setup();
+    const source = deferred<Awaited<ReturnType<typeof marketApi.getSkillMarketDetail>>>();
+    const snapshot = await marketApi.getSkillMarketDetail(marketSkill.id);
+    vi.mocked(marketApi.getSkillMarketDetail).mockReset().mockReturnValue(source.promise);
+    let rows: Awaited<ReturnType<typeof api.listSkillResources>> = [];
+    vi.mocked(api.listSkillResources).mockImplementation(async () => rows);
+    vi.mocked(marketApi.installMarketSkill).mockImplementation(async () => {
+      rows = [installedSkill];
+      return { id: marketSkill.id, name: installedSkill.name };
+    });
+    renderSettings();
+    await selectCategory(user, "Skill marketplace");
+    const add = await screen.findAllByRole("button", { name: "Add Research" });
+    act(() => {
+      fireEvent.click(add[0]!);
+      fireEvent.click(add[1]!);
+    });
+    expect(marketApi.getSkillMarketDetail).toHaveBeenCalledExactlyOnceWith(marketSkill.id);
+    await selectCategory(user, "Skills");
+    expect(screen.queryByRole("heading", { name: "research" })).toBeNull();
+    await act(async () => source.resolve(snapshot));
+    expect(await screen.findByRole("heading", { name: "research" })).toBeVisible();
+    expect(marketApi.installMarketSkill).toHaveBeenCalledExactlyOnceWith({
+      id: marketSkill.id,
+      commit: snapshot.commit,
+    });
+    expect(marketApi.getSkillMarketDescription).not.toHaveBeenCalled();
+    await selectCategory(user, "Skill marketplace");
+    expect(await screen.findAllByRole("button", { name: "View installed Research" })).toHaveLength(2);
+  });
+
+  it("shows a failed Skill save inside the editor and preserves its draft for retry", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.writeSkillResource).mockRejectedValueOnce(new Error("Resource changed"));
+    renderSettings();
+    await selectCategory(user, "Skills");
+    await openSkillEditor(user, "paper-search");
+    const dialog = screen.getByRole("dialog", { name: "paper-search" });
+    const editor = within(dialog).getByRole("textbox", { name: "Skill Markdown" });
+    fireEvent.change(editor, { target: { value: "# Draft preserved" } });
+    await user.click(within(dialog).getByRole("button", { name: "Save skill" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Resource changed");
+    expect(editor).toHaveValue("# Draft preserved");
+    await user.click(within(dialog).getByRole("button", { name: "Save skill" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "paper-search" })).toBeNull());
+  });
+
+  describe("Skill editor read ownership", () => {
+    const first = {
+      ...installedSkill,
+      name: "slow-a",
+      path: "/agent/skills/slow-a",
+      skillPath: "/agent/skills/slow-a/SKILL.md",
+      content: "# A",
+    };
+    const second = {
+      ...installedSkill,
+      name: "fast-b",
+      path: "/agent/skills/fast-b",
+      skillPath: "/agent/skills/fast-b/SKILL.md",
+      content: "# B",
+    };
+
+    it("preserves B's selected editor, draft and save target when A resolves last", async () => {
+      const user = userEvent.setup();
+      const slow = deferred<typeof first>();
+      let firstSignal: AbortSignal | undefined;
+      let abortedBeforeSecondRead = false;
+      vi.mocked(api.listSkillResources).mockResolvedValue([first, second]);
+      vi.mocked(api.readSkillResource).mockImplementation((name, signal) => {
+        if (name === first.name) {
+          firstSignal = signal;
+          return slow.promise; // Deliberately ignores abort to exercise the response fence.
+        }
+        abortedBeforeSecondRead = firstSignal?.aborted === true;
+        return Promise.resolve(second);
+      });
+      renderSettings();
+      await selectCategory(user, "Skills");
+      await openSkillEditor(user, first.name);
+      await openSkillEditor(user, second.name);
+      const dialog = screen.getByRole("dialog", { name: second.name });
+      const editor = within(dialog).getByRole("textbox", { name: "Skill Markdown" });
+      fireEvent.change(editor, { target: { value: "# B's unsaved draft" } });
+      await act(async () => slow.resolve(first));
+      expect(screen.getByRole("dialog", { name: second.name })).toBe(dialog);
+      expect(screen.queryByRole("dialog", { name: first.name })).toBeNull();
+      expect(editor).toHaveValue("# B's unsaved draft");
+      expect(abortedBeforeSecondRead).toBe(true);
+      await user.click(within(dialog).getByRole("button", { name: "Save skill" }));
+      expect(api.writeSkillResource).toHaveBeenCalledExactlyOnceWith(second.name, "# B's unsaved draft");
+    });
+
+    it("discards A's late failure after B opens rather than publishing a stale card error", async () => {
+      const user = userEvent.setup();
+      const slow = deferred<typeof first>();
+      vi.mocked(api.listSkillResources).mockResolvedValue([first, second]);
+      vi.mocked(api.readSkillResource).mockImplementation((name) =>
+        name === first.name ? slow.promise : Promise.resolve(second),
+      );
+      renderSettings();
+      await selectCategory(user, "Skills");
+      await openSkillEditor(user, first.name);
+      await openSkillEditor(user, second.name);
+      await act(async () => slow.reject(new Error("Obsolete A failure")));
+      expect(screen.getByRole("dialog", { name: second.name })).toBeVisible();
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByRole("button", { name: `Actions for ${first.name}` })).toHaveAttribute(
+        "aria-disabled",
+        "false",
+      );
+    });
+
+    it("keeps the latest genuine read failure retryable without falling back to an older successful read", async () => {
+      const user = userEvent.setup();
+      const slow = deferred<typeof first>();
+      vi.mocked(api.listSkillResources).mockResolvedValue([first, second]);
+      vi.mocked(api.readSkillResource)
+        .mockReturnValueOnce(slow.promise)
+        .mockRejectedValueOnce(new Error("B is unavailable"))
+        .mockResolvedValueOnce(second);
+      renderSettings();
+      await selectCategory(user, "Skills");
+      await openSkillEditor(user, first.name);
+      await openSkillEditor(user, second.name);
+      expect(await screen.findByRole("alert")).toHaveTextContent("B is unavailable");
+      await act(async () => slow.resolve(first));
+      expect(screen.queryByRole("dialog", { name: first.name })).toBeNull();
+      const alert = screen.getByRole("alert");
+      expect(alert.closest("[data-skill-name]")).toHaveAttribute("data-skill-name", second.name);
+      await user.click(within(alert).getByRole("button", { name: "Retry" }));
+      expect(await screen.findByRole("dialog", { name: second.name })).toBeVisible();
+      expect(vi.mocked(api.readSkillResource).mock.calls.map(([name]) => name)).toEqual([
+        first.name,
+        second.name,
+        second.name,
+      ]);
+    });
+
+    it.each(["category", "mobile index", "responsive index", "close", "config", "unmount"] as const)(
+      "synchronously revokes the read on %s before a late response can open an editor",
+      async (action) => {
+        if (action === "mobile index") vi.stubGlobal("innerWidth", 390);
+        const user = userEvent.setup();
+        const slow = deferred<typeof first>();
+        vi.mocked(api.listSkillResources).mockResolvedValue([first]);
+        vi.mocked(api.readSkillResource).mockReturnValue(slow.promise);
+        const onClose = vi.fn();
+        const onConfig = vi.fn();
+        // Keep the component mounted after exit callbacks: route teardown may
+        // finish later, so callback admission itself must revoke the read.
+        const view = renderSettings(onConfig, onClose);
+        if (action === "mobile index") await user.click(screen.getByRole("button", { name: "Skills" }));
+        else await selectCategory(user, "Skills");
+        await openSkillEditor(user, first.name);
+        const signal = vi.mocked(api.readSkillResource).mock.calls[0]?.[1];
+        let abortedInsideAction = false;
+        act(() => {
+          if (action === "category") fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
+          else if (action === "mobile index") fireEvent.click(screen.getByRole("button", { name: "Back to settings" }));
+          else if (action === "responsive index") {
+            vi.stubGlobal("innerWidth", 390);
+            fireEvent(window, new Event("resize"));
+          } else if (action === "close") fireEvent.click(screen.getByRole("button", { name: "Close" }));
+          else if (action === "config") fireEvent.click(screen.getByRole("button", { name: /open config browser/i }));
+          else view.unmount();
+          // This observation runs inside the action, before its outer React
+          // commit/effect flush. An effect-only cancellation is too late.
+          abortedInsideAction = signal?.aborted === true;
+        });
+        await act(async () => slow.resolve(first));
+        expect(screen.queryByRole("dialog", { name: first.name })).toBeNull();
+        expect(abortedInsideAction).toBe(true);
+        if (action === "category") expect(screen.getByRole("heading", { name: "Tools" })).toBeVisible();
+        if (action === "close") expect(onClose).toHaveBeenCalledOnce();
+        if (action === "config") expect(onConfig).toHaveBeenCalledOnce();
+      },
+    );
+
+    it("silently settles an owned native abort and lets the card be selected again after returning", async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.listSkillResources).mockResolvedValue([first]);
+      vi.mocked(api.readSkillResource)
+        .mockImplementationOnce(
+          (_name, signal) =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener("abort", () => reject(new DOMException("Read cancelled", "AbortError")), {
+                once: true,
+              });
+            }),
+        )
+        .mockResolvedValueOnce(first);
+      renderSettings();
+      await selectCategory(user, "Skills");
+      await openSkillEditor(user, first.name);
+      await selectCategory(user, "Tools");
+      await selectCategory(user, "Skills");
+      expect(screen.queryByRole("alert")).toBeNull();
+      const trigger = screen.getByRole("button", { name: `Actions for ${first.name}` });
+      expect(trigger).toHaveAttribute("aria-disabled", "false");
+      await openSkillEditor(user, first.name);
+      expect(await screen.findByRole("dialog", { name: first.name })).toBeVisible();
+    });
+  });
+
   it("renders the Network panel from the desktop category rail", async () => {
     const user = userEvent.setup();
     renderSettings();
@@ -1838,17 +2240,17 @@ describe("SettingsModal", () => {
     });
 
     const view = renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     await user.selectOptions(scope, "/papers/project-a");
     expect(await screen.findByText("missing-1")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Edit skill skill-1" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Actions for skill-1" })).toBeVisible();
 
     generation = 2;
     view.rerender(settingsElement(undefined, undefined, 2));
 
     expect(await screen.findByText("missing-2")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Edit skill skill-2" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Actions for skill-2" })).toBeVisible();
     expect(scope).toHaveValue("/papers/project-a");
 
     generation = 3;
@@ -1862,13 +2264,13 @@ describe("SettingsModal", () => {
     expect(screen.getByRole("button", { name: "Configure reviewer-3" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Configure reviewer-2" })).toBeNull();
 
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     generation = 4;
     view.rerender(settingsElement(undefined, undefined, 4));
     generation = 5;
     view.rerender(settingsElement(undefined, undefined, 5));
     expect(await screen.findByText("missing-5")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Edit skill skill-5" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Actions for skill-5" })).toBeVisible();
 
     await act(async () => {
       staleResources.resolve(resources(4));
@@ -1878,15 +2280,15 @@ describe("SettingsModal", () => {
     expect(scope).toHaveValue("/papers/project-a");
     expect(screen.getByText("missing-5")).toBeVisible();
     expect(screen.queryByText("missing-4")).toBeNull();
-    expect(screen.getByRole("button", { name: "Edit skill skill-5" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Edit skill skill-4" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Actions for skill-5" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Actions for skill-4" })).toBeNull();
   });
 
   it("reports only the selected diagnostic project and clears the interest on reset and unmount", async () => {
     const user = userEvent.setup();
     const onProjectInterestChange = vi.fn();
     const view = render(settingsElement(undefined, undefined, 1, null, onProjectInterestChange));
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
 
     await user.selectOptions(scope, "/papers/project-a");
@@ -1906,7 +2308,7 @@ describe("SettingsModal", () => {
     const synchronization = deferred<Awaited<ReturnType<typeof api.refreshConfigurationResources>>>();
     vi.mocked(api.refreshConfigurationResources).mockReturnValue(synchronization.promise);
     renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     await user.selectOptions(scope, "/papers/project-a");
     await selectCategory(user, "Agents");
@@ -1944,14 +2346,14 @@ describe("SettingsModal", () => {
         : ([] as never),
     );
 
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const scope = screen.getByRole("combobox", { name: "Skill diagnostic scope" });
     await user.selectOptions(scope, "/papers/project-a");
     await selectCategory(user, "Agents");
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     expect(api.refreshConfigurationResources).toHaveBeenLastCalledWith({ projectCwds: ["/papers/project-a"] });
 
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     await user.selectOptions(scope, "/papers/project-b");
     expect(await screen.findByText("project-b-current")).toBeVisible();
     await act(async () => {
@@ -2114,8 +2516,8 @@ describe("SettingsModal", () => {
   it("copies a bundled skill when its editor is opened and saves its Markdown", async () => {
     const user = userEvent.setup();
     renderSettings();
-    await selectCategory(user, "Skills and tools");
-    await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
+    await selectCategory(user, "Skills");
+    await openSkillEditor(user, "paper-search");
     const dialog = await screen.findByRole("dialog", { name: "paper-search" });
     const editor = within(dialog).getByRole("textbox", { name: /skill markdown/i });
     expect(editor).toBeVisible();
@@ -2134,14 +2536,14 @@ describe("SettingsModal", () => {
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["before-save"] }] as never)
       .mockResolvedValueOnce([{ name: "search", description: "Searches", missingSkills: ["after-save"] }] as never);
     renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     expect(await screen.findByText("before-save")).toBeVisible();
 
     await openAgentConfig(user, "Search");
     await user.click(screen.getByRole("button", { name: "Edit Search" }));
     await user.click(screen.getByRole("button", { name: /save agent/i }));
 
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     expect(await screen.findByText("after-save")).toBeVisible();
     expect(screen.queryByText("before-save")).toBeNull();
     expect(api.listAgents).toHaveBeenLastCalledWith(undefined);
@@ -2160,12 +2562,12 @@ describe("SettingsModal", () => {
         { name: "writing", description: "Writes", missingSkills: ["after-skill-save"] },
       ] as never);
     renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     await user.selectOptions(scope, "/papers/project-a");
     expect(await screen.findByText("before-skill-save")).toBeVisible();
 
-    await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
+    await openSkillEditor(user, "paper-search");
     await user.click(screen.getByRole("button", { name: /save skill/i }));
 
     expect(await screen.findByText("after-skill-save")).toBeVisible();
@@ -2185,10 +2587,10 @@ describe("SettingsModal", () => {
         { name: "writing", description: "Writes", missingSkills: ["fresh-after-save"] },
       ] as never);
     renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     await user.selectOptions(scope, "/papers/project-a");
-    await user.click(await screen.findByRole("button", { name: /edit skill.*paper-search/i }));
+    await openSkillEditor(user, "paper-search");
     await user.click(screen.getByRole("button", { name: /save skill/i }));
     expect(await screen.findByText("fresh-after-save")).toBeVisible();
 
@@ -2208,7 +2610,7 @@ describe("SettingsModal", () => {
     ] as never);
 
     renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
 
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     expect(scope).toHaveValue("global");
@@ -2227,7 +2629,7 @@ describe("SettingsModal", () => {
       .mockResolvedValueOnce([{ name: "writing", description: "Writes", missingSkills: ["project-missing"] }] as never);
 
     renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     expect(screen.getByText("global-missing")).toBeVisible();
 
@@ -2237,8 +2639,8 @@ describe("SettingsModal", () => {
     expect(await screen.findByText("project-missing")).toBeVisible();
     expect(screen.queryByText("global-missing")).toBeNull();
     expect(api.listSkillResources).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Edit skill project-missing" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Actions for paper-search" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Actions for project-missing" })).toBeNull();
   });
 
   it("keeps the latest diagnostic scope when an earlier request resolves last", async () => {
@@ -2253,7 +2655,7 @@ describe("SettingsModal", () => {
       .mockReturnValueOnce(projectB.promise);
 
     renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     await user.selectOptions(scope, "/papers/project-a");
     await user.selectOptions(scope, "/papers/project-b");
@@ -2286,7 +2688,7 @@ describe("SettingsModal", () => {
       ] as never);
 
     renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const scope = await screen.findByRole("combobox", { name: "Skill diagnostic scope" });
     expect(await screen.findByText("global-missing")).toBeVisible();
 
@@ -2307,9 +2709,9 @@ describe("SettingsModal", () => {
     renderSettings();
     await waitFor(() => expect(api.listConfigProjects).toHaveBeenCalled());
     expect(screen.queryByRole("alert")).toBeNull();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
 
-    expect(await screen.findByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Actions for paper-search" })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("project discovery failed");
 
     await selectCategory(user, "Appearance and language");
@@ -2329,13 +2731,13 @@ describe("SettingsModal", () => {
         },
       ] as never);
     renderSettings();
-    await selectCategory(user, "Skills and tools");
+    await selectCategory(user, "Skills");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("resource discovery failed");
 
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
 
-    expect(await screen.findByRole("button", { name: "Edit skill paper-search" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Actions for paper-search" })).toBeVisible();
     await waitFor(() => expect(screen.queryByText("resource discovery failed")).toBeNull());
     expect(api.listSkillResources).toHaveBeenCalledTimes(2);
     expect(api.listConfigProjects).toHaveBeenCalledTimes(2);
@@ -2367,9 +2769,12 @@ describe("SettingsModal", () => {
     ] as never);
     renderSettings();
 
-    await selectCategory(user, "Skills and tools");
-    expect(screen.getByRole("heading", { name: "Tools" })).toBeTruthy();
+    await selectCategory(user, "Skills");
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Tools" })).toBeNull();
+    await selectCategory(user, "Tools");
+    expect(screen.getByRole("heading", { name: "Tools" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Skills" })).toBeNull();
     expect(screen.getAllByText("read")).toHaveLength(1);
 
     await selectCategory(user, "Agents");

@@ -5,11 +5,12 @@ import { MarkdownEditorModal } from "./MarkdownEditorModal";
 export interface SkillResourceEditorProps {
   resource: SkillResourceDto;
   busy?: boolean;
+  error?: string | null;
   onSave: (content: string) => void | Promise<void>;
   onClose: () => void;
 }
 
-export function SkillResourceEditor({ resource, busy = false, onSave, onClose }: SkillResourceEditorProps) {
+export function SkillResourceEditor({ resource, busy = false, error, onSave, onClose }: SkillResourceEditorProps) {
   const { t } = useI18n();
   return (
     <MarkdownEditorModal
@@ -18,6 +19,7 @@ export function SkillResourceEditor({ resource, busy = false, onSave, onClose }:
       content={resource.content ?? ""}
       saveLabel={t("settings.agents.saveSkill")}
       busy={busy}
+      error={error}
       onSave={onSave}
       onClose={onClose}
       editorLabel={t("settings.agents.skillMarkdown")}

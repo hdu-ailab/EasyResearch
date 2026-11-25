@@ -13,12 +13,14 @@ import type { AgentDto, AgentResourceDto, SkillResourceDto } from "../../../../w
 import { RESEARCH_ASSISTANT_AGENT } from "../../agent-identity";
 import {
   createAgentResource,
+  deleteSkillResource,
   listAgentResources,
   listAgents,
   listConfigProjects,
   listModels,
   listSkillResources,
   patchAgent,
+  patchSkillResource,
   readAgentResource,
   readSkillResource,
   refreshConfigurationResources,
@@ -47,8 +49,10 @@ import {
   GeneralSettingsPanel,
   type MissingSkillDiagnostic,
   ProviderSettingsPanel,
-  ResourceSettingsPanel,
+  ToolsSettingsPanel,
 } from "./SettingsPanels";
+import { SkillMarketplacePanel } from "./SkillMarketplacePanel";
+import { SkillsSettingsPanel } from "./SkillsSettingsPanel";
 
 export interface SettingsModalProps {
   initialMarketplace?: boolean;
@@ -158,7 +162,7 @@ export function SettingsModal({
   const focusMobileIndex = useRef(false);
   const focusDesktopTab = useRef(false);
   const initialFocusSet = useRef(false);
-  const [active, setActive] = useState<SettingsCategory>(initialMarketplace ? "resources" : "general");
+  const [active, setActive] = useState<SettingsCategory>(initialMarketplace ? "marketplace" : "general");
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 820);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(initialMarketplace);
   const [agents, setAgents] = useState<AgentDto[]>([]);
@@ -170,6 +174,8 @@ export function SettingsModal({
   const [manualRefreshBusy, setManualRefreshBusy] = useState(false);
   const [, setResourceAgents] = useState<AgentResourceDto[]>([]);
   const [skills, setSkills] = useState<SkillResourceDto[]>([]);
+  const [resourcesRevision, setResourcesRevision] = useState(0);
+  const [skillDeletion, setSkillDeletion] = useState<{ id: string; revision: number } | null>(null);
   const [diagnosticScope, setDiagnosticScope] = useState("global");
   const [diagnosticAgents, setDiagnosticAgents] = useState<AgentDto[]>([]);
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
@@ -180,9 +186,12 @@ export function SettingsModal({
   const diagnosticRequest = useRef(0);
   const configurationRequest = useRef(0);
   const resourceRequest = useRef(0);
+  const resourceController = useRef<AbortController | null>(null);
   const manualRefreshRequest = useRef(0);
   const [agentEditor, setAgentEditor] = useState<AgentResourceDto | null>(null);
   const [skillEditor, setSkillEditor] = useState<SkillResourceDto | null>(null);
+  const [skillEditorError, setSkillEditorError] = useState<string | null>(null);
+  const skillEditorRead = useRef<AbortController | null>(null);
   const [detailsAgent, setDetailsAgent] = useState<AgentDto | null>(null);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [newAgentName, setNewAgentName] = useState("");
@@ -190,6 +199,13 @@ export function SettingsModal({
   const [pendingExit, setPendingExit] = useState<SettingsExitAction | null>(null);
   const networkDirtyRef = useRef(false);
   const networkSavingRef = useRef(false);
+  const cancelSkillEditorRead = useCallback(() => {
+    const controller = skillEditorRead.current;
+    // Revoke publication before abort can settle the transport.
+    skillEditorRead.current = null;
+    controller?.abort();
+  }, []);
+  useLayoutEffect(() => cancelSkillEditorRead, [cancelSkillEditorRead]);
   const onNetworkDirtyChange = useCallback((dirty: boolean) => {
     networkDirtyRef.current = dirty;
   }, []);
@@ -206,6 +222,7 @@ export function SettingsModal({
   );
   const requestExit = useCallback(
     (action: SettingsExitAction) => {
+      cancelSkillEditorRead();
       if (requestModalCloseAbove(dialogRef.current)) return;
       if (networkSavingRef.current) return;
       if (networkDirtyRef.current) {
@@ -214,7 +231,7 @@ export function SettingsModal({
       }
       performExit(action);
     },
-    [performExit],
+    [cancelSkillEditorRead, performExit],
   );
   const requestClose = useCallback(() => requestExit("close"), [requestExit]);
   const requestConfig = useCallback(() => requestExit("config"), [requestExit]);
@@ -261,12 +278,21 @@ export function SettingsModal({
 
   const refreshResources = useCallback(async () => {
     const request = ++resourceRequest.current;
+    resourceController.current?.abort();
+    const controller = new AbortController();
+    resourceController.current = controller;
     setResourcesLoading(true);
-    const [nextSkills, nextProjects] = await Promise.allSettled([listSkillResources(), listConfigProjects()]);
+    const [nextSkills, nextProjects] = await Promise.allSettled([
+      listSkillResources(controller.signal).then((rows) => {
+        if (request !== resourceRequest.current) return;
+        setSkills(rows);
+        setResourcesRevision(request);
+      }),
+      listConfigProjects().then((result) => {
+        if (request === resourceRequest.current) setProjects(result.projects);
+      }),
+    ]);
     if (request !== resourceRequest.current) return;
-
-    if (nextSkills.status === "fulfilled") setSkills(nextSkills.value);
-    if (nextProjects.status === "fulfilled") setProjects(nextProjects.value.projects);
     const failure =
       nextSkills.status === "rejected"
         ? nextSkills.reason
@@ -302,6 +328,7 @@ export function SettingsModal({
     void refreshResources();
     return () => {
       resourceRequest.current += 1;
+      resourceController.current?.abort();
     };
   }, [configurationGeneration, refreshResources]);
 
@@ -333,6 +360,7 @@ export function SettingsModal({
       wasMobile = mobile;
       setIsMobile(mobile);
       if (mobile) {
+        cancelSkillEditorRead();
         restoreMobileCategory.current = null;
         focusMobileIndex.current = true;
         setMobileDetailOpen(false);
@@ -342,7 +370,7 @@ export function SettingsModal({
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, []);
+  }, [cancelSkillEditorRead]);
 
   useEffect(
     () =>
@@ -464,25 +492,53 @@ export function SettingsModal({
   };
 
   const openSkillEditor = async (name: string) => {
+    cancelSkillEditorRead();
+    const controller = new AbortController();
+    skillEditorRead.current = controller;
+    setCategoryError("skills", null);
+    setSkillEditorError(null);
     try {
-      setSkillEditor(await readSkillResource(name));
+      const resource = await readSkillResource(name, controller.signal);
+      if (skillEditorRead.current !== controller || controller.signal.aborted) return;
+      setSkillEditor(resource);
     } catch (cause) {
-      setCategoryError("resources", cause);
+      // Superseded and deactivated reads are expected cancellation, including
+      // transports that settle after abort. Current failures remain card-owned.
+      if (skillEditorRead.current === controller && !controller.signal.aborted) throw cause;
+    } finally {
+      if (skillEditorRead.current === controller) skillEditorRead.current = null;
     }
   };
 
   const saveSkill = async (content: string) => {
     if (!skillEditor) return;
     setBusy(true);
+    setSkillEditorError(null);
     try {
       await writeSkillResource(skillEditor.name, content);
       await Promise.all([refreshResources(), refreshDiagnostics(diagnosticScope)]);
       setSkillEditor(null);
     } catch (cause) {
-      setCategoryError("resources", cause);
+      setSkillEditorError(messageFrom(cause));
     } finally {
       setBusy(false);
     }
+  };
+
+  const toggleSkill = async (skill: SkillResourceDto) => {
+    await patchSkillResource(skill.name, skill.enabled === false);
+    await Promise.all([refreshResources(), refreshDiagnostics(diagnosticScope)]);
+  };
+
+  const deleteSkill = async (skill: SkillResourceDto) => {
+    await deleteSkillResource(skill.name);
+    // The deletion result is authoritative for this name. Invalidate pending
+    // list reads before clearing the exact marketplace check.
+    resourceController.current?.abort();
+    const revision = ++resourceRequest.current;
+    setSkills((current) => current.filter((item) => item.name !== skill.name));
+    if (skill.marketplaceId) setSkillDeletion({ id: skill.marketplaceId, revision });
+    await Promise.all([refreshResources(), refreshDiagnostics(diagnosticScope)]);
   };
 
   const selectDiagnosticScope = (scope: string) => {
@@ -557,6 +613,7 @@ export function SettingsModal({
   }));
 
   const selectCategory = (category: SettingsCategory) => {
+    if (category !== "skills") cancelSkillEditorRead();
     setActive(category);
     if (isMobile) setMobileDetailOpen(true);
   };
@@ -595,21 +652,33 @@ export function SettingsModal({
         onShowDetails={setDetailsAgent}
       />
     ),
-    resources: (
-      <ResourceSettingsPanel
-        active={active === "resources" && (!isMobile || mobileDetailOpen)}
-        initialMarketplace={initialMarketplace}
-        onInstalled={() => void refreshResources()}
-        tools={toolInventory}
+    skills: (
+      <SkillsSettingsPanel
+        active={active === "skills" && (!isMobile || mobileDetailOpen)}
         skills={skills}
         projects={projects}
         diagnosticScope={diagnosticScope}
         diagnostics={diagnostics}
         diagnosticError={diagnosticError}
         onScopeChange={selectDiagnosticScope}
-        onEditSkill={(name) => void openSkillEditor(name)}
+        onEdit={openSkillEditor}
+        onToggle={toggleSkill}
+        onDelete={deleteSkill}
       />
     ),
+    marketplace: (
+      <SkillMarketplacePanel
+        active={active === "marketplace" && (!isMobile || mobileDetailOpen)}
+        skills={skills}
+        resourcesRevision={resourcesRevision}
+        deletion={skillDeletion}
+        onInstalled={() => {
+          void refreshResources();
+          void refreshDiagnostics(diagnosticScope);
+        }}
+      />
+    ),
+    tools: <ToolsSettingsPanel tools={toolInventory} />,
   };
   const panelCategories: readonly SettingsCategory[] = [
     "general",
@@ -617,10 +686,13 @@ export function SettingsModal({
     "conversation",
     "providers",
     "agents",
-    "resources",
+    "skills",
+    "marketplace",
+    "tools",
   ];
   const panelLayers = panelCategories.map((category) => {
     const visible = category === active && (!isMobile || mobileDetailOpen);
+    const resources = category === "skills" || category === "marketplace";
     return (
       <main
         key={category}
@@ -628,12 +700,10 @@ export function SettingsModal({
         role={isMobile ? undefined : "tabpanel"}
         aria-labelledby={isMobile ? undefined : `settings-tab-${category}`}
         hidden={!visible}
-        data-resources={category === "resources"}
+        data-resources={resources}
         className="er-settings-panel min-h-0 flex-1 overflow-y-auto bg-v2-background-bg-base p-4"
       >
-        <div
-          className={`mx-auto flex w-full flex-col gap-3 ${category === "resources" ? "max-w-none" : "max-w-[820px]"}`}
-        >
+        <div className={`mx-auto flex w-full flex-col gap-3 ${resources ? "max-w-none" : "max-w-[820px]"}`}>
           {category === active && configurationError && (
             <div
               className="break-words rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error"
@@ -658,7 +728,7 @@ export function SettingsModal({
               {categoryErrors[category]}
             </p>
           )}
-          {category === "resources" && resourceLoadError && (
+          {resources && resourceLoadError && (
             <div
               className="flex items-center gap-2 rounded-md border border-v2-status-error/30 bg-v2-status-error/5 px-3 py-2 text-[13px] text-v2-status-error"
               role="alert"
@@ -713,6 +783,7 @@ export function SettingsModal({
       {skillEditor && (
         <SkillResourceEditor
           resource={skillEditor}
+          error={skillEditorError}
           busy={busy || manualRefreshBusy}
           onSave={(content) => void saveSkill(content)}
           onClose={() => setSkillEditor(null)}
@@ -802,7 +873,7 @@ export function SettingsModal({
 
   return (
     <SettingsLayerFrame
-      resources={active === "resources"}
+      resources={active === "skills" || active === "marketplace"}
       dialogRef={dialogRef}
       layer={layer}
       onBackdrop={onBackdrop}
@@ -813,6 +884,7 @@ export function SettingsModal({
           <button
             type="button"
             onClick={() => {
+              cancelSkillEditorRead();
               restoreMobileCategory.current = active;
               setMobileDetailOpen(false);
             }}

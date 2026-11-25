@@ -1,12 +1,16 @@
-import { Check, Download, Plus, RefreshCw, Search, Sparkles } from "lucide-react";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { Check, Download, LoaderCircle, Plus, RefreshCw, Search, Sparkles } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { SkillResourceDto } from "../../../../web/contracts";
-import type { MarketSkillDto, SkillMarketView } from "../../../../web/skill-marketplace-contracts";
+import type {
+  MarketSkillDto,
+  SkillMarketDetailDto,
+  SkillMarketView,
+} from "../../../../web/skill-marketplace-contracts";
 import { skillMarketAuthorUrl } from "../../../../web/skill-marketplace-contracts";
-import { getSkillMarket } from "../../api/skill-marketplace";
+import { getSkillMarket, getSkillMarketDetail, installMarketSkill } from "../../api/skill-marketplace";
 import { useI18n } from "../../i18n/useI18n";
 import { SkillMarketDetailDialog } from "./SkillMarketDetailDialog";
-import { useMarketSummaries } from "./useMarketSummaries";
+import { SkillMarketRecovery } from "./SkillMarketRecovery";
 import "./skill-marketplace.css";
 
 const topics = [
@@ -23,43 +27,23 @@ function SkillCard({
   skill,
   installed,
   onSelect,
-  active,
-  summary,
-  requestSummary,
+  installing,
+  error,
+  onInstall,
 }: {
   skill: MarketSkillDto;
   installed: boolean;
   onSelect(): void;
-  active: boolean;
-  summary?: string;
-  requestSummary(id: string): void;
+  installing: boolean;
+  error?: string;
+  onInstall(): void;
 }) {
-  const ref = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (!active || skill.description || !ref.current) return;
-    if (typeof IntersectionObserver === "undefined") {
-      const bounds = ref.current.getBoundingClientRect();
-      if (bounds.height > 0 && bounds.bottom >= 0 && bounds.top <= window.innerHeight) requestSummary(skill.id);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          requestSummary(skill.id);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "120px" },
-    );
-    observer.observe(ref.current);
-    return () => observer.disconnect();
-  }, [active, skill.id, skill.description, requestSummary]);
   const { t, language } = useI18n();
   const count = new Intl.NumberFormat(language, { notation: "compact", maximumFractionDigits: 1 }).format(
     skill.installs,
   );
   return (
-    <article ref={ref} className="er-market-card">
+    <article className="er-market-card" data-marketplace-id={skill.id}>
       <header>
         <h4>
           <button
@@ -78,14 +62,23 @@ function SkillCard({
       <button
         type="button"
         className="er-market-add"
-        aria-label={t(installed ? "skillMarket.viewInstalled" : "skillMarket.add").replace("{name}", skill.name)}
-        title={t(installed ? "skillMarket.viewInstalled" : "skillMarket.add").replace("{name}", skill.name)}
-        onClick={onSelect}
+        aria-label={t(
+          installing ? "skillMarket.installing" : installed ? "skillMarket.viewInstalled" : "skillMarket.add",
+        ).replace("{name}", skill.name)}
+        aria-busy={installing}
+        disabled={installing}
+        onClick={installed ? onSelect : onInstall}
       >
-        {installed ? <Check size={16} aria-hidden /> : <Plus size={16} aria-hidden />}
+        {installing ? (
+          <LoaderCircle size={16} aria-hidden />
+        ) : installed ? (
+          <Check size={16} aria-hidden />
+        ) : (
+          <Plus size={16} aria-hidden />
+        )}
       </button>
-      <p className="er-market-summary" title={skill.description || summary || undefined}>
-        {skill.description || summary || ""}
+      <p className="er-market-summary" title={skill.description || undefined}>
+        {skill.description || ""}
       </p>
       <footer>
         <span>
@@ -104,6 +97,17 @@ function SkillCard({
           </span>
         ) : null}
       </footer>
+      {error && (
+        <div className="er-market-card-recovery">
+          <div className="er-market-error" role="alert">
+            <span>{error}</span>
+            <button type="button" onClick={onInstall} disabled={installing}>
+              {t("dialog.retry")}
+            </button>
+          </div>
+          <SkillMarketRecovery skill={skill} />
+        </div>
+      )}
     </article>
   );
 }
@@ -112,19 +116,23 @@ export function SkillMarketplacePanel({
   active,
   skills,
   onInstalled,
-  showMarketplace = true,
-  title,
-  controls,
+  resourcesRevision = 0,
+  deletion,
 }: {
   active: boolean;
   skills: readonly SkillResourceDto[];
   onInstalled(): void;
-  showMarketplace?: boolean;
-  title?: ReactNode;
-  controls?: ReactNode;
+  /** Only advances for a complete accepted list. */
+  resourcesRevision?: number;
+  deletion?: { id: string; revision: number } | null;
 }) {
   const { t } = useI18n();
-  const { summaries, requestSummary } = useMarketSummaries(active);
+  const mounted = useRef(true);
+  const latest = useRef({ resourcesRevision, onInstalled });
+  latest.current = { resourcesRevision, onInstalled };
+  const busy = useRef(new Set<string>());
+  const [installing, setInstalling] = useState<ReadonlySet<string>>(new Set());
+  const [installErrors, setInstallErrors] = useState<Record<string, string | undefined>>({});
   const searchId = useId();
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
@@ -138,16 +146,77 @@ export function SkillMarketplacePanel({
   const [retry, setRetry] = useState(0);
   const [selected, setSelected] = useState<MarketSkillDto | null>(null);
   const [notice, setNotice] = useState("");
-  const [added, setAdded] = useState<string[]>([]);
+  const [added, setAdded] = useState<Record<string, number>>({});
   const installed = new Set([
     ...skills.flatMap((skill) => (skill.marketplaceId ? [skill.marketplaceId] : [])),
-    ...added,
+    ...Object.keys(added),
   ]);
 
   useEffect(() => {
-    void skills;
-    setAdded([]);
-  }, [skills]);
+    // A list read admitted before the installation acknowledgement is not
+    // evidence that the newly published Skill disappeared.
+    setAdded((current) => {
+      const entries = Object.entries(current).filter(([, revision]) => revision >= resourcesRevision);
+      return entries.length === Object.keys(current).length ? current : Object.fromEntries(entries);
+    });
+  }, [resourcesRevision]);
+
+  useEffect(() => {
+    if (!deletion) return;
+    setAdded((current) => {
+      if (!(deletion.id in current)) return current;
+      const next = { ...current };
+      delete next[deletion.id];
+      return next;
+    });
+  }, [deletion]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const install = async (skill: MarketSkillDto, preview?: SkillMarketDetailDto) => {
+    if (busy.current.has(skill.id) || installed.has(skill.id)) return;
+    busy.current.add(skill.id);
+    setInstalling(new Set(busy.current));
+    setInstallErrors((current) => ({ ...current, [skill.id]: undefined }));
+    try {
+      if (!skill.supported) {
+        throw new Error(
+          t(
+            skill.unsupportedReason === "identity"
+              ? "skillMarket.unsupportedIdentity"
+              : "skillMarket.unsupportedSource",
+          ),
+        );
+      }
+      // Direct installation resolves exactly one immutable snapshot. Public-page
+      // explanation reads belong exclusively to an explicitly opened preview.
+      const detail = preview ?? (await getSkillMarketDetail(skill.id));
+      if (detail.id !== skill.id) throw new Error(t("skillMarket.invalidResponse"));
+      if (detail.state === "conflict") throw new Error(t("skillMarket.conflict"));
+      const result = await installMarketSkill({ id: skill.id, commit: detail.commit });
+      if (result.id !== skill.id) throw new Error(t("skillMarket.invalidResponse"));
+      if (!mounted.current) return;
+      const revision = latest.current.resourcesRevision;
+      setAdded((current) => ({ ...current, [skill.id]: revision }));
+      setNotice(t("skillMarket.installedNotice").replace("{name}", result.name));
+      // Refence old reads synchronously before they can erase this acknowledgement.
+      latest.current.onInstalled();
+    } catch (cause) {
+      if (mounted.current)
+        setInstallErrors((current) => ({
+          ...current,
+          [skill.id]: cause instanceof Error ? cause.message : String(cause),
+        }));
+    } finally {
+      busy.current.delete(skill.id);
+      if (mounted.current) setInstalling(new Set(busy.current));
+    }
+  };
 
   useEffect(() => {
     if (!active) return;
@@ -179,51 +248,46 @@ export function SkillMarketplacePanel({
         skill={skill}
         installed={installed.has(skill.id)}
         onSelect={() => setSelected(skill)}
-        active={active}
-        summary={summaries[skill.id]}
-        requestSummary={requestSummary}
+        installing={installing.has(skill.id)}
+        error={installErrors[skill.id]}
+        onInstall={() => void install(skill)}
       />
     ));
 
   return (
     <div className="er-market">
       <div className="er-market-toolbar">
-        {showMarketplace ? (
-          <form
-            className="er-market-search"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const next = input.trim();
-              if (next.length === 1) {
-                setError(t("skillMarket.shortQuery"));
-                return;
-              }
-              setTopic("all");
-              setQuery(next);
-              if (query === next) setRetry((value) => value + 1);
-            }}
-          >
-            <label htmlFor={searchId} className="sr-only">
-              {t("skillMarket.search")}
-            </label>
-            <Search size={16} aria-hidden />
-            <input
-              id={searchId}
-              data-settings-panel-focus
-              type="search"
-              maxLength={160}
-              placeholder={t("skillMarket.search")}
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-            />
-            <button type="submit">{t("skillMarket.submit")}</button>
-          </form>
-        ) : (
-          title
-        )}
-        {controls}
+        <form
+          className="er-market-search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const next = input.trim();
+            if (next.length === 1) {
+              setError(t("skillMarket.shortQuery"));
+              return;
+            }
+            setTopic("all");
+            setQuery(next);
+            if (query === next) setRetry((value) => value + 1);
+          }}
+        >
+          <label htmlFor={searchId} className="sr-only">
+            {t("skillMarket.search")}
+          </label>
+          <Search size={16} aria-hidden />
+          <input
+            id={searchId}
+            data-settings-panel-focus
+            type="search"
+            maxLength={160}
+            placeholder={t("skillMarket.search")}
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+          />
+          <button type="submit">{t("skillMarket.submit")}</button>
+        </form>
       </div>
-      <div hidden={!showMarketplace} className="er-market-content">
+      <div className="er-market-content">
         <h2 className="sr-only">{t("skillMarket.title")}</h2>
         {popular.length > 0 && !query && (
           <section>
@@ -299,11 +363,10 @@ export function SkillMarketplacePanel({
         <SkillMarketDetailDialog
           skill={selected}
           onClose={() => setSelected(null)}
-          onInstalled={(name) => {
-            setAdded((current) => [...current, selected.id]);
-            setNotice(t("skillMarket.installedNotice").replace("{name}", name));
-            onInstalled();
-          }}
+          installed={installed.has(selected.id)}
+          installing={installing.has(selected.id)}
+          installError={installErrors[selected.id]}
+          onInstall={(detail) => void install(selected, detail)}
         />
       )}
     </div>

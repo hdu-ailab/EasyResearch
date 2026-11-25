@@ -7,7 +7,7 @@ import type {
   SkillMarketDetailDto,
 } from "../../../../web/skill-marketplace-contracts";
 import { skillMarketAuthorUrl } from "../../../../web/skill-marketplace-contracts";
-import { getSkillMarketDescription, getSkillMarketDetail, installMarketSkill } from "../../api/skill-marketplace";
+import { getSkillMarketDescription, getSkillMarketDetail } from "../../api/skill-marketplace";
 import { useModalLayer } from "../../hooks/useModalLayer";
 import { useI18n } from "../../i18n/useI18n";
 import { MarkdownBlock } from "../MarkdownBlock";
@@ -16,31 +16,28 @@ import { SkillMarketRecovery } from "./SkillMarketRecovery";
 export function SkillMarketDetailDialog({
   skill,
   onClose,
-  onInstalled,
+  installed,
+  installing,
+  installError,
+  onInstall,
 }: {
   skill: MarketSkillDto;
   onClose(): void;
-  onInstalled(name: string): void;
+  installed: boolean;
+  installing: boolean;
+  installError?: string;
+  onInstall(detail: SkillMarketDetailDto): void;
 }) {
   const { t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
-  const busy = useRef(false);
-  const mounted = useRef(true);
   const [detail, setDetail] = useState<SkillMarketDetailDto | null>(null);
   const [explanation, setExplanation] = useState<SkillMarketDescriptionDto | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [installing, setInstalling] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const close = () => {
-    if (!busy.current) onClose();
+    if (!installing) onClose();
   };
   const layer = useModalLayer(close, ref);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
   useEffect(() => {
     void attempt;
     const controller = new AbortController();
@@ -64,23 +61,6 @@ export function SkillMarketDetailDialog({
     return () => controller.abort();
   }, [skill.id, attempt]);
 
-  const install = async () => {
-    if (!detail || busy.current || detail.state !== "available") return;
-    busy.current = true;
-    setInstalling(true);
-    setError(null);
-    try {
-      const installed = await installMarketSkill({ id: detail.id, commit: detail.commit });
-      if (!mounted.current) return;
-      setDetail({ ...detail, state: "installed" });
-      onInstalled(installed.name);
-    } catch (cause) {
-      if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      busy.current = false;
-      if (mounted.current) setInstalling(false);
-    }
-  };
   return createPortal(
     <div className="er-market-detail-overlay" style={{ zIndex: layer.zIndex }}>
       <div ref={ref} role="dialog" {...layer.dialogProps} aria-label={skill.name} className="er-market-detail">
@@ -94,9 +74,9 @@ export function SkillMarketDetailDialog({
           </button>
         </header>
         <div className="er-market-detail-body">
-          {error && (
+          {(error || installError) && (
             <div role="alert" className="er-market-error">
-              <span>{error}</span>
+              <span>{installError || error}</span>
               {!detail && (
                 <button type="button" onClick={() => setAttempt((value) => value + 1)}>
                   {t("dialog.retry")}
@@ -105,7 +85,7 @@ export function SkillMarketDetailDialog({
             </div>
           )}
           {!detail && !error && <p role="status">{t("dialog.loading")}</p>}
-          {(error || detail?.state === "conflict") && <SkillMarketRecovery skill={skill} />}
+          {(error || installError || detail?.state === "conflict") && <SkillMarketRecovery skill={skill} />}
           {detail && (
             <>
               <p>{detail.description}</p>
@@ -171,16 +151,12 @@ export function SkillMarketDetailDialog({
           <button
             type="button"
             className="er-market-primary"
-            disabled={detail?.state !== "available" || installing}
-            onClick={() => void install()}
+            disabled={!detail || detail.state === "conflict" || installed || installing}
+            onClick={() => detail && onInstall(detail)}
           >
-            {detail?.state === "installed" && <Check size={15} aria-hidden />}
+            {installed && <Check size={15} aria-hidden />}
             {t(
-              installing
-                ? "skillMarket.installing"
-                : detail?.state === "installed"
-                  ? "skillMarket.installedState"
-                  : "skillMarket.install",
+              installing ? "skillMarket.installing" : installed ? "skillMarket.installedState" : "skillMarket.install",
             )}
           </button>
         </footer>

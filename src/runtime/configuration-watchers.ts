@@ -814,6 +814,7 @@ function isAllowedPath(scope: WatchScope, path: string, skillAllowed: SkillWatch
       if (
         path === anchor
         || path === configurationDir
+        || path === join(configurationDir, "settings.json")
         || path === skillsDir
         || skillAllowed(skillsDir, path)
       ) return true;

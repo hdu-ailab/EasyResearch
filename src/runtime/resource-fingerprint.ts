@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, readlinkSy
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import createIgnore from "ignore";
+import { isSkillResourceEnabled, readSkillResourceOverrides } from "./skill-resource-policy";
 
 export const MAX_SKILL_DEPTH = 16;
 export const MAX_SKILL_DESCRIPTORS = 4096;
@@ -24,8 +25,23 @@ export interface SkillScopeFingerprint {
 export interface AcceptedSkillDescriptor {
   name: string;
   relativePath: string;
+  enabled?: boolean;
   snapshotPath?: string;
   baseDir?: string;
+}
+
+export async function fingerprintProjectSkillResources(cwd: string, snapshotRoot?: string): Promise<SkillScopeFingerprint> {
+  const baseDir = join(cwd, ".easyresearch");
+  const overrides = readSkillResourceOverrides(join(baseDir, "settings.json"));
+  const fingerprint = await fingerprintSkillRoot(join(baseDir, "skills"), `project:${cwd}`, snapshotRoot);
+  return {
+    ...fingerprint,
+    value: createHash("sha256").update(fingerprint.value).update(JSON.stringify(overrides)).digest("hex"),
+    skillDescriptors: fingerprint.skillDescriptors.map((descriptor) => ({
+      ...descriptor,
+      enabled: isSkillResourceEnabled(join(baseDir, "skills", descriptor.relativePath), overrides, { baseDir }),
+    })),
+  };
 }
 
 export interface FingerprintResourceOptions {
@@ -37,6 +53,7 @@ export interface FingerprintResourceOptions {
 
 export interface SkillDescriptor {
   name: string;
+  enabled?: boolean;
   relativePath: string;
   path: string;
   skillPath: string;

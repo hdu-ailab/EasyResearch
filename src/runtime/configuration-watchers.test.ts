@@ -504,12 +504,18 @@ describe("real stable-anchor resource watching", () => {
       writeFileSync(join(paths.agentDir, "bundled", "agents", "bundled.md"), "inert", "utf8");
       writeFileSync(join(paths.agentDir, "bundled", "skills", "bundled", "SKILL.md"), "inert", "utf8");
       writeFileSync(join(paths.homeDir, "home-note.md"), "inert", "utf8");
-      writeFileSync(join(paths.project, ".easyresearch", "settings.json"), "{}", "utf8");
       writeFileSync(join(external, "SKILL.md"), "outside-two", "utf8");
       writeFileSync(join(globalSkills, ".hidden", "SKILL.md"), "hidden", "utf8");
       writeFileSync(join(globalSkills, "node_modules", "dependency", "SKILL.md"), "dependency", "utf8");
       writeFileSync(join(globalSkills, "retired.bak", "SKILL.md"), "retired", "utf8");
     });
+
+    await expectObserved(
+      state.changes,
+      () => writeFileSync(join(paths.project, ".easyresearch", "settings.json"), '{"skills":["-skills/example"]}', "utf8"),
+      (change) => change.skillsChanged === true && change.projectCwds?.includes(paths.project) === true,
+      "project Skill resource policy did not request synchronization",
+    );
 
     await expectObserved(
       state.changes,

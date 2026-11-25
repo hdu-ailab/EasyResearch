@@ -1,4 +1,5 @@
 export const skillMarketEn = {
+  "skillMarket.invalidResponse": "The source response changed. Retry the installation.",
   "skillMarket.unsupportedSource": "Manual source installation",
   "skillMarket.unsupportedIdentity": "Manual skill installation",
   "skillMarket.snapshot": "Content snapshot",
@@ -13,8 +14,6 @@ export const skillMarketEn = {
   "skillMarket.agentRequest":
     "Please install the skill identified by {identity} for EasyResearch.\nCatalog page: {url}\nVerify its actual source on that page and download the complete skill, including SKILL.md and supporting files, into the current runtime's global Skills directory. Use platform-appropriate commands; do not assume a fixed home path or another application's skill directory. Preserve existing same-name skills and report conflicts.\nCheck whether this skill requires other skills, tools, packages or authentication; report any missing requirements. Finally verify that EasyResearch discovers the skill and report its name and installation path.",
   "skillMarket.title": "Skill marketplace",
-  "skillMarket.installed": "Installed ({n})",
-  "skillMarket.browse": "Marketplace",
   "skillMarket.search": "Search skills",
   "skillMarket.submit": "Search",
   "skillMarket.popular": "Popular skills",
@@ -54,6 +53,7 @@ export const skillMarketEn = {
 } as const;
 
 export const skillMarketZh: Record<keyof typeof skillMarketEn, string> = {
+  "skillMarket.invalidResponse": "来源响应已变化，请重试安装。",
   "skillMarket.unsupportedSource": "此来源需手动安装",
   "skillMarket.unsupportedIdentity": "此技能需手动安装",
   "skillMarket.snapshot": "内容快照",
@@ -68,8 +68,6 @@ export const skillMarketZh: Record<keyof typeof skillMarketEn, string> = {
   "skillMarket.agentRequest":
     "请为 EasyResearch 安装标识为 {identity} 的技能。\n技能页面：{url}\n请先从该页面核验实际来源，下载完整技能目录（包含 SKILL.md 和附带文件），安装到当前运行时的全局 Skills 目录。使用适合当前系统的命令，不要假定固定的用户主目录或其他应用的技能目录。保留现有同名技能，遇到冲突请说明。\n检查该技能是否依赖其他技能、工具、软件包或认证，并说明尚缺的条件。最后验证 EasyResearch 能发现该技能，告知技能名称和安装路径。",
   "skillMarket.title": "技能市场",
-  "skillMarket.installed": "已安装（{n}）",
-  "skillMarket.browse": "技能市场",
   "skillMarket.search": "搜索技能",
   "skillMarket.submit": "搜索",
   "skillMarket.popular": "热门技能",

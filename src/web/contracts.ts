@@ -583,6 +583,9 @@ export type AgentConfigurationPatch = {
 
 export interface SkillResourceDto {
   name: string;
+  description?: string;
+  enabled?: boolean;
+  canDelete?: boolean;
   source: "bundled" | "global" | "project" | "home";
   path: string;
   skillPath: string;

@@ -26,7 +26,7 @@ function Harness({ active = true, modal = false }: { active?: boolean; modal?: b
       <button type="button">Before</button>
       <ViewActivityProvider visible={active} interactive={active}>
         <div data-testid="pane" hidden={!active}>
-          <FileActionMenu entry={entry} onRename={() => setRename(true)} onUpload={() => {}} />
+          <FileActionMenu entry={{ ...entry }} onRename={() => setRename(true)} onUpload={() => {}} />
           {rename && <FileRenameDialog cwd="/p" entry={entry} onClose={() => setRename(false)} onComplete={() => {}} />}
         </div>
       </ViewActivityProvider>
@@ -45,15 +45,44 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("FileActionMenu focus ownership", () => {
+  it("preserves its positioned menu through same-file metadata refresh and delayed ancestor, sibling and internal scroll", async () => {
+    const user = userEvent.setup();
+    const view = render(<Harness />);
+    const trigger = screen.getByRole("button", { name: "Actions for paper.md" });
+    const pane = screen.getByTestId("pane");
+    pane.scrollTop = 393;
+    vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(new DOMRect(991, 511, 32, 32));
+    await openMenu(user);
+    const menu = screen.getByRole("menu");
+    const position = menu.getAttribute("style");
+    view.rerender(<Harness />);
+    expect(screen.getByRole("menu")).toBe(menu);
+    const focus = vi.spyOn(trigger, "focus");
+    for (const scroller of [pane, screen.getByRole("button", { name: "After" }), menu]) {
+      fireEvent.scroll(scroller);
+      expect(screen.getByRole("menu")).toBe(menu);
+      expect(menu).toHaveAttribute("style", position);
+      expect(screen.getByRole("menuitem", { name: "Download" })).toHaveFocus();
+    }
+    expect(focus).not.toHaveBeenCalled();
+  });
+
   it.each(["scroll", "resize"])(
     "restores its keyboard position without scrolling after %s dismissal",
     async (event) => {
       const user = userEvent.setup();
       render(<Harness />);
+      let rect = new DOMRect(200, 300, 32, 32);
+      vi.spyOn(
+        screen.getByRole("button", { name: "Actions for paper.md" }),
+        "getBoundingClientRect",
+      ).mockImplementation(() => rect);
       const trigger = await openMenu(user);
       const focus = vi.spyOn(trigger, "focus");
-      if (event === "scroll") fireEvent.scroll(screen.getByTestId("pane"));
-      else fireEvent.resize(window);
+      if (event === "scroll") {
+        rect = new DOMRect(200, 250, 32, 32);
+        fireEvent.scroll(screen.getByTestId("pane"));
+      } else fireEvent.resize(window);
       expect(screen.queryByRole("menu")).toBeNull();
       expect(trigger).toHaveFocus();
       expect(focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
@@ -62,18 +91,72 @@ describe("FileActionMenu focus ownership", () => {
     },
   );
 
-  it("does not steal focus after it has moved outside the menu", async () => {
+  it.each(["x", "y", "width", "height"] as const)(
+    "dismisses on real anchor %s movement and captures fresh geometry on reopening",
+    async (dimension) => {
+      const user = userEvent.setup();
+      render(<Harness />);
+      const original = { x: 200, y: 300, width: 32, height: 32 };
+      let rect = DOMRect.fromRect(original);
+      vi.spyOn(
+        screen.getByRole("button", { name: "Actions for paper.md" }),
+        "getBoundingClientRect",
+      ).mockImplementation(() => rect);
+      const trigger = await openMenu(user);
+      rect = DOMRect.fromRect({ ...original, [dimension]: original[dimension] + 25 });
+      fireEvent.scroll(screen.getByTestId("pane"));
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(trigger).toHaveFocus();
+      await openMenu(user);
+      fireEvent.scroll(screen.getByTestId("pane"));
+      expect(screen.getByRole("menu")).toBeVisible();
+      expect(screen.getByRole("menuitem", { name: "Download" })).toHaveFocus();
+    },
+  );
+
+  it.each(["scroll", "resize"])("does not steal focus after it has moved outside the menu on %s", async (event) => {
     const user = userEvent.setup();
     render(<Harness />);
+    let rect = new DOMRect(200, 300, 32, 32);
+    vi.spyOn(screen.getByRole("button", { name: "Actions for paper.md" }), "getBoundingClientRect").mockImplementation(
+      () => rect,
+    );
     const trigger = await openMenu(user);
     const focus = vi.spyOn(trigger, "focus");
     const after = screen.getByRole("button", { name: "After" });
     after.focus();
-    fireEvent.resize(window);
+    rect = new DOMRect(200, 250, 32, 32);
+    if (event === "scroll") fireEvent.scroll(screen.getByTestId("pane"));
+    else fireEvent.resize(window);
     expect(screen.queryByRole("menu")).toBeNull();
     expect(after).toHaveFocus();
     expect(focus).not.toHaveBeenCalled();
   });
+
+  it.each(["detached", "hidden", "inert", "disabled"] as const)(
+    "dismisses without restoring a %s anchor even when reported geometry is unchanged",
+    async (state) => {
+      const user = userEvent.setup();
+      render(<Harness />);
+      vi.spyOn(screen.getByRole("button", { name: "Actions for paper.md" }), "getBoundingClientRect").mockReturnValue(
+        new DOMRect(200, 300, 32, 32),
+      );
+      const trigger = await openMenu(user);
+      const parent = trigger.parentElement!;
+      const sibling = trigger.nextSibling;
+      const focus = vi.spyOn(trigger, "focus");
+      if (state === "detached") trigger.remove();
+      else trigger.setAttribute(state, "");
+      try {
+        fireEvent.scroll(window);
+        expect(screen.queryByRole("menu")).toBeNull();
+        expect(focus).not.toHaveBeenCalled();
+      } finally {
+        if (state === "detached") parent.insertBefore(trigger, sibling?.isConnected ? sibling : null);
+        else trigger.removeAttribute(state);
+      }
+    },
+  );
 
   it.each(["pointer", "Tab"])("keeps the ordinary %s exit destination", async (exit) => {
     const user = userEvent.setup();

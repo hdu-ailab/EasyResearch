@@ -634,7 +634,8 @@
 @media (hover: hover) {
   :where(:root) {
     :is(button:enabled, a[href], summary, [role="button"], [role="tab"], [role="treeitem"]):not(:disabled):not(
-        [aria-disabled="true"]
+        [aria-disabled="true"],
+        .er-market-preview
       ):hover {
       background-image: linear-gradient(var(--er-hover-wash), var(--er-hover-wash));
     }

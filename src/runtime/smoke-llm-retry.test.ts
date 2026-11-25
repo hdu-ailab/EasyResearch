@@ -1,15 +1,17 @@
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LlmRecoveryDto, SessionSnapshotDto } from "../web/contracts";
 import { createLlmRetryFixture, llmRetryFixtureResponse, RetryFixtureLane } from "../../scripts/smoke-llm-retry-fixture";
 import { assertCounterOnce, captureRetryEvidence, preserveRetryFailureEvidence, retryStateInFrame } from "../../scripts/smoke-llm-retry";
 import { SmokeAgentLane, type SmokeAgentRequest } from "../../scripts/smoke-agent-scenario";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function directory() { const root = mkdtempSync(join(tmpdir(), "llm-retry-harness-")); roots.push(root); return root; }
 
 function completedContext(lane: RetryFixtureLane): SmokeAgentRequest {
@@ -281,6 +283,238 @@ describe("LLM retry acceptance wire and native evidence", () => {
     current.subagents.push({ ...current.subagents[0]!, launchId: "later", toolCallId: `wake:${previous.launchId}` });
     return current;
   }
+
+  function delivery(f: ReturnType<typeof evidenceFixture>, recipient: "root" | "nested") {
+    const job = f.snapshot.subagents[recipient === "root" ? 0 : 1]!;
+    const ownerPath = recipient === "root" ? f.rootPath : f.ownerPath;
+    const text = recipient === "root" ? "Waiting for the retained leaf"
+      : `503 service unavailable: controlled LLM retry ${f.item.leaf.name} failure 2`;
+    const report = { ...f.record({ kind: "background_report", launchId: job.launchId,
+      result: { state: recipient === "root" ? "completed" : "error", text,
+        outstanding: recipient === "root" ? [{ id: "leaf", kind: "subagent", sessionID: "leaf", status: "running" }] : [] },
+      batch: { batchId: `batch-${job.launchId}`, ownerSessionId: job.ownerSessionId, launchIds: [job.launchId],
+        content: "owned report", triggerTurn: true, createdAt: "now" },
+    }), id: `report-${job.launchId}` };
+    const handoff = { type: "custom_message", customType: "easyresearch:agent_status", id: `handoff-${job.launchId}`,
+      display: false, content: "owned report", details: { outcomes: [{ launchId: job.launchId }] } };
+    f.rows.push(f.record({ kind: "background_admitted", launchId: job.launchId,
+      admission: { cwd: f.root, callerAgent: "research-assistant", description: "Retry child" } }));
+    f.write();
+    const publishReport = () => { f.rows.push(report); f.write(); };
+    const publishHandoff = () => {
+      if (recipient === "root") { f.rows.push(handoff); f.write(); }
+      else appendFileSync(ownerPath, JSON.stringify(handoff) + "\n");
+    };
+    return { job, ownerPath, report, handoff, publishReport, publishHandoff };
+  }
+
+  describe.each(["capture", "check"] as const)("%s with a causal history sample", mode => {
+    it.each(["root", "nested"] as const)("accepts report-then-delivery interleaving at the %s recipient", recipient => {
+      const f = evidenceFixture(2);
+      const d = delivery(f, recipient);
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      const read = fs.readFileSync;
+      let leafRead = false;
+      let delivered = false;
+      const sampled: string[] = [];
+      const publish = () => { delivered = true; d.publishReport(); d.publishHandoff(); };
+      const spy = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+        const path = String(args[0]);
+        // A nested recipient may already have the handoff when sampled. Its
+        // root report must be read afterwards, not from an older outbox prefix.
+        if (recipient === "nested" && path === d.ownerPath && !delivered) publish();
+        const value = read(...args);
+        if ([f.rootPath, f.ownerPath, f.childPath].includes(path)) sampled.push(path);
+        if (path === f.childPath) leafRead = true;
+        // For capture, the first root read only discovers the known tree. Gate
+        // after that discovery; a later root delivery must not enter this cut.
+        if (recipient === "root" && path === f.rootPath && !delivered && (mode === "check" || leafRead)) publish();
+        return value;
+      });
+      let audit = prior;
+      try {
+        if (audit) expect(audit.check(f.snapshot).identities).toHaveLength(2);
+        else audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+      } finally { spy.mockRestore(); }
+      expect(delivered).toBe(true);
+      expect(sampled.filter(path => path === f.ownerPath)).toHaveLength(1);
+      expect(sampled.filter(path => path === f.childPath)).toHaveLength(1);
+      expect(sampled.at(-1)).toBe(f.rootPath);
+      expect(audit!.check(f.snapshot)).toMatchObject({ userRows: 3, toolExecutions: 1 });
+    });
+
+    it.each(["root", "nested"] as const)("archives the exact failed %s handoff operands before later appends", recipient => {
+      const f = evidenceFixture(2);
+      const d = delivery(f, recipient);
+      const prior = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+      Object.assign(d.handoff, { content: "PRIVATE_HANDOFF_BODY", apiKey: "PRIVATE_HANDOFF_KEY" });
+      d.publishHandoff(); // Deliberately orphaned, not a valid report/delivery race.
+      let failure: unknown;
+      try { prior ? prior.check(f.snapshot) : captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root); }
+      catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/Premature or duplicate original-owner handoff/);
+      d.publishReport();
+      d.publishHandoff();
+      const archive = preserveRetryFailureEvidence({ root: f.root, caseName: f.item.name, phase: mode,
+        snapshots: [f.snapshot], error: failure, parentDirectory: directory() });
+      const serialized = readFileSync(archive, "utf8");
+      const saved = JSON.parse(serialized);
+      expect(saved.failureRead).toMatchObject({ phase: mode, sampling: "audit", handoff: {
+        launchId: d.job.launchId, ownerSessionId: d.job.ownerSessionId, childSessionId: d.job.childSessionId,
+        source: d.ownerPath, outcomeCount: 0, handoffCount: 1,
+        outcomeEntryIds: [], handoffEntryIds: [d.handoff.id],
+      } });
+      expect(saved.failureRead.handoff.handoffs[0]).toMatchObject({ id: d.handoff.id, contentSha256: expect.any(String) });
+      const newer = saved.histories.find((history: { source: string }) => history.source === d.ownerPath).entries;
+      expect(newer.filter((entry: { id?: string }) => entry.id === d.handoff.id)).toHaveLength(2);
+      expect(serialized).not.toMatch(/PRIVATE_HANDOFF_BODY|PRIVATE_HANDOFF_KEY/);
+      expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(4 * 1024 * 1024);
+    });
+  });
+
+  it("bounds the failed recipient sample while retaining matching handoff identities and full counts", () => {
+    const f = evidenceFixture(2);
+    const d = delivery(f, "nested");
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    for (let index = 0; index < 2600; index++) appendFileSync(d.ownerPath, JSON.stringify({
+      type: "custom", customType: "probe", id: `noise-${index}`, ownerSessionId: "x".repeat(512),
+      content: "PRIVATE_RECIPIENT_BODY", apiKey: "PRIVATE_RECIPIENT_KEY",
+    }) + "\n");
+    d.publishHandoff();
+    let failure: unknown;
+    try { audit.check(f.snapshot); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    const archive = preserveRetryFailureEvidence({ root: f.root, caseName: f.item.name, phase: "check",
+      snapshots: [f.snapshot], error: failure, parentDirectory: directory() });
+    const serialized = readFileSync(archive, "utf8");
+    const saved = JSON.parse(serialized);
+    expect(saved.failureRead).toMatchObject({ truncated: true, handoff: {
+      truncated: true, outcomeCount: 0, handoffCount: 1, handoffEntryIds: [d.handoff.id], entryCount: 2603,
+    } });
+    expect(saved.failureRead.handoff.recipientTail.at(-1).id).toBe(d.handoff.id);
+    expect(serialized).not.toMatch(/PRIVATE_RECIPIENT_BODY|PRIVATE_RECIPIENT_KEY/);
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(4 * 1024 * 1024);
+  });
+
+  it("does not label an earlier successful handoff comparison as a failed checkpoint's operands", () => {
+    const f = evidenceFixture(2);
+    const d = delivery(f, "root");
+    d.publishReport(); d.publishHandoff();
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    const wrong = structuredClone(f.snapshot);
+    wrong.subagents[1]!.llmRecovery!.failedEntryId = "absent-error";
+    let failure: unknown;
+    try { audit.check(wrong); } catch (error) { failure = error; }
+    expect((failure as Error).message).toMatch(/persisted failure/);
+    const archive = preserveRetryFailureEvidence({ root: f.root, caseName: f.item.name, phase: "check",
+      snapshots: [f.snapshot], error: failure, parentDirectory: directory() });
+    expect(JSON.parse(readFileSync(archive, "utf8")).failureRead.handoff).toBeUndefined();
+  });
+
+  it("retains matching entry IDs independently of oversized recipient metadata", () => {
+    const f = evidenceFixture(2);
+    const d = delivery(f, "nested");
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    Object.assign(d.handoff.details, { outcomes: [d.handoff.details.outcomes[0], ...Array.from({ length: 2000 },
+      (_, index) => ({ launchId: `unrelated-${index}`, agentId: "x".repeat(512), text: "PRIVATE_LARGE_HANDOFF_BODY" }))],
+      apiKey: "PRIVATE_LARGE_HANDOFF_KEY" });
+    d.publishHandoff();
+    let failure: unknown;
+    try { audit.check(f.snapshot); } catch (error) { failure = error; }
+    expect((failure as Error).message).toMatch(/Premature or duplicate original-owner handoff/);
+    const archive = preserveRetryFailureEvidence({ root: f.root, caseName: f.item.name, phase: "check",
+      snapshots: [f.snapshot], error: failure, parentDirectory: directory() });
+    const serialized = readFileSync(archive, "utf8");
+    expect(JSON.parse(serialized).failureRead.handoff).toMatchObject({
+      handoffCount: 1, handoffEntryIds: [d.handoff.id], handoffs: [], truncated: true,
+    });
+    expect(serialized).not.toMatch(/PRIVATE_LARGE_HANDOFF_BODY|PRIVATE_LARGE_HANDOFF_KEY/);
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(4 * 1024 * 1024);
+  });
+
+  it.each(["valid", "duplicate-report", "duplicate-handoff", "missing-report", "missing-handoff", "orphan-handoff"] as const)(
+    "keeps nested terminal exactly-once acceptance strict: %s", fault => {
+      const f = evidenceFixture(2);
+      const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+      for (const job of f.snapshot.subagents) {
+        f.rows.push(f.record({ kind: "background_admitted", launchId: job.launchId,
+          admission: { cwd: f.root, callerAgent: "research-assistant", description: "Retry child" } }));
+        const report = f.record({ kind: "background_report", launchId: job.launchId,
+          result: { state: "completed", text: "Recovered", outstanding: [] },
+          batch: { batchId: `complete-${job.launchId}`, ownerSessionId: job.ownerSessionId, launchIds: [job.launchId],
+            content: "Recovered", triggerTurn: true, createdAt: "now" },
+        });
+        const handoff = { type: "custom_message", customType: "easyresearch:agent_status", display: false,
+          details: { outcomes: [{ launchId: job.launchId, status: "complete" }] } };
+        const nested = job.childSessionId === "leaf";
+        if (!nested || !["missing-report", "orphan-handoff"].includes(fault)) f.rows.push(report);
+        if (nested && fault === "duplicate-report") f.rows.push(report);
+        if (!nested) f.rows.push(handoff);
+        else if (fault !== "missing-handoff" && fault !== "missing-report") {
+          appendFileSync(f.ownerPath, JSON.stringify(handoff) + "\n");
+          if (fault === "duplicate-handoff") appendFileSync(f.ownerPath, JSON.stringify(handoff) + "\n");
+        }
+      }
+      f.write();
+      if (fault === "valid") expect(audit.check(settled(f.snapshot), "complete"))
+        .toMatchObject({ terminalOutcomes: 2, userRows: 3, toolExecutions: 1 });
+      else expect(() => audit.check(settled(f.snapshot), "complete")).toThrow(/duplicate|Missing|Premature/);
+    },
+  );
+
+  it.each(["capture", "check"] as const)("rejects a non-native root header during %s", mode => {
+    const f = evidenceFixture(2);
+    const audit = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+    f.rows[0].type = "message"; f.write();
+    expect(() => audit ? audit.check(f.snapshot) : captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root))
+      .toThrow(/Physical JSONL identity/);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps the verified canonical root path instead of following a replaced symlink", () => {
+    const f = evidenceFixture();
+    const linked = join(f.root, "linked.jsonl");
+    symlinkSync(f.rootPath, linked);
+    f.snapshot.session.sessionFile = linked;
+    const audit = captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root);
+    const replacement = join(f.root, "replacement.jsonl");
+    writeFileSync(replacement, readFileSync(f.rootPath));
+    rmSync(linked); symlinkSync(replacement, linked);
+    expect(() => audit.check(f.snapshot)).toThrow(/Physical JSONL path changed/);
+    const outside = join(directory(), "foreign.jsonl");
+    writeFileSync(outside, readFileSync(f.rootPath));
+    rmSync(linked); symlinkSync(outside, linked);
+    expect(() => captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root)).toThrow(/private fixture histories/);
+  });
+
+  it.each(["capture", "check"] as const)("does not read a new child's path discovered after the allowed tree in %s", mode => {
+    const f = evidenceFixture(2);
+    const audit = mode === "check" ? captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root) : undefined;
+    const unexpectedPath = join(f.root, "unexpected.jsonl");
+    const read = fs.readFileSync;
+    let added = false;
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
+      const path = String(args[0]);
+      expect(path).not.toBe(unexpectedPath);
+      if (path === f.ownerPath && !added) {
+        added = true;
+        f.rows.push(...[
+          { kind: "reserved", launchId: "unexpected", ownerSessionId: "root", toolCallId: "extra-tool",
+            agent: f.snapshot.subagents[0]!.agent, agentId: "owner_1", continuation: false, createdAt: "now" },
+          { kind: "created", launchId: "unexpected", childSessionId: "extra-child", sessionPath: unexpectedPath },
+          { kind: "materialized", launchId: "unexpected" },
+          { kind: "launch_acknowledged", launchId: "unexpected", acknowledgedAt: "now" },
+        ].map(f.record));
+        f.write();
+      }
+      return read(...args);
+    });
+    try {
+      expect(() => audit ? audit.check(f.snapshot) : captureRetryEvidence(f.snapshot, f.recovery, f.item, f.root))
+        .toThrow(/logical child/);
+      expect(added).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
 
   describe.each(["capture", "check"] as const)("%s during automatic period admission", mode => {
     it.each(admissionPhases)("audits the real %s prefix without changing native identities or inventing acknowledgement", phase => {

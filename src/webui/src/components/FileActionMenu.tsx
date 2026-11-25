@@ -22,6 +22,7 @@ export function FileActionMenu({
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+  const anchorBounds = useRef<DOMRectReadOnly | null>(null);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ left: 0, top: 0 });
   const close = () => {
@@ -35,6 +36,7 @@ export function FileActionMenu({
     }
     if (!open || !trigger.current || !menu.current) return;
     const rect = trigger.current.getBoundingClientRect();
+    anchorBounds.current = rect;
     const bounds = menu.current.getBoundingClientRect();
     setPosition({
       left: Math.max(8, Math.min(rect.right - bounds.width, window.innerWidth - bounds.width - 8)),
@@ -48,13 +50,26 @@ export function FileActionMenu({
       if (!menu.current?.contains(event.target as Node) && !trigger.current?.contains(event.target as Node))
         setOpen(false);
     };
-    const hide = () => {
-      if (
-        menu.current?.contains(document.activeElement) &&
-        activity.current.interactive &&
-        canFocusElement(trigger.current)
-      ) {
-        trigger.current.focus({ preventScroll: true });
+    const hide = (event: Event) => {
+      const anchor = trigger.current;
+      const mayRestoreFocus = activity.current.interactive && canFocusElement(anchor) && !anchor.disabled;
+      if (event.type === "scroll" && mayRestoreFocus) {
+        if (event.target instanceof Node && menu.current?.contains(event.target)) return;
+        const rect = anchor.getBoundingClientRect();
+        const positioned = anchorBounds.current;
+        // Ignore delayed pre-open and unrelated scrolls while the positioned
+        // anchor remains unchanged. Resize still dismisses unconditionally.
+        if (
+          positioned &&
+          rect.left === positioned.left &&
+          rect.top === positioned.top &&
+          rect.right === positioned.right &&
+          rect.bottom === positioned.bottom
+        )
+          return;
+      }
+      if (menu.current?.contains(document.activeElement) && mayRestoreFocus) {
+        anchor.focus({ preventScroll: true });
       }
       setOpen(false);
     };

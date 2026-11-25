@@ -326,14 +326,35 @@ export function writeAgentResource(name: string, content: string): Promise<Agent
 export function createAgentResource(name: string): Promise<AgentResourceDto> {
   return requestJson(routes.agentResources(), parseAgentResource, json("POST", { name }));
 }
-export function listSkillResources() {
-  return requestJson(routes.skillResources(), parseSkillResources);
+export function listSkillResources(signal?: AbortSignal) {
+  return requestJson(routes.skillResources(), parseSkillResources, { signal });
 }
-export function readSkillResource(name: string) {
-  return requestJson(routes.skillResource(name), parseSkillResource);
+export function readSkillResource(name: string, signal?: AbortSignal) {
+  return requestJson(routes.skillResource(name), parseSkillResource, { signal });
 }
 export function writeSkillResource(name: string, content: string) {
   return requestJson(routes.skillResource(name), parseSkillResource, json("PUT", { content }));
+}
+export function patchSkillResource(name: string, enabled: boolean) {
+  return requestJson(routes.skillResource(name), parseSkillResource, json("PATCH", { enabled }));
+}
+export function deleteSkillResource(name: string) {
+  return requestJson(
+    routes.skillResource(name),
+    (value) => {
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("deleted" in value) ||
+        value.deleted !== true ||
+        !("name" in value) ||
+        value.name !== name
+      )
+        throw new Error("Invalid Skill deletion response");
+      return { deleted: true as const, name };
+    },
+    json("DELETE", {}),
+  );
 }
 
 export function listModels(): Promise<ModelOption[]> {

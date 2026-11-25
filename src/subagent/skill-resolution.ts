@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { bundledSourceRoot } from "../runtime/bundled-assets";
+import { isSkillResourceEnabled, readSkillResourceOverrides } from "../runtime/skill-resource-policy";
 import {
   type AcceptedSkillDescriptor,
   selectSkillDescriptors,
@@ -16,6 +17,7 @@ export interface SkillResolverDeps {
   enableDotAgentsSkill?: boolean;
   includeProject?: boolean;
   acceptedSkillDescriptors?: AcceptedSkillDescriptors;
+  resourceOverrides?: readonly string[];
 }
 
 export interface AcceptedSkillDescriptors {
@@ -109,6 +111,7 @@ function materializeAcceptedDescriptors(
       originalPath,
       originalSkillPath,
       ...(accepted.baseDir ? { baseDir: accepted.baseDir } : {}),
+      ...(accepted.enabled === undefined ? {} : { enabled: accepted.enabled }),
     };
   });
 }
@@ -137,18 +140,45 @@ function acceptedControlledPath(target: string, deps: SkillResolverDeps): string
   return null;
 }
 
-function configuredSkillResolver(deps: SkillResolverDeps): (value: string) => string | undefined {
+function configuredSkillResolver(deps: SkillResolverDeps): (value: string) => string | null | undefined {
   let named: Map<string, SkillDescriptor> | undefined;
   return (value) => {
     if (isPathRef(value)) {
       const expanded = expandHome(value, deps.homeDir);
       const target = resolve(deps.cwd, expanded);
+      const descriptor = controlledSkillDescriptors(deps).find((item) => target === resolve(item.originalPath ?? item.path)
+        || target === resolve(item.originalSkillPath ?? item.skillPath));
+      if (descriptor) return skillEnabled(descriptor, deps) ? descriptor.path : null;
       const accepted = acceptedControlledPath(target, deps);
-      return accepted === null ? validSkillPath(target) : accepted;
+      const path = accepted === null ? validSkillPath(target) : accepted;
+      if (!path) return undefined;
+      return skillEnabled({ skillPath: path.endsWith(".md") ? path : join(path, "SKILL.md") }, deps) ? path : null;
     }
     named ??= new Map(controlledSkillDescriptors(deps).map((descriptor) => [descriptor.name, descriptor]));
-    return named.get(value)?.path;
+    const descriptor = named.get(value);
+    return descriptor ? skillEnabled(descriptor, deps) ? descriptor.path : null : undefined;
   };
+}
+
+function skillEnabled(descriptor: Pick<SkillDescriptor, "skillPath" | "originalSkillPath" | "enabled">, deps: SkillResolverDeps): boolean {
+  if (descriptor.enabled !== undefined) return descriptor.enabled;
+  const path = descriptor.originalSkillPath ?? descriptor.skillPath;
+  const projectBase = join(deps.cwd, ".easyresearch");
+  if (deps.includeProject !== false && isWithin(join(projectBase, "skills"), path)) {
+    return isSkillResourceEnabled(path, unboundOverrides(join(projectBase, "settings.json")), { baseDir: projectBase, homeDir: deps.homeDir });
+  }
+  const homeBase = join(deps.homeDir ?? homedir(), ".agents");
+  const baseDir = isWithin(join(homeBase, "skills"), path) ? homeBase : deps.agentDir;
+  const entries = deps.resourceOverrides ?? unboundOverrides(join(deps.agentDir, "settings.json"));
+  return isSkillResourceEnabled(path, entries, { baseDir, homeDir: deps.homeDir });
+}
+
+function unboundOverrides(path: string): string[] {
+  try { return readSkillResourceOverrides(path); }
+  catch {
+    // Recovery metadata remains readable; managed runtimes always supply accepted policy.
+    return [];
+  }
 }
 
 function isWithin(root: string, target: string): boolean {
@@ -164,6 +194,7 @@ export function resolveSkillSelection(
   skills: string[] | undefined,
   deps: SkillResolverDeps,
 ): ResolvedSkillSelection {
+  deps = { ...deps, resourceOverrides: deps.resourceOverrides ?? unboundOverrides(join(deps.agentDir, "settings.json")) };
   if (skills !== undefined) {
     const resolveConfigured = configuredSkillResolver(deps);
     const effectiveSkills: string[] = [];
@@ -173,14 +204,14 @@ export function resolveSkillSelection(
       const path = resolveConfigured(skill);
       if (path === undefined) {
         missingSkills.push(skill);
-      } else {
+      } else if (path !== null) {
         effectiveSkills.push(skill);
         effectiveSkillPaths.push(path);
       }
     }
     return { effectiveSkills, effectiveSkillPaths, missingSkills };
   }
-  const descriptors = controlledSkillDescriptors(deps);
+  const descriptors = controlledSkillDescriptors(deps).filter((descriptor) => skillEnabled(descriptor, deps));
   return {
     effectiveSkills: descriptors.map(({ name }) => name),
     effectiveSkillPaths: descriptors.map(({ path }) => path),

@@ -32,9 +32,6 @@
   padding: 5px 10px;
   background: var(--color-v2-background-bg-base);
 }
-.er-market-toolbar > .er-market-switch {
-  margin-inline-start: auto;
-}
 .er-market-search input {
   flex: 1;
   min-inline-size: 0;
@@ -127,17 +124,41 @@
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+  color: var(--color-v2-text-text-base);
 }
-.er-market-card h4 button {
+.er-market-card .er-market-preview,
+.er-market-card .er-market-preview:hover {
   display: block;
   text-align: start;
-  inline-size: 100%;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  color: inherit;
+  background: transparent;
 }
 .er-market-title {
+  position: relative;
+  z-index: 1;
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.er-market-preview:focus-visible .er-market-title {
+  color: var(--color-v2-blue-600);
+}
+.er-market-card .er-market-preview:focus-visible {
+  outline: none; /* The whole card supplies the visible outline. */
+}
+@media (hover: hover) {
+  .er-market-title:hover {
+    color: var(--color-v2-blue-600);
+  }
+}
+.er-market-card-recovery {
+  position: relative;
+  z-index: 1;
+  grid-column: 1 / -1;
+  min-inline-size: 0;
 }
 .er-market-card :where(header) p {
   overflow: hidden;
@@ -398,5 +419,17 @@
   }
   .er-market-search {
     flex: 1 1 240px;
+  }
+}
+@media (pointer: coarse) {
+  .er-market-card {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+  .er-market-add {
+    inline-size: 44px;
+    block-size: 44px;
+  }
+  :is(.er-market-switch, .er-market-topics, .er-market-search) button {
+    min-block-size: 44px;
   }
 }

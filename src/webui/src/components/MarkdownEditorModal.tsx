@@ -10,6 +10,7 @@ export interface MarkdownEditorModalProps {
   content: string;
   saveLabel: string;
   busy?: boolean;
+  error?: string | null;
   onSave: (content: string) => void | Promise<void>;
   onClose: () => void;
   editorLabel?: string;
@@ -21,6 +22,7 @@ export function MarkdownEditorModal({
   content,
   saveLabel,
   busy = false,
+  error,
   onSave,
   onClose,
   editorLabel,
@@ -74,6 +76,11 @@ export function MarkdownEditorModal({
             spellCheck={false}
           />
         </div>
+        {error && (
+          <p role="alert" className="px-4 py-2 text-[13px] text-v2-status-error">
+            {error}
+          </p>
+        )}
         <footer className="flex items-center justify-end gap-2 border-t border-v2-grey-200 px-4 py-3">
           <button
             type="button"

@@ -55,6 +55,7 @@ import type {
   SessionTitleSettingsDto,
   SessionTreeDto,
   SkillCommandDto,
+  SkillResourceDto,
   StatusDto,
   SubagentSessionSummaryDto,
   SubagentSupervisorEventDto,
@@ -991,13 +992,16 @@ export function parseAgentResources(value: unknown): AgentResourceDto[] {
   return arrayOf(value, "agent resources", parseAgentResource);
 }
 
-export function parseSkillResource(value: unknown) {
+export function parseSkillResource(value: unknown): SkillResourceDto {
   const source = record(value, "skill resource");
   return {
     name: requiredString(source, "name"),
     source: requiredString(source, "source") as "bundled" | "global" | "project" | "home",
     path: requiredString(source, "path"),
     skillPath: requiredString(source, "skillPath"),
+    ...(typeof source.description === "string" ? { description: source.description } : {}),
+    enabled: source.enabled === undefined ? true : requiredBoolean(source, "enabled"),
+    canDelete: source.canDelete === undefined ? false : requiredBoolean(source, "canDelete"),
     ...(typeof source.marketplaceId === "string" ? { marketplaceId: source.marketplaceId } : {}),
     ...(typeof source.content === "string" ? { content: source.content } : {}),
   };

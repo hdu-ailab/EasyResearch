@@ -4,6 +4,7 @@ import { filePreviewEn, filePreviewZh } from "./file-preview-messages";
 import { fileReferenceEn, fileReferenceZh } from "./file-reference-messages";
 import { officePreviewEn, officePreviewZh } from "./office-preview-messages";
 import { skillMarketEn, skillMarketZh } from "./skill-marketplace-messages";
+import { skillsEn, skillsZh } from "./skills-messages";
 import { updateEn, updateZh } from "./update-messages";
 
 export const en = {
@@ -13,6 +14,7 @@ export const en = {
   ...filePreviewEn,
   ...officePreviewEn,
   ...skillMarketEn,
+  ...skillsEn,
   "context.title": "Context manager",
   "context.compactAll": "Compress whole session",
   "context.compactError": "Could not request session compression. Try again.",
@@ -122,7 +124,7 @@ export const en = {
   "settings.category.conversation": "Conversation",
   "settings.category.providers": "Model providers",
   "settings.category.agents": "Agents",
-  "settings.category.resources": "Skills and tools",
+  "settings.category.skills": "Skills",
   "settings.network.title": "Network",
   "settings.network.all.label": "All traffic proxy",
   "settings.network.llm.label": "LLM API proxy",
@@ -742,6 +744,7 @@ export const zhCN: Record<MessageKey, string> = {
   ...filePreviewZh,
   ...officePreviewZh,
   ...skillMarketZh,
+  ...skillsZh,
   ...updateZh,
   "context.title": "上下文管理",
   "context.compactAll": "压缩整个会话",
@@ -849,7 +852,7 @@ export const zhCN: Record<MessageKey, string> = {
   "settings.category.conversation": "对话",
   "settings.category.providers": "模型提供商",
   "settings.category.agents": "智能体",
-  "settings.category.resources": "技能与工具",
+  "settings.category.skills": "技能",
   "settings.network.title": "网络",
   "settings.network.all.label": "全部代理",
   "settings.network.llm.label": "LLM API 代理",

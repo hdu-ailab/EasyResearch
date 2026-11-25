@@ -10,6 +10,7 @@ import { SkillMarketplace } from "./skill-marketplace";
 import { publishNewSkill } from "./skill-marketplace-install";
 import { parseMarketLeaderboard, parseMarketSkills, safeSkillPath, SkillMarketplaceSource } from "./skill-marketplace-source";
 import { marketFixture } from "./skill-marketplace.test-helper";
+import { createHash } from "node:crypto";
 
 let root: string;
 let market: SkillMarketplace;
@@ -64,7 +65,7 @@ describe("skill marketplace", () => {
     expect(installed).toMatchObject([{ name: "market-test", source: "global", marketplaceId: fixture.id }]);
     expect((await market.detail(fixture.id)).state).toBe("installed");
     await market.install({ id: fixture.id, commit: detail.commit });
-    expect(notify).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledTimes(2);
     expect(fixture.requests.filter((url) => url.includes("raw.githubusercontent.com")).every((url) => url.includes(detail.commit))).toBe(true);
   });
 
@@ -128,6 +129,57 @@ describe("skill marketplace", () => {
     notify.mockRejectedValue(new Error("configuration rejected"));
     await expect(market.install({ id: fixture.id, commit: fixture.commit })).rejects.toThrow();
     expect(readFileSync(join(config.globalRoot, "skills/market-test/SKILL.md"), "utf8")).toBe(fixture.content);
+  });
+
+  it.each(["source-ignore", "global-ignore", "ancestor"] as const)("rejects %s discovery blockers before publishing", async (kind) => {
+    if (kind === "source-ignore") {
+      const bytes = Buffer.from("SKILL.md\n");
+      fixture.files.set(".gitignore", bytes);
+      fixture.tree.push({ path: "skills/market-test/.gitignore", type: "blob", mode: "100644", size: bytes.length,
+        sha: createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") });
+    } else {
+      mkdirSync(join(config.globalRoot, "skills"), { recursive: true });
+      writeFileSync(join(config.globalRoot, "skills", kind === "ancestor" ? "SKILL.md" : ".ignore"),
+        kind === "ancestor" ? "---\nname: parent\ndescription: parent\n---\n" : "market-test/\n");
+    }
+    await expect(market.install({ id: fixture.id, commit: fixture.commit })).rejects.toMatchObject({ code: "SKILL_MARKET_NOT_DISCOVERABLE" });
+    expect(existsSync(join(config.globalRoot, "skills/market-test"))).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("reports saved-but-undiscoverable after a post-publication ignore change, including retries", async () => {
+    notify.mockImplementation(async () => {
+      writeFileSync(join(config.globalRoot, "skills/.ignore"), "market-test/\n");
+    });
+    await expect(market.install({ id: fixture.id, commit: fixture.commit }))
+      .rejects.toMatchObject({ status: 409, code: "SKILL_MARKET_NOT_DISCOVERABLE", message: expect.stringContaining("saved") });
+    expect(readFileSync(join(config.globalRoot, "skills/market-test/SKILL.md"), "utf8")).toBe(fixture.content);
+    expect(await listGlobalSkills(config, skillOptions)).toEqual([]);
+    expect((await market.detail(fixture.id)).state).toBe("conflict");
+    await expect(market.install({ id: fixture.id, commit: fixture.commit })).rejects.toMatchObject({ code: "SKILL_MARKET_NOT_DISCOVERABLE" });
+  });
+
+  it("does not mistake a copied receipt at a different path for this installation", async () => {
+    const other = join(config.globalRoot, "skills", "different-directory");
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(other, "SKILL.md"), fixture.content);
+    writeFileSync(join(other, ".easyresearch-marketplace.json"), JSON.stringify({ version: 1, id: fixture.id, name: "market-test", commit: fixture.commit }));
+    expect((await market.detail(fixture.id)).state).toBe("conflict");
+    await expect(market.install({ id: fixture.id, commit: fixture.commit })).rejects.toMatchObject({ code: "SKILL_MARKET_CONFLICT" });
+    expect(existsSync(join(config.globalRoot, "skills/market-test"))).toBe(false);
+  });
+
+  it("preserves descriptor identity when the catalog slug differs", async () => {
+    const content = fixture.content.replace("name: market-test", "name: descriptor-identity");
+    const bytes = Buffer.from(content);
+    fixture.files.set("SKILL.md", bytes);
+    fixture.tree[0]!.size = bytes.length;
+    fixture.tree[0]!.sha = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    notify.mockImplementation(async () => {});
+    await expect(market.install({ id: fixture.id, commit: fixture.commit })).resolves.toEqual({ id: fixture.id, name: "descriptor-identity" });
+    expect(await listGlobalSkills(config, skillOptions)).toEqual([expect.objectContaining({
+      name: "descriptor-identity", marketplaceId: fixture.id, description: "Reproducible research workflows.", enabled: true, canDelete: true,
+    })]);
   });
 
   it("routes typed APIs through Desktop admission and JSON mutation checks", async () => {

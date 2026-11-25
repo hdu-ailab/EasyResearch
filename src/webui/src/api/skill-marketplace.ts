@@ -82,9 +82,6 @@ export function getSkillMarketDescription(id: string, signal?: AbortSignal) {
     { signal },
   );
 }
-export function getSkillMarketSummary(id: string, signal?: AbortSignal): Promise<string> {
-  return requestJson(routes.skillMarketDescription(id, true), (value) => text(record(value), "summary"), { signal });
-}
 export function installMarketSkill(input: SkillMarketInstallDto): Promise<SkillMarketInstalledDto> {
   return requestJson(
     routes.skillMarketInstall(),

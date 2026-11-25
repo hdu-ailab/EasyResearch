@@ -130,8 +130,36 @@ function retryMetadataTail(values: readonly unknown[], budget: number) {
 
 // Failure-owned, already-redacted evidence, not a second runtime or session store.
 const retryFailureRead = Symbol("retry-failure-read");
+interface RetryHandoffRead {
+  job: InternalSubagentJob;
+  source: string;
+  history: JsonEntry[];
+  outcomes: JsonEntry[];
+  handoffs: JsonEntry[];
+}
+
+function retryHandoffMetadata(read: RetryHandoffRead | undefined) {
+  if (!read) return;
+  const recipient = retryMetadataTail(read.history, 128 * 1024);
+  const outcomes = retryMetadataTail(read.outcomes, 32 * 1024);
+  const handoffs = retryMetadataTail(read.handoffs, 32 * 1024);
+  const outcomeIds = retryMetadataTail(read.outcomes.map(entry => ({ id: entry.id })), 16 * 1024);
+  const handoffIds = retryMetadataTail(read.handoffs.map(entry => ({ id: entry.id })), 16 * 1024);
+  const entryIds = (values: unknown[]) => values.map(value => (value as { id?: unknown }).id ?? null);
+  return {
+    ...retryEvidenceMetadata({ launchId: read.job.launchId, ownerSessionId: read.job.ownerSessionId,
+      childSessionId: read.job.childSessionId, agent: read.job.agent, agentId: read.job.agentId }) as object,
+    source: read.source, entryCount: read.history.length,
+    outcomeCount: read.outcomes.length, handoffCount: read.handoffs.length,
+    outcomeEntryIds: entryIds(outcomeIds.entries), handoffEntryIds: entryIds(handoffIds.entries),
+    outcomes: outcomes.entries, handoffs: handoffs.entries, recipientTail: recipient.entries,
+    truncated: recipient.truncated || outcomes.truncated || handoffs.truncated || outcomeIds.truncated || handoffIds.truncated,
+  };
+}
+
 function retainRetryRead<T>(phase: "capture" | "check", snapshot: SessionSnapshotDto, recovery: LlmRecoveryDto,
-  source: string, journalEntries: JsonEntry[], run: () => T): T {
+  source: string, journalEntries: JsonEntry[], run: () => T,
+  audit?: { handoff?: RetryHandoffRead }): T {
   try { return run(); }
   catch (error) {
     try {
@@ -141,12 +169,14 @@ function retainRetryRead<T>(phase: "capture" | "check", snapshot: SessionSnapsho
           childSessionId: job.childSessionId ?? null, sessionPath: job.sessionPath ?? null })), 128 * 1024);
         const tail = retryMetadataTail(journalEntries, 256 * 1024);
         const subagents = retryMetadataTail(snapshot.subagents, 64 * 1024);
+        const handoff = retryHandoffMetadata(audit?.handoff);
         Object.defineProperty(error, retryFailureRead, { value: {
-          phase, source, entryCount: journalEntries.length, jobCount: jobs.length,
+          phase, sampling: audit ? "audit" : "discovery", source, entryCount: journalEntries.length, jobCount: jobs.length,
           snapshot: { ...retryEvidenceMetadata({ session: snapshot.session, llmRecovery: snapshot.llmRecovery,
             automaticRetry: snapshot.automaticRetry }) as object, subagents: subagents.entries },
           checkpoint: retryEvidenceMetadata(recovery), jobs: jobMetadata.entries, journalTail: tail.entries,
-          truncated: jobMetadata.truncated || tail.truncated || subagents.truncated,
+          ...(handoff ? { handoff } : {}),
+          truncated: jobMetadata.truncated || tail.truncated || subagents.truncated || !!handoff?.truncated,
         } });
       }
     } catch { /* Evidence capture must never replace the original assertion. */ }
@@ -208,10 +238,16 @@ export function preserveRetryFailureEvidence(options: {
   return path;
 }
 
-function entries(path: string, directory: string): JsonEntry[] {
+function historyPath(path: string, directory: string): string {
   const resolved = realpathSync(path);
   const rel = relative(realpathSync(directory), resolved);
   assert(rel && !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`), "Retry acceptance may read only its private fixture histories");
+  return resolved;
+}
+
+function entries(path: string, directory: string, physicalPath: string): JsonEntry[] {
+  const resolved = historyPath(path, directory);
+  assert.equal(resolved, physicalPath, "Physical JSONL path changed");
   return readFileSync(resolved, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
 }
 
@@ -297,29 +333,32 @@ function retryJournalPeriods(journalEntries: JsonEntry[], snapshot: SessionSnaps
 export function captureRetryEvidence(snapshot: SessionSnapshotDto, recovery: LlmRecoveryDto, item: RetryFixtureCase, directory: string) {
   const rootPath = snapshot.session.sessionFile;
   assert(rootPath, "Native root did not materialize");
-  const rootEntries = entries(rootPath, directory);
-  return retainRetryRead("capture", snapshot, recovery, rootPath, rootEntries,
-    () => captureRetryEvidenceFromRead(snapshot, recovery, item, directory, rootPath, rootEntries));
+  const physicalRoot = historyPath(rootPath, directory);
+  // This read only establishes the allowed tree/paths; it is not the audit cut.
+  const rootEntries = entries(rootPath, directory, physicalRoot);
+  return retainRetryRead("capture", snapshot, recovery, physicalRoot, rootEntries,
+    () => captureRetryEvidenceFromRead(snapshot, recovery, item, directory, rootPath, physicalRoot, rootEntries));
 }
 
 function captureRetryEvidenceFromRead(snapshot: SessionSnapshotDto, recovery: LlmRecoveryDto, item: RetryFixtureCase,
-  directory: string, rootPath: string, rootEntries: JsonEntry[]) {
+  directory: string, rootPath: string, physicalRoot: string, rootEntries: JsonEntry[]) {
+  assert(rootEntries[0]?.type === "session" && rootEntries[0].id === snapshot.session.id, "Physical JSONL identity changed");
   const obligations = new Map<string, RetryAdmission>();
   const initial = retryJournalPeriods(rootEntries, snapshot, obligations);
   assert.equal(initial.children.size, item.depth, "Recovery changed the number of logical children");
   const target = item.depth ? initial.children.get(recovery.targetSessionId) : undefined;
   assert(!item.depth || target?.sessionPath);
   const targetPath = target?.sessionPath ?? rootPath;
-  const paths = new Map([[snapshot.session.id, rootPath]]);
-  for (const child of initial.children.values()) paths.set(child.childSessionId, child.sessionPath);
-  const targetEntries = entries(targetPath, directory);
-  const failed = targetEntries.find(entry => entry.id === recovery.failedEntryId);
-  assert.equal(failed?.message?.role, "assistant");
-  assert.equal(failed?.message?.stopReason, "error", "Retry checkpoint must name the real persisted failure");
-  assert.equal(targetEntries.filter(entry => entry.type === "message" && entry.message?.role === "user").length, 1);
-  assertCounterOnce(item);
   const original = logicalIdentities(snapshot.subagents);
   assert.equal(original.length, item.depth);
+  const paths = new Map([[snapshot.session.id, rootPath]]);
+  for (const child of initial.children.values()) {
+    const { sessionPath, ...childIdentity } = child;
+    assert.deepEqual(childIdentity, original.find(value => value.childSessionId === child.childSessionId),
+      "Retry replaced the original child identity");
+    assert(!paths.has(child.childSessionId), "A child replaced an existing native session identity");
+    paths.set(child.childSessionId, sessionPath);
+  }
   if (item.depth === 2) {
     const owner = original.find(job => job.agent.endsWith("-owner"));
     const leaf = original.find(job => job.childSessionId === recovery.targetSessionId);
@@ -327,13 +366,16 @@ function captureRetryEvidenceFromRead(snapshot: SessionSnapshotDto, recovery: Ll
     assert.equal(owner.ownerSessionId, snapshot.session.id);
     assert.equal(leaf.ownerSessionId, owner.childSessionId, "Nested retry must retain the immediate original owner");
   } else if (target) assert.equal(target.ownerSessionId, snapshot.session.id);
+  const physicalPaths = new Map([[rootPath, physicalRoot]]);
+  for (const path of paths.values()) if (path !== rootPath) physicalPaths.set(path, historyPath(path, directory));
+  assert.equal(new Set(physicalPaths.values()).size, paths.size, "Native sessions share a physical JSONL path");
   const verifiedFailures = new Map<string, JsonEntry>();
   const frozenOutcomes = new Map<string, JsonEntry>();
   const observedPeriods = new Set(initial.jobs.map(job => job.launchId));
-  const verifyCheckpoint = (checkpoint: LlmRecoveryDto): void => {
+  const verifyCheckpoint = (checkpoint: LlmRecoveryDto, history: JsonEntry[]): void => {
     assert(checkpoint.targetSessionId === recovery.targetSessionId && checkpoint.failureId
       && ["available", "starting"].includes(checkpoint.status), "Retry checkpoint targets an unexpected session or state");
-    const matches = entries(targetPath, directory).filter(entry => entry.id === checkpoint.failedEntryId);
+    const matches = history.filter(entry => entry.id === checkpoint.failedEntryId);
     assert(matches.length === 1 && matches[0]!.type === "message" && matches[0]!.message?.role === "assistant"
       && matches[0]!.message.stopReason === "error", "Retry checkpoint must identify one real persisted failure");
     const previous = verifiedFailures.get(checkpoint.failedEntryId);
@@ -343,8 +385,8 @@ function captureRetryEvidenceFromRead(snapshot: SessionSnapshotDto, recovery: Ll
   const announced = snapshot.session.id === recovery.targetSessionId ? snapshot.llmRecovery
     : snapshot.subagents.findLast(job => job.childSessionId === recovery.targetSessionId)?.llmRecovery;
   assert.deepEqual(announced, recovery, "Snapshot does not expose the supplied live Retry checkpoint");
-  verifyCheckpoint(recovery);
-  const checkRead = (current: SessionSnapshotDto, journalEntries: JsonEntry[], terminal?: "complete" | "error") => {
+  const checkRead = (current: SessionSnapshotDto, journalEntries: JsonEntry[], histories: ReadonlyMap<string, JsonEntry[]>,
+    audit: { handoff?: RetryHandoffRead }, terminal?: "complete" | "error") => {
     assert.equal(current.session.id, snapshot.session.id);
     assert.equal(current.session.sessionFile, rootPath);
     assert.deepEqual(logicalIdentities(current.subagents), original,
@@ -353,8 +395,8 @@ function captureRetryEvidenceFromRead(snapshot: SessionSnapshotDto, recovery: Ll
     assert.equal(latestVisible.size, item.depth, "Retry changed the number of logical children");
     assertCounterOnce(item);
     for (const [id, path] of paths) {
-      const history = entries(path, directory);
-      assert.equal(history[0]?.id, id, "Physical JSONL identity changed");
+      const history = histories.get(path)!;
+      assert(history[0]?.type === "session" && history[0].id === id, "Physical JSONL identity changed");
       assert.equal(history.filter(entry => entry.type === "message" && entry.message?.role === "user").length, 1,
         "Retry inserted another native user/Task row");
       for (const control of history.filter(entry => entry.customType === "easyresearch:llm-retry")) {
@@ -376,16 +418,27 @@ function captureRetryEvidenceFromRead(snapshot: SessionSnapshotDto, recovery: Ll
     }
     for (const id of observedPeriods) assert(currentJobs.some(job => job.launchId === id), "An earlier execution period disappeared");
     for (const job of currentJobs) observedPeriods.add(job.launchId);
+    const handoffRead = (job: InternalSubagentJob, outcomes: JsonEntry[]) => {
+      const ownerPath = paths.get(job.ownerSessionId);
+      assert(ownerPath && histories.has(ownerPath), "Retry period has an unknown immediate owner");
+      const history = histories.get(ownerPath)!;
+      const handoffs = history.filter(entry => entry.type === "custom_message" && entry.customType === AGENT_STATUS_TYPE
+        && entry.details?.outcomes?.some((outcome: { launchId: string }) => outcome.launchId === job.launchId));
+      audit.handoff = { job, source: physicalPaths.get(ownerPath)!, history, outcomes, handoffs };
+      return handoffs;
+    };
     for (const [id, frozen] of frozenOutcomes) {
       const reports = journalEntries.filter(entry => entry.customType === SUBAGENT_JOB_ENTRY
         && ["terminal", "background_report"].includes(entry.data?.kind) && entry.data.launchId === id);
+      handoffRead(currentJobs.find(job => job.launchId === id)!, reports);
       assert.equal(reports.length, 1, "A settled period was removed or duplicated");
       assert.deepEqual(reports[0], frozen, "A settled period outcome was changed or overwritten");
+      audit.handoff = undefined;
     }
     const checkpoints = [current.llmRecovery, ...[...latestVisible.values()].map(job => job.llmRecovery)].filter((value): value is LlmRecoveryDto => !!value);
     if (terminal) assert.equal(checkpoints.length, 0, "Terminal retry outcome retained a live checkpoint");
-    for (const checkpoint of checkpoints) verifyCheckpoint(checkpoint);
-    const targetHistory = entries(targetPath, directory);
+    const targetHistory = histories.get(targetPath)!;
+    for (const checkpoint of checkpoints) verifyCheckpoint(checkpoint, targetHistory);
     for (const [id, failure] of verifiedFailures) {
       assert.deepEqual(targetHistory.find(entry => entry.id === id), failure, "Verified failed assistant entry changed or disappeared");
     }
@@ -403,6 +456,7 @@ function captureRetryEvidenceFromRead(snapshot: SessionSnapshotDto, recovery: Ll
       latest.set(child.childSessionId, job);
       const outcomes = journalEntries.filter(entry => entry.customType === SUBAGENT_JOB_ENTRY
         && ["terminal", "background_report"].includes(entry.data?.kind) && entry.data.launchId === job.launchId);
+      const handoffs = handoffRead(job, outcomes);
       assert(outcomes.length <= 1, "Premature or duplicate terminal child outcome");
       if (pending) assert.equal(outcomes.length, 0, "Unacknowledged admission already has a terminal outcome");
       const frozen = frozenOutcomes.get(job.launchId);
@@ -418,34 +472,46 @@ function captureRetryEvidenceFromRead(snapshot: SessionSnapshotDto, recovery: Ll
         assert(recoverableError, "Error period has no verified native Retry checkpoint");
       }
       if (!terminal) assert(!outcome || intermediate || recoverableError, "Premature terminal child outcome");
-      const ownerHistory = entries(paths.get(job.ownerSessionId)!, directory);
-      const handoffs = ownerHistory.filter(entry => entry.type === "custom_message" && entry.customType === AGENT_STATUS_TYPE
-        && entry.details?.outcomes?.some((outcome: { launchId: string }) => outcome.launchId === job.launchId));
       assert(handoffs.length <= 1 && handoffs.length <= outcomes.length, "Premature or duplicate original-owner handoff");
       if (terminal && outcome) assert.equal(handoffs.length, 1,
         `Missing original-owner handoff for settled busy period ${JSON.stringify({ case: item.name, phase: terminal,
           rootId: snapshot.session.id, launchId: job.launchId, childSessionId: job.childSessionId,
           ownerSessionId: job.ownerSessionId, status: job.terminalStatus, periodState: outcome.result?.state,
           batchId: outcome.batch?.batchId, triggerTurn: outcome.batch?.triggerTurn })}`);
+      audit.handoff = undefined;
     }
     for (const job of latest.values()) {
       if (terminal) {
+        handoffRead(job, journalEntries.filter(entry => entry.customType === SUBAGENT_JOB_ENTRY
+          && ["terminal", "background_report"].includes(entry.data?.kind) && entry.data.launchId === job.launchId));
         const visible = latestVisible.get(job.childSessionId!);
         assert(visible && visible.launchId === job.launchId && visible.toolCallId === job.toolCallId,
           "Terminal snapshot's last visible launch is not the latest native journal period");
         assert.equal(job.terminalStatus, terminal, "Missing final child outcome");
         if (job.backgroundResult) assert.equal(job.backgroundResult.outstanding.length, 0, "Final retry outcome retained background work");
+        audit.handoff = undefined;
       }
     }
     if (!terminal && item.depth) assert.equal(current.session.status, "running", "Parked descendant must still count as owned work");
     return { rootId: snapshot.session.id, targetSessionId: recovery.targetSessionId, identities: original,
       userRows: paths.size, toolExecutions: 1, terminalOutcomes: terminal ? latest.size : 0 };
   };
-  const check = (current: SessionSnapshotDto, terminal?: "complete" | "error") => {
-    const journalEntries = entries(rootPath, directory);
-    return retainRetryRead("check", current, recovery, rootPath, journalEntries, () => checkRead(current, journalEntries, terminal));
+  const sampleAndCheck = (phase: "capture" | "check", current: SessionSnapshotDto, terminal?: "complete" | "error") => {
+    const histories = new Map<string, JsonEntry[]>();
+    // Recipient delivery follows the root outbox commit. Sample recipients first,
+    // root last, and never mix a later reread into this audit (even for root owners).
+    // Only the originally verified paths are read; new children cannot expand scope.
+    for (const [path, physicalPath] of physicalPaths) {
+      if (path !== rootPath) histories.set(path, entries(path, directory, physicalPath));
+    }
+    const journalEntries = entries(rootPath, directory, physicalRoot);
+    histories.set(rootPath, journalEntries);
+    const audit: { handoff?: RetryHandoffRead } = {};
+    return retainRetryRead(phase, current, recovery, physicalRoot, journalEntries,
+      () => checkRead(current, journalEntries, histories, audit, terminal), audit);
   };
-  checkRead(snapshot, rootEntries);
+  const check = (current: SessionSnapshotDto, terminal?: "complete" | "error") => sampleAndCheck("check", current, terminal);
+  sampleAndCheck("capture", snapshot);
   return { check, targetPath, rootPath };
 }
 

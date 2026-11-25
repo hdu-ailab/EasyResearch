@@ -35,7 +35,7 @@ import type {
   SessionSummaryDto,
   UpdateCheckDto,
 } from "./contracts";
-import { createGlobalAgent, listGlobalAgents, readGlobalAgent, writeGlobalAgent, listGlobalSkills, readGlobalSkill, writeGlobalSkill } from "./agent-resources";
+import { createGlobalAgent, listGlobalAgents, readGlobalAgent, writeGlobalAgent, listGlobalSkills, readGlobalSkill, writeGlobalSkill, patchGlobalSkill, deleteGlobalSkill } from "./agent-resources";
 import type { DirectoryService } from "./directories";
 import { DirectoryServiceError, fileServiceError } from "./directories";
 import { resolveFileReferences, validateFileReferences } from "./file-references";
@@ -359,6 +359,20 @@ export function createRouteHandler(services: RouteServices): RouteHandler {
           body.content,
           { skillPolicy: services.configuration.skillPolicy },
         ));
+      }
+      if (skillResourceMatch && req.method === "PATCH") {
+        const body = await jsonBody<unknown>(req);
+        if (!isObject(body) || Object.keys(body).length !== 1 || typeof body.enabled !== "boolean") {
+          throw new BodyError("Skill state requires only an enabled boolean");
+        }
+        return jsonResponse(await patchGlobalSkill(services.config, decodeURIComponent(skillResourceMatch[1]!), body.enabled, {
+          skillPolicy: services.configuration.skillPolicy,
+        }));
+      }
+      if (skillResourceMatch && req.method === "DELETE") {
+        return jsonResponse(await deleteGlobalSkill(services.config, decodeURIComponent(skillResourceMatch[1]!), {
+          skillPolicy: services.configuration.skillPolicy,
+        }));
       }
 
       if (req.method === "GET" && path === "/api/models") {
