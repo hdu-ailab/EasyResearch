@@ -6,10 +6,10 @@ import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertExternalFixtureReceipt, copyUpdateFixtureSource, parseUpdateFixtureOptions, removeUpdateFixture } from "../../scripts/build-update-fixture";
-import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, findDesktopUpdateLineage, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
+import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
 import { discoverDesktopRelease, downloadDesktopAsset } from "../desktop/update-download";
 import { windowsInstallerRegistryId } from "../desktop/update-worker";
-import { assessInstalledRecoveryEvidence, assessInstalledWindowEvidence, assertWindowsFixtureInstallation, closeRecoveryReleaseDialog, formatInstalledWindowDiagnostic, parseFixtureWindowsProcesses, retainFixtureProcessObservation, type InstalledRecoveryEvidence, type InstalledWindowEvidence } from "../../scripts/smoke-desktop-update-windows";
+import { assessInstalledRecoveryEvidence, assessInstalledWindowEvidence, assertWindowsFixtureInstallation, closeRecoveryReleaseDialog, formatInstalledWindowDiagnostic, nativeRecoveryWindowAdmissionControls, parseFixtureWindowsProcesses, projectInstalledRecoveryDiagnostic, retainFixtureProcessObservation, type InstalledRecoveryEvidence, type InstalledRecoveryWindow, type InstalledWindowEvidence } from "../../scripts/smoke-desktop-update-windows";
 import { LATEST_RELEASE_PAGE, type UpdateSnapshot } from "./update-contract";
 import type { DesktopUpdateReceipt } from "../desktop/update-protocol";
 
@@ -337,7 +337,9 @@ describe("shared installed recovery dialog", () => {
   const owner = { pid: 123, parentPid: 122, start: "2026-11-25T00:00:00.0000000Z", executable: "C:\\fixture\\EasyResearch.exe" };
   const canonicalUrl = "http://127.0.0.1:12345/#/work/session?cwd=C%3A%5Cfixture";
   const evidence = (): InstalledRecoveryEvidence => ({
-    owner, documents: 1, invoked: false,
+    owner, documents: 1, invoked: false, enumerationError: null,
+    windows: [{ hwnd: 1001, ownerPid: owner.pid, className: "Chrome_WidgetWin_19", visible: true, admission: "inspected",
+      errorOperation: null, win32Error: null, accessibilityResult: 0 }],
     dialogs: [{ documentUrl: canonicalUrl, title: "Updates", notice: "Installation failed. Open latest Release.", releaseUrl: LATEST_RELEASE_PAGE,
       closeButtons: 1, enabledCloseButtons: 1 }],
     scan: { handles: 1, accessibleRoots: 1, rootFailures: 0, visited: 12, integerChildren: 0, resolvedIntegerChildren: 0,
@@ -384,6 +386,96 @@ describe("shared installed recovery dialog", () => {
       expect(read).toHaveBeenCalledOnce();
     }
   });
+
+  it("retains every bounded HWND admission reason without authorizing a zero-root sample", async () => {
+    const base = evidence().windows[0]!;
+    const windows: InstalledRecoveryWindow[] = [
+      { ...base, admission: "hidden", visible: false, accessibilityResult: null },
+      { ...base, hwnd: 1002, admission: "other-class", className: "Electron_NotifyIconHostWindow", accessibilityResult: null },
+      { ...base, hwnd: 1003, admission: "foreign-owner", ownerPid: owner.pid + 1, accessibilityResult: null },
+      { ...base, hwnd: 1004, admission: "owner-unavailable", ownerPid: 0, className: "", visible: false,
+        errorOperation: "owner", win32Error: 1400, accessibilityResult: null },
+      { ...base, hwnd: 1005, admission: "class-unavailable", className: "", errorOperation: "class", win32Error: 1400, accessibilityResult: null },
+      { ...base, hwnd: 1006, admission: "accessibility-unavailable", accessibilityResult: -2147467259 },
+    ];
+    const sample = { ...evidence(), documents: 0, dialogs: [], windows,
+      scan: { ...evidence().scan, handles: windows.length, accessibleRoots: 0, rootFailures: 1, visited: 0, activationReads: 0 } };
+    const read = vi.fn(async () => sample), onEvidence = vi.fn();
+    expect(await closeRecoveryReleaseDialog(owner, canonicalUrl, { read, onEvidence })).toBe(false);
+    expect(read).toHaveBeenCalledOnce(); expect(onEvidence).toHaveBeenCalledOnce();
+    const retained = JSON.parse(fixtureDiagnosticError(JSON.stringify(onEvidence.mock.calls[0]![0])));
+    expect(retained.windows).toEqual(windows);
+    expect(retained.scan.accessibleRoots).toBe(0);
+    expect(retained.windowAdmissions).toMatchObject({ hidden: 1, "other-class": 1, "foreign-owner": 1, "owner-unavailable": 1,
+      "class-unavailable": 1, "accessibility-unavailable": 1 });
+  });
+
+  it("bounds valid UTF-8 diagnostic JSON while retaining rejection totals and excluding arbitrary native fields", () => {
+    const base = evidence();
+    const windows = Array.from({ length: 64 }, (_, index) => ({ ...base.windows[0]!, hwnd: 1001 + index, admission: "other-class" as const,
+      className: `unknown-${"界".repeat(240)}`, accessibilityResult: null, privateExtra: "never retain" }));
+    const raw = { ...base, documents: 0, dialogs: [], windows, scan: { ...base.scan, handles: windows.length, accessibleRoots: 0, visited: 0, activationReads: 0 } };
+    const projected = projectInstalledRecoveryDiagnostic(raw);
+    const encoded = fixtureDiagnosticError(JSON.stringify(projected));
+    expect(Buffer.byteLength(encoded, "utf8")).toBeLessThanOrEqual(7000);
+    const retained = JSON.parse(encoded);
+    expect(retained).toMatchObject({ truncated: true, totals: { windows: 64 }, windowAdmissions: { "other-class": 64 } });
+    expect(retained.windows.length).toBeGreaterThan(0); expect(retained.windows.length).toBeLessThan(64);
+    expect(encoded).not.toContain("privateExtra"); expect(encoded).not.toContain("never retain"); expect(encoded).not.toContain("\uFFFD");
+    expect(raw.windows[0]!.className).toBe(windows[0]!.className);
+  });
+
+  it("requires an inspected owned visible root even when dialog fields claim success", async () => {
+    const sample = evidence();
+    for (const change of [
+      { windows: [] },
+      { windows: [{ ...sample.windows[0]!, admission: "hidden" as const, visible: false, accessibilityResult: null }] },
+      { scan: { ...sample.scan, accessibleRoots: 0 } },
+      { enumerationError: 5 },
+    ]) {
+      const read = vi.fn(async () => ({ ...sample, ...change }));
+      expect(await closeRecoveryReleaseDialog(owner, canonicalUrl, { read })).toBe(false);
+      expect(read).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("rejects contradictory, unbounded or foreign admitted HWND projections before any action", async () => {
+    const base = evidence().windows[0]!;
+    for (const change of [
+      { windows: [{ ...base, ownerPid: owner.pid + 1 }] },
+      { windows: [{ ...base, visible: false }] },
+      { windows: [{ ...base, className: "Chrome_WidgetWin_19_other" }] },
+      { windows: [{ ...base, className: "Chrome_WidgetWin_019" }] },
+      { windows: [{ ...base, className: "Chrome_WidgetWin_2147483648" }] },
+      { windows: [{ ...base, admission: "unexpected" }] },
+      { windows: [{ ...base, errorOperation: "class", win32Error: 5 }] },
+      { windows: [{ ...base, win32Error: "private error" }] },
+      { windows: [{ ...base, accessibilityResult: -2147467259 }] },
+      { windows: [base, base], scan: { ...evidence().scan, handles: 2 } },
+      { windows: Array.from({ length: 65 }, (_, index) => ({ ...base, hwnd: 1001 + index })), scan: { ...evidence().scan, handles: 65 } },
+    ]) {
+      const read = vi.fn(async () => ({ ...evidence(), ...change }) as InstalledRecoveryEvidence);
+      await expect(closeRecoveryReleaseDialog(owner, canonicalUrl, { read })).rejects.toThrow();
+      expect(read).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.skipIf(process.platform !== "win32" || process.env.GITHUB_ACTIONS !== "true" || process.env.RUNNER_ENVIRONMENT !== "github-hosted")(
+    "admits real visible Windows counter-class HWNDs while excluding hidden/foreign/child controls", async () => {
+      const result = await nativeRecoveryWindowAdmissionControls();
+      expect(result.allTopLevelsEnumerated).toBe(true); expect(result.childExcluded).toBe(true);
+      const first = result.samples.visibleCounter!, second = result.samples.secondCounter!;
+      expect(first.className).not.toBe(second.className);
+      for (const sample of [first, second]) {
+        expect(sample).toMatchObject({ ownerPid: result.ownerPid, visible: true, admission: "eligible", errorOperation: null, win32Error: null });
+        expect(sample.accessibilityResult).toBeNull();
+      }
+      expect(result.samples.hidden).toMatchObject({ ownerPid: result.ownerPid, visible: false, admission: "hidden" });
+      expect(result.samples.otherClass).toMatchObject({ ownerPid: result.ownerPid, visible: true, admission: "other-class" });
+      expect(result.samples.foreignOwner).toMatchObject({ ownerPid: result.ownerPid, visible: true, admission: "foreign-owner" });
+      expect(result.samples.destroyed).toMatchObject({ admission: "owner-unavailable", errorOperation: "owner" });
+      expect(result.samples.destroyed!.win32Error).toBeGreaterThan(0);
+    });
 
   it("rejects reused-PID and foreign-process evidence before any action", async () => {
     for (const change of [{ pid: 124 }, { parentPid: 999 }, { start: "reused" }, { executable: "C:\\foreign\\EasyResearch.exe" }]) {

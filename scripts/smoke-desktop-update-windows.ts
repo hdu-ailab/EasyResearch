@@ -129,9 +129,12 @@ export function assertWindowsFixtureInstallation(rows: readonly InstallationRegi
 // modules/accessibility/blink_ax_tree_source.cc::GetTreeData (full document URL).
 // Integer children follow Microsoft's IAccessible::get_accChild contract:
 // https://learn.microsoft.com/windows/win32/api/oleacc/nf-oleacc-iaccessible-get_accchild
+// Chromium 148 ui/gfx/win/window_impl.cc ClassRegistrar::RetrieveClassAtom uses
+// Chrome_WidgetWin_<registration counter>; the numeric suffix is not an identity.
 const NATIVE_WINDOWS = String.raw`
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using Accessibility;
@@ -142,17 +145,22 @@ public static class ErUpdateWindows {
   public static string RoamingPath() { IntPtr path; Marshal.ThrowExceptionForHR(SHGetKnownFolderPath(ref roaming,0,IntPtr.Zero,out path)); try{return Marshal.PtrToStringUni(path);}finally{Marshal.FreeCoTaskMem(path);} }
   public static void SetRoamingPath(string path) { Marshal.ThrowExceptionForHR(SHSetKnownFolderPath(ref roaming,0,IntPtr.Zero,path)); }
   public delegate bool EnumCallback(IntPtr hwnd, IntPtr state);
-  [DllImport("user32.dll")] static extern bool EnumWindows(EnumCallback callback, IntPtr state);
+  [DllImport("user32.dll", SetLastError=true)] static extern bool EnumWindows(EnumCallback callback, IntPtr state);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr hwnd, EnumCallback callback, IntPtr state);
-  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll", SetLastError=true)] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
   [DllImport("user32.dll")] static extern IntPtr GetMenu(IntPtr hwnd);
   [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam, uint flags, uint timeout, out IntPtr result);
   [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint objectId, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object result);
   [DllImport("oleacc.dll")] static extern int AccessibleChildren(IAccessible parent, int start, int count, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex=2)] object[] children, out int obtained);
-  public static IntPtr[] Windows(int pid) { var list=new List<IntPtr>(); EnumWindows((h,s)=>{uint p; GetWindowThreadProcessId(h,out p); if(p==pid)list.Add(h);return list.Count<=512;},IntPtr.Zero); return list.ToArray(); }
+  public static IntPtr[] Windows(int pid,RecoveryEvidence report=null) {
+    var list=new List<IntPtr>();
+    bool complete=EnumWindows((h,s)=>{uint p; GetWindowThreadProcessId(h,out p); if(p==pid)list.Add(h);return list.Count<=512;},IntPtr.Zero);
+    if(!complete && list.Count<=512 && report!=null){report.enumerationError=Marshal.GetLastWin32Error();report.scan.rootFailures++;}
+    return list.ToArray();
+  }
   public static string Text(IntPtr hwnd) { var text=new StringBuilder(8192);GetWindowText(hwnd,text,text.Capacity);return text.ToString(); }
   public static string[] Texts(int pid) { var texts=new HashSet<string>();foreach(var window in Windows(pid)){if(!IsWindowVisible(window))continue;texts.Add(Text(window));EnumChildWindows(window,(h,s)=>{texts.Add(Text(h));return true;},IntPtr.Zero);}return new List<string>(texts).ToArray(); }
   public static bool HasMenu(int pid) { foreach(var window in Windows(pid)){if(GetMenu(window)!=IntPtr.Zero)return true;}return false; }
@@ -242,8 +250,38 @@ public static class ErUpdateWindows {
     internal IAccessible close;internal object child;
   }
   public class RecoveryEvidence {
-    public int documents;public bool invoked;
+    public int documents;public bool invoked;public int? enumerationError;
     public List<RecoveryDialog> dialogs=new List<RecoveryDialog>();public Scan scan;
+    public List<RecoveryWindow> windows=new List<RecoveryWindow>();
+  }
+  public class RecoveryWindow {
+    public long hwnd;public uint ownerPid;public string className="",admission,errorOperation;
+    public bool visible;public int? win32Error,accessibilityResult;
+  }
+  static bool ChromiumWindowClass(string value) {
+    const string prefix="Chrome_WidgetWin_";
+    if(!value.StartsWith(prefix,StringComparison.Ordinal))return false;
+    string suffix=value.Substring(prefix.Length);
+    if(suffix.Length==0 || suffix.Length>10 || (suffix.Length>1 && suffix[0]=='0'))return false;
+    foreach(char c in suffix)if(c<'0' || c>'9')return false;
+    int counter;return Int32.TryParse(suffix,out counter) && counter>=0;
+  }
+  static RecoveryWindow ReadRecoveryWindow(IntPtr window,int pid) {
+    var sample=new RecoveryWindow();sample.hwnd=window.ToInt64();
+    uint owner;uint thread=GetWindowThreadProcessId(window,out owner);int ownerError=Marshal.GetLastWin32Error();
+    sample.ownerPid=owner;
+    var name=new StringBuilder(256);int length=GetClassName(window,name,name.Capacity);int classError=Marshal.GetLastWin32Error();
+    sample.className=name.ToString();sample.visible=IsWindowVisible(window);
+    // IsWindowVisible false is an ordinary hidden state, not a Win32 failure.
+    // Read LastError only for failed APIs which document it; never serialize exceptions.
+    if(thread==0){sample.admission="owner-unavailable";sample.errorOperation="owner";sample.win32Error=ownerError;}
+    else if(length==0){sample.admission="class-unavailable";sample.errorOperation="class";sample.win32Error=classError;}
+    else if(length>=name.Capacity-1)sample.admission="class-truncated";
+    else if(owner!=pid)sample.admission="foreign-owner";
+    else if(!sample.visible)sample.admission="hidden";
+    else if(!ChromiumWindowClass(sample.className))sample.admission="other-class";
+    else sample.admission="eligible";
+    return sample;
   }
   class RecoveryScan {
     public RecoveryEvidence result=new RecoveryEvidence();
@@ -300,24 +338,78 @@ public static class ErUpdateWindows {
   public static RecoveryEvidence Recovery(int pid,string url,string title,string notice,string release,bool perform,Action confirmOwner) {
     var values=new Values();values.scan=new Scan();var scan=new RecoveryScan(url,title,notice,release,values.scan);
     int budget=4096;
-    foreach(var window in Windows(pid)) {
+    foreach(var window in Windows(pid,scan.result)) {
       if(++values.scan.handles>512){values.scan.budgetLimited=true;break;}
-      uint owner;GetWindowThreadProcessId(window,out owner);
-      var className=new StringBuilder(256);GetClassName(window,className,className.Capacity);
+      var sample=ReadRecoveryWindow(window,pid);
+      if(scan.result.windows.Count>=64){values.scan.valueLimited=true;break;}
+      scan.result.windows.Add(sample);
       // Scan the main top-level client once. Rewalking child HWNDs would count
       // the same document/dialog repeatedly and could authorize an ambiguous Close.
-      if(owner!=pid || !IsWindowVisible(window) || className.ToString()!="Chrome_WidgetWin_1")continue;
+      if(sample.admission!="eligible")continue;
       object value;var iid=new Guid("618736E0-3C3D-11CF-810C-00AA00389B71");
       try{
-        if(AccessibleObjectFromWindow(window,0xFFFFFFFC,ref iid,out value)!=0 || !(value is IAccessible)){values.scan.rootFailures++;continue;}
+        sample.accessibilityResult=AccessibleObjectFromWindow(window,0xFFFFFFFC,ref iid,out value);
+        if(sample.accessibilityResult!=0 || !(value is IAccessible)){sample.admission="accessibility-unavailable";values.scan.rootFailures++;continue;}
+        sample.admission="inspected";
         values.scan.accessibleRoots++;Walk((IAccessible)value,values,ref budget,0,scan.Visit);
-      }catch{values.scan.rootFailures++;}
+      }catch(Exception error){sample.admission="accessibility-unavailable";sample.accessibilityResult=Marshal.GetHRForException(error);values.scan.rootFailures++;}
     }
     if(perform && scan.Ready()) {
       confirmOwner();var dialog=scan.result.dialogs[0];
       if(RecoveryScan.EnabledClose(dialog.close,dialog.child)){dialog.close.accDoDefaultAction(dialog.child);scan.result.invoked=true;}
     }
     return scan.result;
+  }
+  // Native fixture controls: real self-owned HWNDs, no product window or profile.
+  delegate IntPtr WindowProcedure(IntPtr hwnd,uint message,IntPtr wparam,IntPtr lparam);
+  [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)] struct WindowClass {
+    public uint style;public WindowProcedure procedure;public int classExtra,windowExtra;
+    public IntPtr instance,icon,cursor,background;public string menuName,className;
+  }
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern ushort RegisterClass(ref WindowClass value);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern bool UnregisterClass(string name,IntPtr instance);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateWindowEx(uint exStyle,string className,string title,uint style,int x,int y,int width,int height,IntPtr parent,IntPtr menu,IntPtr instance,IntPtr parameter);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern IntPtr DefWindowProc(IntPtr hwnd,uint message,IntPtr wparam,IntPtr lparam);
+  [DllImport("user32.dll")] static extern bool DestroyWindow(IntPtr hwnd);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd,IntPtr after,int x,int y,int width,int height,uint flags);
+  public static object AdmissionControls() {
+    int pid=Process.GetCurrentProcess().Id;IntPtr instance=GetModuleHandle(null);
+    var classes=new List<string>();var windows=new List<IntPtr>();WindowProcedure procedure=DefWindowProc;
+    string[] names={"Chrome_WidgetWin_7","Chrome_WidgetWin_19","Chrome_WidgetWin_23","ErUpdateFixture_"+Guid.NewGuid().ToString("N")};
+    try {
+      foreach(string name in names) {
+        var value=new WindowClass();value.procedure=procedure;value.instance=instance;value.className=name;
+        if(RegisterClass(ref value)==0)throw new Exception("Native admission control class registration failed.");
+        classes.Add(name);
+        IntPtr window=CreateWindowEx(0,name,"Private admission control",0x00CF0000,0,0,120,80,IntPtr.Zero,IntPtr.Zero,instance,IntPtr.Zero);
+        if(window==IntPtr.Zero)throw new Exception("Native admission control window creation failed.");
+        windows.Add(window);
+      }
+      // Set only these fixture windows visible, independently of the PowerShell
+      // launcher's startup show flags. The product observer never calls this.
+      foreach(int index in new int[]{0,1,3})if(!SetWindowPos(windows[index],IntPtr.Zero,0,0,0,0,0x0040|0x0010|0x0004|0x0002|0x0001))throw new Exception("Native admission control visibility failed.");
+      var enumerated=new HashSet<IntPtr>(Windows(pid));
+      var samples=new Dictionary<string,RecoveryWindow>();
+      samples.Add("visibleCounter",ReadRecoveryWindow(windows[0],pid));
+      samples.Add("secondCounter",ReadRecoveryWindow(windows[1],pid));
+      samples.Add("hidden",ReadRecoveryWindow(windows[2],pid));
+      samples.Add("otherClass",ReadRecoveryWindow(windows[3],pid));
+      samples.Add("foreignOwner",ReadRecoveryWindow(windows[0],pid+1));
+      IntPtr child=CreateWindowEx(0,names[0],"Private child control",0x40000000,0,0,20,20,windows[0],IntPtr.Zero,instance,IntPtr.Zero);
+      if(child==IntPtr.Zero)throw new Exception("Native admission child creation failed.");
+      windows.Add(child);
+      bool childExcluded=!new HashSet<IntPtr>(Windows(pid)).Contains(child);
+      if(!DestroyWindow(child))throw new Exception("Native admission child cleanup failed.");
+      windows.Remove(child);samples.Add("destroyed",ReadRecoveryWindow(child,pid));
+      return new {ownerPid=pid,allTopLevelsEnumerated=windows.TrueForAll(window=>enumerated.Contains(window)),childExcluded=childExcluded,samples=samples};
+    } finally {
+      bool cleaned=true;
+      for(int i=windows.Count-1;i>=0;i--)if(!DestroyWindow(windows[i]))cleaned=false;
+      foreach(string name in classes)if(!UnregisterClass(name,instance))cleaned=false;
+      GC.KeepAlive(procedure);
+      if(!cleaned)throw new Exception("Native admission control cleanup failed.");
+    }
   }
   public static void RequestExit(int pid) { foreach(var window in Windows(pid)){IntPtr result;SendMessageTimeout(window,0x11,IntPtr.Zero,IntPtr.Zero,2,5000,out result);} }
 }
@@ -494,8 +586,46 @@ export interface InstalledRecoveryEvidence {
   owner: NativeWindowOwner;
   documents: number;
   invoked: boolean;
+  enumerationError: number | null;
+  windows: InstalledRecoveryWindow[];
   dialogs: Array<{ documentUrl: string; title: string; notice: string | null; releaseUrl: string | null; closeButtons: number; enabledCloseButtons: number }>;
   scan: InstalledWindowEvidence["scan"];
+}
+export interface InstalledRecoveryWindow {
+  hwnd: number;
+  ownerPid: number;
+  className: string;
+  visible: boolean;
+  admission: "owner-unavailable" | "class-unavailable" | "class-truncated" | "foreign-owner" | "hidden" | "other-class"
+    | "eligible" | "accessibility-unavailable" | "inspected";
+  errorOperation: "owner" | "class" | null;
+  win32Error: number | null;
+  accessibilityResult: number | null;
+}
+const RECOVERY_WINDOW_ADMISSIONS = ["owner-unavailable", "class-unavailable", "class-truncated", "foreign-owner", "hidden", "other-class",
+  "eligible", "accessibility-unavailable", "inspected"];
+function chromiumWindowClass(value: string): boolean {
+  const match = /^Chrome_WidgetWin_(0|[1-9][0-9]{0,9})$/u.exec(value);
+  return Boolean(match && Number(match[1]) <= 0x7fffffff);
+}
+function assertRecoveryWindow(sample: InstalledRecoveryWindow): void {
+  const nativeCode = (value: number | null) => value === null || (Number.isSafeInteger(value) && value >= -0x80000000 && value <= 0xffffffff);
+  assert(sample && Number.isSafeInteger(sample.hwnd) && sample.hwnd > 0 && Number.isSafeInteger(sample.ownerPid)
+    && sample.ownerPid >= 0 && sample.ownerPid <= 0xffffffff && typeof sample.className === "string" && sample.className.length < 256
+    && !/[\0\r\n]/u.test(sample.className) && typeof sample.visible === "boolean" && RECOVERY_WINDOW_ADMISSIONS.includes(sample.admission)
+    && [null, "owner", "class"].includes(sample.errorOperation) && nativeCode(sample.win32Error) && nativeCode(sample.accessibilityResult),
+  "Invalid native recovery window admission");
+  assert((sample.errorOperation === null) === (sample.win32Error === null)
+    && (sample.admission === "owner-unavailable") === (sample.errorOperation === "owner")
+    && (sample.admission === "class-unavailable") === (sample.errorOperation === "class"),
+  "Inconsistent native recovery window error");
+  if (["eligible", "accessibility-unavailable", "inspected"].includes(sample.admission)) {
+    assert(sample.visible && sample.ownerPid > 0 && chromiumWindowClass(sample.className), "Invalid admitted native recovery window");
+  }
+  if (sample.admission === "hidden") assert(!sample.visible, "Hidden native recovery window is visible");
+  if (sample.admission === "other-class") assert(!chromiumWindowClass(sample.className), "Native recovery class rejection is inconsistent");
+  if (sample.admission === "inspected") assert(sample.accessibilityResult === 0, "Native recovery root was not acquired");
+  if (!["inspected", "accessibility-unavailable"].includes(sample.admission)) assert(sample.accessibilityResult === null, "Unadmitted native recovery window was inspected");
 }
 const RECOVERY_TITLE = "Updates";
 const RECOVERY_NOTICE = "Installation failed. Open latest Release.";
@@ -503,11 +633,22 @@ const RECOVERY_NOTICE = "Installation failed. Open latest Release.";
 export function assessInstalledRecoveryEvidence(evidence: InstalledRecoveryEvidence, owner: NativeWindowOwner, canonicalUrl: string): boolean {
   assertWindowOwner(evidence.owner, owner);
   assert(Number.isSafeInteger(evidence.documents) && evidence.documents >= 0 && evidence.documents <= 4096
-    && typeof evidence.invoked === "boolean" && Array.isArray(evidence.dialogs) && evidence.dialogs.length <= 16, "Invalid native recovery evidence");
+    && typeof evidence.invoked === "boolean" && Array.isArray(evidence.dialogs) && evidence.dialogs.length <= 16
+    && (evidence.enumerationError === null || (Number.isSafeInteger(evidence.enumerationError) && evidence.enumerationError >= -0x80000000 && evidence.enumerationError <= 0xffffffff)),
+  "Invalid native recovery evidence");
   assert(evidence.scan, "Missing native recovery scan");
   for (const key of WINDOW_SCAN_COUNTS)
     assert(Number.isSafeInteger(evidence.scan[key]) && evidence.scan[key] >= 0 && evidence.scan[key] <= 65536, "Invalid native recovery scan count");
   for (const key of WINDOW_SCAN_LIMITS) assert(typeof evidence.scan[key] === "boolean", "Invalid native recovery scan limit");
+  assert(Array.isArray(evidence.windows) && evidence.windows.length <= 64 && evidence.windows.length <= evidence.scan.handles, "Invalid native recovery window list");
+  const handles = new Set<number>();
+  for (const sample of evidence.windows) {
+    assertRecoveryWindow(sample);
+    assert(!handles.has(sample.hwnd), "Duplicate native recovery window"); handles.add(sample.hwnd);
+    if (["eligible", "accessibility-unavailable", "inspected"].includes(sample.admission)) {
+      assert(sample.ownerPid === owner.pid, "Admitted native recovery window belongs to another process");
+    }
+  }
   for (const dialog of evidence.dialogs) {
     assert(dialog && [dialog.documentUrl, dialog.title].every(value => typeof value === "string" && value.length < 8192)
       && [dialog.notice, dialog.releaseUrl].every(value => value === null || (typeof value === "string" && value.length < 8192))
@@ -515,7 +656,9 @@ export function assessInstalledRecoveryEvidence(evidence: InstalledRecoveryEvide
     "Invalid native recovery dialog");
   }
   const dialog = evidence.dialogs[0];
-  return evidence.documents === 1 && evidence.dialogs.length === 1 && evidence.scan.rootFailures === 0 && evidence.scan.propertyErrors === 0
+  return evidence.documents === 1 && evidence.dialogs.length === 1 && evidence.enumerationError === null
+    && evidence.scan.accessibleRoots > 0 && evidence.windows.some(sample => sample.admission === "inspected")
+    && evidence.scan.rootFailures === 0 && evidence.scan.propertyErrors === 0
     && !WINDOW_SCAN_LIMITS.some(key => evidence.scan[key])
     && dialog!.documentUrl === canonicalUrl && dialog!.title === RECOVERY_TITLE && dialog!.notice === RECOVERY_NOTICE
     && dialog!.releaseUrl === LATEST_RELEASE_PAGE && dialog!.closeButtons === 1 && dialog!.enabledCloseButtons === 1;
@@ -526,16 +669,66 @@ async function installedRecoveryEvidence(owner: NativeWindowOwner, canonicalUrl:
     $confirm=[Action]{Confirm-WindowOwner};
     $sample=[ErUpdateWindows]::Recovery([int]$expected.pid,$env:ER_FIXTURE_CANONICAL_URL,$env:ER_FIXTURE_RECOVERY_TITLE,
       $env:ER_FIXTURE_RECOVERY_NOTICE,$env:ER_FIXTURE_RELEASE_URL,($env:ER_FIXTURE_RECOVERY_ACTION -ceq 'close'),$confirm);
-    @{owner=$expected;documents=$sample.documents;dialogs=@($sample.dialogs);invoked=$sample.invoked;scan=$sample.scan}|ConvertTo-Json -Depth 6 -Compress
+    @{owner=$expected;documents=$sample.documents;dialogs=@($sample.dialogs);invoked=$sample.invoked;scan=$sample.scan;
+      windows=@($sample.windows);enumerationError=$sample.enumerationError}|ConvertTo-Json -Depth 6 -Compress
   `, { ER_FIXTURE_CANONICAL_URL: canonicalUrl, ER_FIXTURE_RECOVERY_TITLE: RECOVERY_TITLE, ER_FIXTURE_RECOVERY_NOTICE: RECOVERY_NOTICE,
     ER_FIXTURE_RELEASE_URL: LATEST_RELEASE_PAGE, ER_FIXTURE_RECOVERY_ACTION: perform ? "close" : "observe" });
   assert(Buffer.byteLength(text, "utf8") <= 256 * 1024, "Native recovery evidence exceeds its transport bound");
   return JSON.parse(text.trim()) as InstalledRecoveryEvidence;
 }
 
+/** Keep the existing failure-log envelope valid JSON, even at native scan limits. */
+export function projectInstalledRecoveryDiagnostic(evidence: InstalledRecoveryEvidence) {
+  let truncated = false;
+  const field = (value: string, maximum: number) => {
+    if (Buffer.byteLength(value, "utf8") <= maximum) return value;
+    truncated = true;
+    return "[oversized native value omitted]";
+  };
+  const counts: Record<string, number> = {};
+  for (const window of evidence.windows) counts[window.admission] = (counts[window.admission] ?? 0) + 1;
+  const record = {
+    owner: { pid: evidence.owner.pid, parentPid: evidence.owner.parentPid, start: field(evidence.owner.start, 128), executable: field(evidence.owner.executable, 1024) },
+    documents: evidence.documents, invoked: evidence.invoked, enumerationError: evidence.enumerationError,
+    scan: Object.fromEntries([...WINDOW_SCAN_COUNTS, ...WINDOW_SCAN_LIMITS].map(key => [key, evidence.scan[key]])),
+    totals: { windows: evidence.windows.length, dialogs: evidence.dialogs.length }, windowAdmissions: counts,
+    windows: [] as InstalledRecoveryWindow[], dialogs: [] as InstalledRecoveryEvidence["dialogs"], truncated: false,
+  };
+  const fits = () => Buffer.byteLength(JSON.stringify({ ...record, truncated }), "utf8") <= 7000;
+  for (const dialog of evidence.dialogs) {
+    record.dialogs.push({ documentUrl: field(dialog.documentUrl, 1024), title: field(dialog.title, 256),
+      notice: dialog.notice === null ? null : field(dialog.notice, 512), releaseUrl: dialog.releaseUrl === null ? null : field(dialog.releaseUrl, 512),
+      closeButtons: dialog.closeButtons, enabledCloseButtons: dialog.enabledCloseButtons });
+    if (!fits()) { record.dialogs.pop(); truncated = true; break; }
+  }
+  for (const window of evidence.windows) {
+    record.windows.push({ hwnd: window.hwnd, ownerPid: window.ownerPid, className: field(window.className, 256),
+      visible: window.visible, admission: window.admission, errorOperation: window.errorOperation,
+      win32Error: window.win32Error, accessibilityResult: window.accessibilityResult });
+    if (!fits()) { record.windows.pop(); truncated = true; break; }
+  }
+  record.truncated = truncated;
+  assert(fits(), "Native recovery diagnostic exceeds its byte bound");
+  return record;
+}
+
+/** Disposable hosted Windows control: actual registered HWNDs use the same reader. */
+export async function nativeRecoveryWindowAdmissionControls(): Promise<{
+  ownerPid: number; allTopLevelsEnumerated: boolean; childExcluded: boolean; samples: Record<string, InstalledRecoveryWindow>;
+}> {
+  const text = await nativeFixtureCall("[ErUpdateWindows]::AdmissionControls() | ConvertTo-Json -Depth 6 -Compress", {}, "native recovery window admission controls");
+  assert(Buffer.byteLength(text, "utf8") <= 16 * 1024, "Native recovery control evidence exceeds its bound");
+  const result = JSON.parse(text.trim());
+  assert(Number.isSafeInteger(result.ownerPid) && result.ownerPid > 0 && typeof result.allTopLevelsEnumerated === "boolean"
+    && typeof result.childExcluded === "boolean" && result.samples && typeof result.samples === "object" && !Array.isArray(result.samples)
+    && Object.keys(result.samples).length <= 8, "Invalid native recovery control evidence");
+  for (const sample of Object.values(result.samples)) assertRecoveryWindow(sample as InstalledRecoveryWindow);
+  return result;
+}
+
 /** Observe the shared dialog, then rescan and act only on its unique enabled Close. */
 export async function closeRecoveryReleaseDialog(owner: NativeWindowOwner, canonicalUrl: string, options: {
-  onEvidence?: (evidence: InstalledRecoveryEvidence) => void;
+  onEvidence?: (evidence: ReturnType<typeof projectInstalledRecoveryDiagnostic>) => void;
   read?: typeof installedRecoveryEvidence;
 } = {}): Promise<boolean> {
   const url = new URL(canonicalUrl);
@@ -544,12 +737,12 @@ export async function closeRecoveryReleaseDialog(owner: NativeWindowOwner, canon
   const read = options.read ?? installedRecoveryEvidence;
   const observed = await read(owner, canonicalUrl, false);
   const ready = assessInstalledRecoveryEvidence(observed, owner, canonicalUrl);
-  options.onEvidence?.(observed);
+  options.onEvidence?.(projectInstalledRecoveryDiagnostic(observed));
   assert(!observed.invoked, "Recovery observation unexpectedly performed an action");
   if (!ready) return false;
   const acted = await read(owner, canonicalUrl, true);
   const stillReady = assessInstalledRecoveryEvidence(acted, owner, canonicalUrl);
-  options.onEvidence?.(acted);
+  options.onEvidence?.(projectInstalledRecoveryDiagnostic(acted));
   assert(!acted.invoked || stillReady, "Recovery action lacked the exact dialog evidence");
   return acted.invoked && stillReady;
 }

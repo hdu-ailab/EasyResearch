@@ -93,7 +93,15 @@ jobs:
           EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-update-tests/agent
           HOME: ${{ runner.temp }}/easyresearch-update-tests/home
           USERPROFILE: ${{ runner.temp }}/easyresearch-update-tests/home
-        run: bun scripts/windows-update-assembly.ts bun run test src/runtime/windows-update-job.test.ts src/runtime/windows-update-job.protocol.test.ts src/runtime/windows-update-job.native.test.ts src/runtime/npm-update-process.test.ts src/runtime/npm-update-process-windows.test.ts src/runtime/npm-update-process-windows.native.test.ts src/desktop/update-process.test.ts src/desktop/update-worker.test.ts src/desktop/update-successor-channel.test.ts src/desktop/update-staging.test.ts
+        run: bun scripts/windows-update-assembly.ts bun run test src/runtime/windows-update-job.test.ts src/runtime/windows-update-job.protocol.test.ts src/runtime/windows-update-job.native.test.ts src/runtime/npm-update-process.test.ts src/runtime/npm-update-process-windows.test.ts src/runtime/npm-update-process-windows.native.test.ts src/desktop/update-process.test.ts src/desktop/update-worker.test.ts src/desktop/update-rollback.test.ts src/desktop/update-successor-channel.test.ts src/desktop/update-staging.test.ts
+
+      - name: Verify native Windows recovery window admission
+        if: runner.os == 'Windows'
+        env:
+          EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-window-tests/agent
+          HOME: ${{ runner.temp }}/easyresearch-window-tests/home
+          USERPROFILE: ${{ runner.temp }}/easyresearch-window-tests/home
+        run: bun run test src/runtime/update-fixture.test.ts -t "admits real visible Windows"
 
       - name: Build native platform binary
         run: bun scripts/build.ts --only ${{ matrix.target }}

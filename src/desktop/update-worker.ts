@@ -131,10 +131,12 @@ export async function runDesktopUpdateWorker(argv: readonly string[]): Promise<n
       let transfer: ReturnType<RuntimeLease["reserveHandoff"]> | undefined;
       try {
         transfer = lease!.reserveHandoff(successorToken);
+        // The GUI owner's first real window must not inherit a hidden startup
+        // show flag. Process-only custodians retain the launcher's hidden default.
         successor = spawnDesktopUpdateOwner(h.hostPath, [], h.userDataDir, { ...cleanUpdateEnvironment(),
           EASYRESEARCH_CODING_AGENT_DIR: h.agentDir,
           [UPDATE_SUCCESSOR_ENV]: JSON.stringify({ directory: h.directory, token: successorToken, workerPid: process.pid, pipe: channel.path }),
-        });
+        }, { windowsHide: false });
         if (!successor.child.pid) throw new Error("Successor did not spawn.");
         channel.bindChild(successor.child.pid);
         transfer.commit(successor.child.pid);

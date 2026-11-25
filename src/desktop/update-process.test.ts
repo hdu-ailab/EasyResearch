@@ -9,6 +9,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { desktopUpdateFailure } from "./update-protocol";
+import { createRequire } from "node:module";
+import { win32 } from "node:path";
 
 it("owns the real child before acknowledgement and waits for its actual close", async () => {
   const token = "t".repeat(43);
@@ -22,6 +24,215 @@ it("owns the real child before acknowledgement and waits for its actual close", 
     expect(await child.exited).toEqual({ code: 0, signal: null });
   } finally { await child.stop(); }
 });
+
+it("keeps process-only owners hidden and preserves an explicit visible GUI launch with detached pipe custody", async () => {
+  const spawn = vi.fn(() => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  });
+  vi.doMock("node:child_process", async (original) => ({
+    ...await original<typeof import("node:child_process")>(), spawn,
+  }));
+  vi.resetModules();
+  try {
+    const launcher = await import("./update-process");
+    const env = { FIXTURE: "isolated" };
+    for (const windowsHide of [undefined, true, false]) {
+      const child = launcher.spawnUpdateProcess("fixture.exe", [], { env, windowsHide });
+      expect(spawn).toHaveBeenLastCalledWith("fixture.exe", [], expect.objectContaining({
+        env, windowsHide: windowsHide ?? true, stdio: ["pipe", "pipe", "pipe"],
+      }));
+      await child.treeSettled;
+    }
+    for (const windowsHide of [undefined, false]) {
+      const child = launcher.spawnDesktopUpdateOwner("owner.exe", [], "durable-user-data", env, { windowsHide });
+      expect(spawn).toHaveBeenLastCalledWith("owner.exe", [], {
+        env, cwd: "durable-user-data", detached: true, windowsHide: windowsHide ?? true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      await child.treeSettled;
+    }
+  } finally {
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
+  }
+});
+
+it.skipIf(process.platform !== "win32")("shows a pinned Electron owner's first loaded window under the visible GUI policy, measured by Win32", async () => {
+  // A real Bun custodian exercises the same launch implementation as the compiled
+  // process-only worker. The fixture has one sandboxed window, one show() call,
+  // no preload/debugger/product hooks, and private HOME/userData for each launch.
+  const require = createRequire(import.meta.url);
+  const electronRequire = createRequire(require.resolve("electron/package.json"));
+  const electronVersion = (electronRequire("./package.json") as { version: string }).version;
+  const root = await realpath(await mkdtemp(join(tmpdir(), "desktop-first-window-")));
+  const parents: Array<ReturnType<typeof spawnUpdateProcess>> = [];
+  const stops: string[] = [];
+  let observer: ReturnType<typeof spawnUpdateProcess> | undefined;
+  const token = "w".repeat(43);
+  try {
+    // Do not invoke electron's lazy installer: it writes into node_modules and
+    // the user's default cache. Provision the locked, checksum-verified runtime
+    // through its existing downloader into this test's private directory.
+    const { downloadArtifact } = await import(pathToFileURL(electronRequire.resolve("@electron/get")).href) as typeof import("@electron/get");
+    const archive = await downloadArtifact({
+      version: electronVersion, artifactName: "electron", platform: "win32", arch: process.arch,
+      checksums: electronRequire("./checksums.json"), cacheRoot: join(root, "cache"), tempDirectory: root,
+      downloadOptions: { quiet: true, signal: AbortSignal.timeout(120_000) },
+    });
+    await (electronRequire("extract-zip") as (path: string, options: { dir: string }) => Promise<void>)(archive, { dir: join(root, "electron") });
+    const electron = join(root, "electron", "electron.exe");
+    const windows: Array<{ policy: "hidden" | "visible"; pid: number; hwnd: string; cwd: string }> = [];
+    for (const policy of ["hidden", "visible"] as const) {
+      const directory = join(root, policy), userData = join(directory, "user-data"), project = join(directory, "project");
+      const report = join(directory, "window.json"), stop = join(directory, "stop");
+      stops.push(stop);
+      const env = { ...process.env };
+      for (const key of Object.keys(env)) {
+        if (/^(?:EASYRESEARCH_|ELECTRON_)/i.test(key) || key === "NODE_OPTIONS") delete env[key];
+      }
+      Object.assign(env, {
+        HOME: join(directory, "home"), USERPROFILE: join(directory, "home"),
+        APPDATA: join(directory, "roaming"), LOCALAPPDATA: join(directory, "local"),
+        TEMP: join(directory, "temp"), TMP: join(directory, "temp"),
+        EASYRESEARCH_CODING_AGENT_DIR: join(directory, "agent"),
+      });
+      for (const path of new Set([userData, project, env.HOME!, env.APPDATA!, env.LOCALAPPDATA!, env.TEMP!, env.EASYRESEARCH_CODING_AGENT_DIR!])) {
+        await mkdir(path, { recursive: true });
+      }
+      const entry = join(directory, "first-window.cjs"), custodian = join(directory, "custodian.ts");
+      await writeFile(entry, `
+const { app, BrowserWindow } = require("electron");
+const fs = require("node:fs");
+app.setPath("userData", ${JSON.stringify(userData)});
+let window;
+const stop = setInterval(() => { if (fs.existsSync(${JSON.stringify(stop)})) app.quit(); }, 25);
+const deadline = setTimeout(() => app.exit(3), 120000);
+app.on("will-quit", () => { clearInterval(stop); clearTimeout(deadline); });
+app.whenReady().then(async () => {
+  window = new BrowserWindow({ show: false, width: 640, height: 400, title: "EasyResearch first-window fixture",
+    webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true } });
+  window.webContents.once("did-finish-load", () => {
+    window.show();
+    const bytes = window.getNativeWindowHandle();
+    const hwnd = bytes.length === 8 ? bytes.readBigUInt64LE().toString() : bytes.readUInt32LE().toString();
+    const prefs = window.webContents.getLastWebPreferences();
+    fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify({ pid: process.pid, hwnd, cwd: process.cwd(), electron: process.versions.electron,
+      windows: BrowserWindow.getAllWindows().length, sandbox: prefs.sandbox, nodeIntegration: prefs.nodeIntegration,
+      contextIsolation: prefs.contextIsolation, preload: Boolean(prefs.preload) }));
+  });
+  await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent("<!doctype html><title>EasyResearch fixture</title><h1>First real application window</h1>"));
+}).catch(error => { console.error(error); app.exit(2); });
+`);
+      await writeFile(custodian, `
+import { writeFileSync } from "node:fs";
+import { spawnDesktopUpdateOwner } from ${JSON.stringify(pathToFileURL(resolve("src/desktop/update-process.ts")).href)};
+const host = spawnDesktopUpdateOwner(${JSON.stringify(electron)}, [${JSON.stringify(entry)}], ${JSON.stringify(userData)}, process.env, { windowsHide: ${policy === "hidden"} });
+process.stdout.write("@easyresearch-update " + JSON.stringify({ type: "spawned", token: ${JSON.stringify(token)}, pid: host.child.pid }) + "\\n");
+process.stdin.resume();
+process.stdin.once("end", () => {
+  writeFileSync(${JSON.stringify(stop)}, "stop");
+  void host.stop().catch(error => { console.error(error); process.exitCode = 2; });
+});
+const exited = await host.exited;
+process.exit(exited.code ?? 1);
+`);
+      const parent = spawnUpdateProcess("bun.exe", [custodian], { env, cwd: project });
+      parents.push(parent);
+      const spawned = await parent.event("spawned", token, 15_000);
+      let observed!: { pid: number; hwnd: string; cwd: string; electron: string; windows: number; sandbox: boolean; nodeIntegration: boolean; contextIsolation: boolean; preload: boolean };
+      await expect.poll(async () => {
+        if (parent.closed) throw parent.exitError();
+        observed = JSON.parse(await readFile(report, "utf8"));
+        return observed.pid;
+      }, { timeout: 30_000 }).toBe(spawned.pid);
+      expect(observed).toMatchObject({
+        electron: electronVersion, windows: 1, sandbox: true, nodeIntegration: false, contextIsolation: true, preload: false,
+      });
+      expect(BigInt(observed.hwnd)).toBeGreaterThan(0n);
+      expect(await realpath(observed.cwd)).toBe(await realpath(userData));
+      windows.push({ policy, pid: observed.pid, hwnd: observed.hwnd, cwd: observed.cwd });
+    }
+
+    // Observe both exact HWNDs in one native helper invocation. The hidden-launch
+    // control is recorded rather than assumed to fail on every Windows version.
+    const script = join(root, "window-visibility.ps1");
+    await writeFile(script, `
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public sealed class FirstWindowObservation {
+  public string Hwnd;
+  public uint OwnerPid;
+  public uint ThreadId;
+  public bool Exists;
+  public bool TopLevel;
+  public bool Visible;
+  public string ClassName;
+}
+public static class FirstWindowVisibility {
+  private delegate bool EnumProc(IntPtr hwnd, IntPtr parameter);
+  [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc callback, IntPtr parameter);
+  [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
+  [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder name, int length);
+  public static FirstWindowObservation Read(long value) {
+    IntPtr hwnd = new IntPtr(value);
+    FirstWindowObservation result = new FirstWindowObservation();
+    result.Hwnd = value.ToString();
+    result.Exists = IsWindow(hwnd);
+    uint pid;
+    result.ThreadId = GetWindowThreadProcessId(hwnd, out pid);
+    result.OwnerPid = pid;
+    int visited = 0;
+    EnumWindows(delegate(IntPtr candidate, IntPtr unused) {
+      if (candidate == hwnd) { result.TopLevel = true; return false; }
+      return ++visited < 8192;
+    }, IntPtr.Zero);
+    result.Visible = IsWindowVisible(hwnd);
+    StringBuilder name = new StringBuilder(256);
+    GetClassName(hwnd, name, name.Capacity);
+    result.ClassName = name.ToString();
+    return result;
+  }
+}
+'@
+$windows = @([FirstWindowVisibility]::Read([Int64]$args[0]), [FirstWindowVisibility]::Read([Int64]$args[1]))
+$result = @{ type = 'visibility'; token = $args[2]; windows = $windows }
+Write-Output ('@easyresearch-update ' + ($result | ConvertTo-Json -Depth 4 -Compress))
+`);
+    const observerEnv = { ...process.env, HOME: root, USERPROFILE: root, TEMP: root, TMP: root,
+      APPDATA: join(root, "observer-roaming"), LOCALAPPDATA: join(root, "observer-local"),
+      EASYRESEARCH_CODING_AGENT_DIR: join(root, "observer-agent") };
+    await Promise.all([observerEnv.APPDATA, observerEnv.LOCALAPPDATA, observerEnv.EASYRESEARCH_CODING_AGENT_DIR].map(path => mkdir(path)));
+    observer = spawnUpdateProcess(win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, windows[0]!.hwnd, windows[1]!.hwnd, token],
+      { cwd: root, env: observerEnv });
+    const measurement = await observer.event("visibility", token, 60_000);
+    expect(await observer.exited).toEqual({ code: 0, signal: null });
+    const samples = measurement.windows as Array<{ Hwnd: string; OwnerPid: number; ThreadId: number; Exists: boolean; TopLevel: boolean; Visible: boolean; ClassName: string }>;
+    console.info("Desktop first-window Win32 evidence:", JSON.stringify({ electron: electronVersion, samples: windows.map((window, index) => ({ policy: window.policy, expectedPid: window.pid, ...samples[index] })) }));
+    expect(samples).toHaveLength(windows.length);
+    for (const [index, window] of windows.entries()) {
+      expect(samples[index]).toMatchObject({ Hwnd: window.hwnd, OwnerPid: window.pid, Exists: true, TopLevel: true });
+      expect(samples[index]!.ThreadId).toBeGreaterThan(0);
+      expect(samples[index]!.ClassName).toMatch(/^Chrome_WidgetWin_\d+$/);
+      expect(parents[index]!.closed).toBe(false);
+    }
+    expect(samples[1]!.Visible).toBe(true);
+  } finally {
+    await Promise.all(stops.map(path => writeFile(path, "stop")));
+    await observer?.stop();
+    await Promise.all(parents.map(parent => parent.stop()));
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}, 300_000);
 
 it("keeps an accepted host alive after its real Bun custodian exits and uses durable cwd", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "desktop-owner-survival-")));

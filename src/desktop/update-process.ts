@@ -87,15 +87,15 @@ export async function waitForDesktopUpdateReadiness<T>(ready: Promise<T>, child:
 }
 
 /** Shared launch boundary for the custodian and the host that survives its exit. */
-export function spawnDesktopUpdateOwner(executable: string, args: string[], userDataDir: string, env: NodeJS.ProcessEnv): OwnedUpdateProcess {
+export function spawnDesktopUpdateOwner(executable: string, args: string[], userDataDir: string, env: NodeJS.ProcessEnv, options: Pick<SpawnOptionsWithoutStdio, "windowsHide"> = {}): OwnedUpdateProcess {
   // A host that survives its custodian cannot remain in that process's Windows
   // kill-on-close job. Pipes and authenticated pre-acceptance custody stay owned.
-  return spawnUpdateProcess(executable, args, { env, cwd: userDataDir, detached: true });
+  return spawnUpdateProcess(executable, args, { env, cwd: userDataDir, detached: true, windowsHide: options.windowsHide });
 }
 
 /** Retains custody at spawn, including spawn errors and children that never become ready. */
 export function spawnUpdateProcess(executable: string, args: string[], options: SpawnOptionsWithoutStdio = {}): OwnedUpdateProcess {
-  const child = spawn(executable, args, { ...options, detached: process.platform !== "win32" || options.detached, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(executable, args, { ...options, detached: process.platform !== "win32" || options.detached, windowsHide: options.windowsHide ?? true, stdio: ["pipe", "pipe", "pipe"] });
   let closed = false;
   let treeClosed = false;
   let resolveTree!: (exit: { code: number | null; signal: NodeJS.Signals | null }) => void;
