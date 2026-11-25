@@ -45,7 +45,7 @@ import {
 import { getAgentDir } from "./pi-import";
 import { parsePiSettingsJson } from "./pi-settings-json";
 import { parseProviderTimeoutSettings } from "./provider-timeout-settings";
-import { ConfigurationSourceError } from "./configuration-source-error";
+import { ConfigurationSourceChangedError, ConfigurationSourceError } from "./configuration-source-error";
 import { RuntimeToolInventory, type RuntimeToolSnapshot } from "./runtime-tool-inventory";
 import { fingerprintExtensionResources } from "./extension-resources";
 import {
@@ -230,8 +230,9 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
     ?? mkdtempSync(join(tmpdir(), "easyresearch-skill-snapshots-"));
   const catalogOptions = { ...options.catalogOptions };
   const homeDir = resolve(catalogOptions.homeDir ?? homedir());
-  const readFingerprint = options.fingerprint
+  const captureFingerprint = options.fingerprint
     ?? ((path) => fingerprintConfiguration(path, homeDir, skillSnapshotRoot));
+  const readFingerprint = (path: string) => readStableResources(() => captureFingerprint(path));
   const loadCatalog = options.loadCatalog ?? ((discovery) => loadAgentCatalog(discovery));
   const resolveCatalog = options.resolveCatalog ?? resolveAgentCatalog;
   const createWatcherManager = options.createWatcherManager ?? createConfigurationWatcherManager;
@@ -703,11 +704,16 @@ export function createLiveConfiguration(options: LiveConfigurationOptions): Live
       onError(path) {
         publishWatcherError(path);
       },
-      async fingerprintProject(cwd) {
-        const skills = await fingerprintProjectSkillResources(cwd, skillSnapshotRoot)
-          .catch(() => { throw new ConfigurationSourceError(join(cwd, ".easyresearch"), "read"); });
-        const extensions = await fingerprintExtensionResources(join(cwd, ".easyresearch"));
-        return { ...skills, value: `${skills.value}:${extensions.value}` };
+      fingerprintProject(cwd) {
+        return readStableResources(async () => {
+          const skills = await fingerprintProjectSkillResources(cwd, skillSnapshotRoot)
+            .catch((error) => {
+              if (error instanceof ConfigurationSourceChangedError) throw error;
+              throw new ConfigurationSourceError(join(cwd, ".easyresearch"), "read");
+            });
+          const extensions = await fingerprintExtensionResources(join(cwd, ".easyresearch"));
+          return { ...skills, value: `${skills.value}:${extensions.value}` };
+        });
       },
     });
   } catch (error) {
@@ -973,7 +979,11 @@ export async function fingerprintConfiguration(
   const agentsHash = createHash("sha256");
   agentsHash.update("easyresearch-agents-v1\0");
   for (const name of names) {
-    const bytes = await readFile(join(agentsDir, name));
+    const path = join(agentsDir, name);
+    const bytes = await readFile(path).catch((error) => {
+      if (isMissing(error)) throw new ConfigurationSourceChangedError(path);
+      throw new ConfigurationSourceError(path, "read");
+    });
     updateHashField(agentsHash, Buffer.from(name, "utf8"));
     updateHashField(agentsHash, bytes);
   }
@@ -1075,6 +1085,19 @@ function assertValidCatalog(snapshot: AgentCatalogSnapshot): void {
     !snapshot.definitions.some((agent) => agent.name === RESEARCH_ASSISTANT_AGENT)
   ) {
     throw new Error("Invalid Agent catalog");
+  }
+}
+
+async function readStableResources<T>(read: () => Promise<T>): Promise<T> {
+  // A disappearing/replaced source invalidates the entire attempt, not the layer.
+  // Re-enumerate before accepting absence or replacement; never retry genuine I/O,
+  // validation, containment or budget failures, and keep repeated churn bounded.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      if (!(error instanceof ConfigurationSourceChangedError) || attempt >= 2) throw error;
+    }
   }
 }
 

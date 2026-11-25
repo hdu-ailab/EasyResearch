@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ConfigurationSourceError } from "./configuration-source-error";
+import { ConfigurationSourceChangedError, ConfigurationSourceError } from "./configuration-source-error";
 import { existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
@@ -106,6 +106,22 @@ export async function fingerprintSkillRoot(
   snapshotRoot?: string,
   mode: SkillDiscoveryMode = "pi",
 ): Promise<SkillScopeFingerprint> {
+  try {
+    return await captureSkillRoot(root, scope, snapshotRoot, mode);
+  } catch (error) {
+    // Missing at entry is an empty layer. Missing after enumeration/stat/open
+    // invalidates this read, so the configuration owner must start a fresh one.
+    if (isMissing(error)) throw new ConfigurationSourceChangedError(root);
+    throw error;
+  }
+}
+
+async function captureSkillRoot(
+  root: string,
+  scope: string,
+  snapshotRoot: string | undefined,
+  mode: SkillDiscoveryMode,
+): Promise<SkillScopeFingerprint> {
   const hash = createHash("sha256");
   hash.update("easyresearch-skill-scope-v1\0");
   updateHashField(hash, Buffer.from(scope, "utf8"));
@@ -115,13 +131,7 @@ export async function fingerprintSkillRoot(
     return { value: hash.digest("hex"), descriptors: [], skillDescriptors: [] };
   }
 
-  let realRoot: string;
-  try {
-    realRoot = await realpath(root);
-  } catch (error) {
-    if (isMissing(error)) throw new Error("Skill descriptor changed while fingerprinting.");
-    throw error;
-  }
+  const realRoot = await realpath(root);
   const realRootStats = await lstat(realRoot);
   if (!realRootStats.isDirectory()) throw new Error("Skill fingerprint root must be a directory.");
   const { importPi } = await import("./pi-import");
@@ -180,14 +190,20 @@ export async function fingerprintGlobalSkillResources(options: FingerprintResour
     join(options.agentDir, "skills"),
     "global",
     options.snapshotRoot,
-  ).catch(() => { throw new ConfigurationSourceError(join(options.agentDir, "skills"), "read"); });
+  ).catch((error) => {
+    if (error instanceof ConfigurationSourceChangedError) throw error;
+    throw new ConfigurationSourceError(join(options.agentDir, "skills"), "read");
+  });
   const homeSkills = options.enableDotAgentsSkill
     ? await fingerprintSkillRoot(
         join(options.homeDir, ".agents", "skills"),
         "home",
         options.snapshotRoot,
         "agents",
-      ).catch(() => { throw new ConfigurationSourceError(join(options.homeDir, ".agents", "skills"), "read"); })
+      ).catch((error) => {
+        if (error instanceof ConfigurationSourceChangedError) throw error;
+        throw new ConfigurationSourceError(join(options.homeDir, ".agents", "skills"), "read");
+      })
     : null;
   return { globalSkills, homeSkills };
 }
@@ -632,13 +648,7 @@ async function readDescriptor(
   realRoot: string,
   rootStats: Awaited<ReturnType<typeof lstat>>,
 ): Promise<Buffer> {
-  let resolved: string;
-  try {
-    resolved = await realpath(path);
-  } catch (error) {
-    if (isMissing(error)) throw new Error("Skill descriptor changed while fingerprinting.");
-    throw error;
-  }
+  const resolved = await realpath(path);
   if (!isInside(realRoot, resolved)) throw new Error("Skill descriptor changed while fingerprinting.");
 
   const pathStats = await lstat(resolved);
@@ -646,9 +656,8 @@ async function readDescriptor(
   const handle = await open(resolved, "r");
   try {
     const before = await handle.stat();
-    if (!before.isFile() || !sameFileSnapshot(pathStats, before)) {
-      throw new Error("Skill descriptor changed while fingerprinting.");
-    }
+    if (!before.isFile()) throw new Error("Skill descriptor changed while fingerprinting.");
+    if (!sameFileSnapshot(pathStats, before)) throw new ConfigurationSourceChangedError(logicalPath);
     if (before.size > MAX_SKILL_DESCRIPTOR_BYTES) {
       throw new Error(`Skill descriptors may not exceed ${MAX_SKILL_DESCRIPTOR_BYTES} bytes.`);
     }
@@ -667,7 +676,7 @@ async function readDescriptor(
       throw new Error(`Skill descriptors may not exceed ${MAX_SKILL_DESCRIPTOR_BYTES} bytes.`);
     }
     if (length !== before.size || !sameFileSnapshot(before, after)) {
-      throw new Error("Skill descriptor changed while fingerprinting.");
+      throw new ConfigurationSourceChangedError(logicalPath);
     }
     await assertDescriptorStillCurrent(logicalPath, root, realRoot, rootStats, after);
     return bytes.subarray(0, length);
@@ -683,28 +692,20 @@ async function assertDescriptorStillCurrent(
   rootStats: Awaited<ReturnType<typeof lstat>>,
   descriptorStats: Awaited<ReturnType<typeof lstat>>,
 ): Promise<void> {
-  let confirmedRoot: string;
-  let confirmedDescriptor: string;
-  try {
-    confirmedRoot = await realpath(root);
-    confirmedDescriptor = await realpath(logicalPath);
-  } catch (error) {
-    if (isMissing(error)) throw new Error("Skill descriptor changed while fingerprinting.");
-    throw error;
-  }
-  if (confirmedRoot !== realRoot || !isInside(confirmedRoot, confirmedDescriptor)) {
+  const confirmedRoot = await realpath(root);
+  const confirmedDescriptor = await realpath(logicalPath);
+  if (!isInside(confirmedRoot, confirmedDescriptor)) {
     throw new Error("Skill descriptor changed while fingerprinting.");
   }
+  if (confirmedRoot !== realRoot) throw new ConfigurationSourceChangedError(root);
 
   const currentRootStats = await lstat(confirmedRoot);
   const currentDescriptorStats = await lstat(confirmedDescriptor);
-  if (
-    !currentRootStats.isDirectory() ||
-    !sameFileIdentity(rootStats, currentRootStats) ||
-    !currentDescriptorStats.isFile() ||
-    !sameFileSnapshot(descriptorStats, currentDescriptorStats)
-  ) {
+  if (!currentRootStats.isDirectory() || !currentDescriptorStats.isFile()) {
     throw new Error("Skill descriptor changed while fingerprinting.");
+  }
+  if (!sameFileIdentity(rootStats, currentRootStats) || !sameFileSnapshot(descriptorStats, currentDescriptorStats)) {
+    throw new ConfigurationSourceChangedError(logicalPath);
   }
 }
 

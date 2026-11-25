@@ -3,7 +3,7 @@ import { lstatSync, type Stats } from "node:fs";
 import { lstat, open, opendir, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { ConfigurationSourceError } from "./configuration-source-error";
+import { ConfigurationSourceChangedError, ConfigurationSourceError } from "./configuration-source-error";
 import { parsePiSettingsJson } from "./pi-settings-json";
 
 export const MAX_EXTENSION_DEPTH = 16;
@@ -68,8 +68,8 @@ export async function fingerprintExtensionResources(configRoot: string): Promise
         physical = target;
         hashField(hash, relative(physicalRoot ?? root, physical).split(sep).join("/"));
         stats = await lstat(physical);
-      } catch {
-        throw sourceError(path);
+      } catch (error) {
+        throw sourceReadError(path, error);
       }
     } else {
       physical = await optionalRealpath(path) ?? path;
@@ -102,8 +102,7 @@ export async function fingerprintExtensionResources(configRoot: string): Promise
       for (const name of names) await visit(join(path, name), depth + 1);
       await assertCurrent(path, physical, stats);
     } catch (error) {
-      if (error instanceof ConfigurationSourceError) throw error;
-      throw sourceError(path);
+      throw sourceReadError(path, error);
     }
   };
 
@@ -217,8 +216,8 @@ async function readSelection(path: string): Promise<{ value: string; entries: st
   let bytes: Buffer;
   try {
     bytes = await readBoundedFile(path, physical, await lstat(physical));
-  } catch {
-    throw sourceError(path);
+  } catch (error) {
+    throw sourceReadError(path, error);
   }
   let parsed: unknown;
   try {
@@ -249,10 +248,11 @@ function localExtensionPath(entry: string, root: string, home: string): string |
 
 async function readBoundedFile(path: string, physical: string, expected: Stats): Promise<Buffer> {
   if (!expected.isFile() || expected.size > MAX_EXTENSION_SOURCE_BYTES) throw sourceError(path);
-  const handle = await open(physical, "r").catch(() => { throw sourceError(path); });
+  const handle = await open(physical, "r").catch((error) => { throw sourceReadError(path, error); });
   try {
     const before = await handle.stat();
-    if (!before.isFile() || !sameSnapshot(expected, before)) throw sourceError(path);
+    if (!before.isFile()) throw sourceError(path);
+    if (!sameSnapshot(expected, before)) throw new ConfigurationSourceChangedError(path);
     const bytes = Buffer.allocUnsafe(Math.max(1, before.size + 1));
     let length = 0;
     while (length < bytes.byteLength) {
@@ -260,18 +260,20 @@ async function readBoundedFile(path: string, physical: string, expected: Stats):
       if (read.bytesRead === 0) break;
       length += read.bytesRead;
     }
-    if (length !== before.size || !sameSnapshot(before, await handle.stat())) throw sourceError(path);
+    if (length !== before.size || !sameSnapshot(before, await handle.stat())) throw new ConfigurationSourceChangedError(path);
     await assertCurrent(path, physical, before);
     return bytes.subarray(0, length);
-  } catch {
-    throw sourceError(path);
+  } catch (error) {
+    throw sourceReadError(path, error);
   } finally {
     await handle.close();
   }
 }
 
 async function assertCurrent(path: string, physical: string, before: Stats): Promise<void> {
-  if (await optionalRealpath(path) !== physical || !sameSnapshot(before, await lstat(physical))) throw sourceError(path);
+  if (await optionalRealpath(path) !== physical || !sameSnapshot(before, await lstat(physical))) {
+    throw new ConfigurationSourceChangedError(path);
+  }
 }
 
 function sameSnapshot(left: Stats, right: Stats): boolean {
@@ -304,6 +306,11 @@ function missing(error: unknown): boolean {
 
 function sourceError(path: string): ConfigurationSourceError {
   return new ConfigurationSourceError(path, "read");
+}
+
+function sourceReadError(path: string, error: unknown): ConfigurationSourceError {
+  if (error instanceof ConfigurationSourceError) return error;
+  return missing(error) ? new ConfigurationSourceChangedError(path) : sourceError(path);
 }
 
 function hashField(hash: ReturnType<typeof createHash>, content: string | Buffer): void {

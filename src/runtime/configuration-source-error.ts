@@ -5,3 +5,12 @@ export class ConfigurationSourceError extends Error {
     this.name = "ConfigurationSourceError";
   }
 }
+
+/** A previously observed source changed during a read; no partial snapshot is valid. */
+export class ConfigurationSourceChangedError extends ConfigurationSourceError {
+  constructor(path: string) {
+    super(path, "read");
+    this.name = "ConfigurationSourceChangedError";
+    this.message = `Configuration source changed while reading ${path}.`;
+  }
+}
