@@ -27,10 +27,10 @@ import { DESKTOP_ACCESS_HEADER, DESKTOP_SMOKE_USER_DATA_ENV } from "../src/deskt
 import { DAEMON_CONTROL_PATH, DAEMON_TOKEN_HEADER } from "../src/cli/daemon-control";
 import type { DesktopUpdateHandoff, DesktopUpdateReceipt, InstalledDesktopIdentity } from "../src/desktop/update-protocol";
 import type { UpdateAction, UpdateActionResult, UpdateSnapshot } from "../src/runtime/update-contract";
-import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, digestFile, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand,
+import { assertFixtureChild, assertOlderVersion, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, desktopUpdateProcessesSettled, digestFile, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand,
   startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust } from "./smoke-desktop-update-fixture";
 import { assessInstalledWindowEvidence, assertFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, formatInstalledWindowDiagnostic, installedHostHasNativeMenu, installedWindowEvidence, readBoundedFixtureJson,
-  readFixtureServer, requestInstalledHostExit, retainFixtureProcessObservation, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type NativeWindowOwner, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
+  readFixtureServer, requestInstalledHostExit, retainFixtureProcessHistory, stopFixtureWindowsProcesses, windowsInstallationRegistry, withWindowsFixtureRoamingAppData, type NativeWindowOwner, type WindowsFixtureProcess } from "./smoke-desktop-update-windows";
 import { smokeAgentText, smokeBackgroundReports } from "./smoke-agent-scenario";
 import { selectShell } from "../src/background/shell/process";
 
@@ -226,7 +226,7 @@ async function driveScenario(options: {
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "smoke", defaultModel: "desktop-update", retry: { enabled: false },
     easyresearch: { web: { autoSessionTitle: false }, agentDefaults: { "research-assistant": { model: "smoke/desktop-update", thinking: "off" } } } }));
   const observer = observeUpdateReceipts(userData);
-  const seen = new Map<number, WindowsFixtureProcess>();
+  const seen = new Map<string, WindowsFixtureProcess>();
   let liveProcesses: WindowsFixtureProcess[] = [];
   const credentials = new Set<string>(["isolated-fixture"]);
   const diagnosticSecrets = () => [...credentials, ...[...observer.handoffs.values()].map(value => value.token),
@@ -294,6 +294,7 @@ async function driveScenario(options: {
     const initialWindowOwner = (await fixtureWindowsProcesses(root)).find(row => row.pid === oldHost!.pid);
     assert(initialWindowOwner && initialWindowOwner.parentPid === process.pid
       && initialWindowOwner.executable.toLowerCase() === realpathSync(host).toLowerCase(), "Initial native window is not the owned installed host");
+    retainFixtureProcessHistory(seen, [initialWindowOwner]);
     const initialUrl = `http://127.0.0.1:${initialRecord.port}/${route}`;
     await waitFor("initial canonical Work/history native accessibility control", async () => {
       const evidence = await sampleNativeWindow("initial", initialWindowOwner, initialUrl);
@@ -379,7 +380,7 @@ async function driveScenario(options: {
     const sampleProcesses = () => {
       if (sampling) return;
       sampling = fixtureWindowsProcesses(root, [...seen.values()]).then(values => {
-        liveProcesses = values; for (const value of values) seen.set(value.pid, retainFixtureProcessObservation(seen.get(value.pid), value));
+        retainFixtureProcessHistory(seen, values); liveProcesses = values;
         writeFileSync(join(root, "custody-observation.log"), `${JSON.stringify({ receipts: observer.diagnostics(), seen: [...seen.values()], live: liveProcesses })}\n`, { mode: 0o600 });
       })
         .catch(error => { samplingFailure = error; }).finally(() => { sampling = undefined; });
@@ -397,21 +398,10 @@ async function driveScenario(options: {
           throw new Error(`Update worker exited before recovery readiness: ${JSON.stringify(desktopCustodyDiagnostic(terminal))}`);
         }
         const record = readFixtureServer(agentDir); if (!record || record.pid === initialRecord.pid) return;
-        const lineage = findDesktopUpdateLineage([...seen.values()], { oldHostPid: oldHost!.pid!, sidecarPid: record.pid, host,
+        const lineage = findDesktopUpdateLineage([...seen.values()], liveProcesses, { oldHost: initialWindowOwner, sidecarPid: record.pid, host,
           helper: join(staging, "custodian.exe"), installer: join(staging, installerName), sidecar: installedSidecar });
         if (!lineage) return;
-        const isLive = (row: WindowsFixtureProcess) => liveProcesses.some(current => current.pid === row.pid && current.start === row.start);
-        if (!isLive(lineage.host) || !isLive(lineage.sidecar)) return;
-        // Retain observed descendants after parent exit. Only the verified
-        // successor's subtree may survive the updater worker and its OS jobs.
-        const updaterTree = new Set([lineage.worker.pid]); let added: boolean;
-        do {
-          added = false;
-          for (const row of seen.values()) if (row.pid !== lineage.host.pid && updaterTree.has(row.parentPid) && !updaterTree.has(row.pid)) {
-            updaterTree.add(row.pid); added = true;
-          }
-        } while (added);
-        if ([...seen.values()].some(row => updaterTree.has(row.pid) && isLive(row))) return;
+        if (!desktopUpdateProcessesSettled([...seen.values()], liveProcesses, lineage)) return;
         return { record, lineage };
       }, 15 * 60_000, 100);
     } finally { clearInterval(processTimer); await sampling; }
@@ -481,7 +471,7 @@ async function driveScenario(options: {
       credentials.add(frenchRecord.token);
       assert.notEqual(frenchRecord.token, successor.token); assert.notEqual(frenchRecord.pid, successor.pid);
       const frenchProcesses = await fixtureWindowsProcesses(root, [...seen.values()]);
-      for (const row of frenchProcesses) seen.set(row.pid, retainFixtureProcessObservation(seen.get(row.pid), row));
+      retainFixtureProcessHistory(seen, frenchProcesses);
       assert(frenchProcesses.some(row => row.pid === successorPid && row.requestedFrench && row.executable.toLowerCase() === realpathSync(host).toLowerCase()), "Pruned installed host did not actually launch with --lang=fr");
       assert(frenchProcesses.some(row => row.pid === frenchRecord.pid && row.parentPid === successorPid && row.executable.toLowerCase() === realpathSync(installedSidecar).toLowerCase()));
       assert.equal(new URL(french.page.url()).origin, `http://127.0.0.1:${frenchRecord.port}`);

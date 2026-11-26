@@ -6,10 +6,10 @@ import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertExternalFixtureReceipt, copyUpdateFixtureSource, parseUpdateFixtureOptions, removeUpdateFixture } from "../../scripts/build-update-fixture";
-import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, findDesktopUpdateLineage, fixtureDiagnosticError, observeFixtureUpdateAction, remainingDesktopRecoveryArtifacts, runFixtureCommand, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding } from "../../scripts/smoke-desktop-update-fixture";
+import { assertFixtureChild, captureDesktopUpdateFailure, createDesktopFixtureCertificate, createReleaseFixture, desktopCustodyDiagnostic, desktopUpdateFixtureInput, desktopUpdateProcessesSettled, findDesktopUpdateLineage, fixtureDiagnosticError, fixtureProcessIdentity, observeFixtureUpdateAction, parseFixtureProcessHistory, powershell, remainingDesktopRecoveryArtifacts, retainFixtureProcessHistory, runFixtureCommand, selectFixtureWindowsProcesses, startDesktopReleaseFixture, windowsFixtureTrust, withFixtureTrust, withFixtureRoamingBinding, type WindowsFixtureProcess } from "../../scripts/smoke-desktop-update-fixture";
 import { discoverDesktopRelease, downloadDesktopAsset } from "../desktop/update-download";
 import { windowsInstallerRegistryId } from "../desktop/update-worker";
-import { assessInstalledRecoveryEvidence, assessInstalledWindowEvidence, assertWindowsFixtureInstallation, closeRecoveryReleaseDialog, formatInstalledWindowDiagnostic, nativeRecoveryWindowAdmissionControls, parseFixtureWindowsProcesses, projectInstalledRecoveryDiagnostic, retainFixtureProcessObservation, type InstalledRecoveryEvidence, type InstalledRecoveryWindow, type InstalledWindowEvidence } from "../../scripts/smoke-desktop-update-windows";
+import { assessInstalledRecoveryEvidence, assessInstalledWindowEvidence, assertWindowsFixtureInstallation, closeRecoveryReleaseDialog, fixtureWindowsProcesses, formatInstalledWindowDiagnostic, nativeRecoveryWindowAdmissionControls, parseFixtureWindowsProcesses, projectInstalledRecoveryDiagnostic, retainFixtureProcessObservation, stopFixtureWindowsProcesses, type InstalledRecoveryEvidence, type InstalledRecoveryWindow, type InstalledWindowEvidence } from "../../scripts/smoke-desktop-update-windows";
 import { LATEST_RELEASE_PAGE, type UpdateSnapshot } from "./update-contract";
 import type { DesktopUpdateReceipt } from "../desktop/update-protocol";
 
@@ -534,33 +534,259 @@ describe("fixture authority boundaries", () => {
     expect(existsSync(join(directory, "another-install.update-backup"))).toBe(true);
   });
 
-  it("requires the actual installer and successor to descend from the same owned native worker without a receipt", () => {
+  describe("creation-bound Windows update process observations", () => {
     const host = "C:\\fixture\\安装目录 with spaces\\EasyResearch.exe";
     const helper = "C:\\fixture\\userData\\updates\\update-owned\\custodian.exe";
     const installer = "C:\\fixture\\userData\\updates\\update-owned\\EasyResearch-0.1.24-windows-x64.exe";
     const sidecar = "C:\\fixture\\安装目录 with spaces\\resources\\sidecar\\easyresearch.exe";
-    const options = { oldHostPid: 10, sidecarPid: 60, host, helper, installer, sidecar };
-    const process = (pid: number, parentPid: number, executable: string, role?: "worker" | "job" | "installer") => ({ pid, parentPid, executable,
-      start: "2026-11-23T01:02:03.000Z", worker: role === "worker", job: role === "job", installer: role === "installer" });
-    const records = [process(20, 10, helper, "worker"), process(30, 20, "C:\\Windows\\powershell.exe", "job"),
-      process(40, 30, installer, "installer"), process(50, 20, host), process(60, 50, sidecar)];
-    expect(findDesktopUpdateLineage(records, options)).toMatchObject({ worker: { pid: 20 }, guard: { pid: 30 }, installer: { pid: 40 }, host: { pid: 50 }, sidecar: { pid: 60 } });
-    // Spawned host/sidecar alone cannot satisfy native installer acceptance.
-    expect(findDesktopUpdateLineage(records.filter(row => row.pid !== 40), options)).toBeUndefined();
-    expect(findDesktopUpdateLineage(records.map(row => row.pid === 30 ? { ...row, parentPid: 99 } : row), options)).toBeUndefined();
-    expect(findDesktopUpdateLineage(records.map(row => row.pid === 50 ? { ...row, parentPid: 99 } : row), options)).toBeUndefined();
-    expect(findDesktopUpdateLineage(records.map(row => row.pid === 20 ? { ...row, parentPid: 99 } : row), options)).toBeUndefined();
-    expect(findDesktopUpdateLineage(records.map(row => row.pid === 60 ? { ...row, executable: "C:\\foreign\\easyresearch.exe" } : row), options)).toBeUndefined();
-    expect(findDesktopUpdateLineage(records, { ...options, oldHostPid: 50 })).toBeUndefined();
-    const partial = { ...records[0]!, executable: "", worker: false };
-    const retained = retainFixtureProcessObservation(records[0], partial);
-    expect(findDesktopUpdateLineage([retained, ...records.slice(1)], options)).toMatchObject({ worker: { pid: 20, executable: helper } });
-    expect(partial.executable).toBe(""); // The live snapshot is not enriched or mutated.
-    const reused = retainFixtureProcessObservation(records[0], { ...partial, start: "later-creation" });
-    expect(findDesktopUpdateLineage([reused, ...records.slice(1)], options)).toBeUndefined();
-    for (const change of [{ parentPid: 999 }, { executable: "C:\\foreign\\helper.exe" }]) {
-      expect(() => retainFixtureProcessObservation(records[0], { ...partial, ...change })).toThrow();
+    const start = (tick: number) => `2026-11-26T08:54:00.${String(tick).padStart(7, "0")}Z`;
+    const row = (pid: number, parentPid: number, tick: number, executable: string, role?: "worker" | "job" | "installer"): WindowsFixtureProcess =>
+      ({ pid, parentPid, start: start(tick), executable, worker: role === "worker", job: role === "job", installer: role === "installer" });
+    function scenario() {
+      // Saved-run PID relationships, with private paths and an explicitly
+      // controlled old-guard birth (that row was lost from the failed archive).
+      const oldHost = row(984, 5240, 1, host), worker = row(2396, 984, 2, helper, "worker");
+      const guard = row(6368, 2396, 3, "C:\\Windows\\powershell.exe", "job"), nsis = row(7408, 6368, 4, installer, "installer");
+      const recovery = row(2300, 2396, 5, host), native = row(2944, 2300, 6, sidecar), renderer = row(6368, 2300, 7, host);
+      const history = new Map<string, WindowsFixtureProcess>();
+      retainFixtureProcessHistory(history, [oldHost, worker, guard, nsis]);
+      retainFixtureProcessHistory(history, [worker, recovery, native]);
+      const live = [recovery, native, renderer]; retainFixtureProcessHistory(history, live);
+      return { history, live, oldHost, worker, guard, nsis, recovery, native, renderer,
+        options: { oldHost, sidecarPid: native.pid, host, helper, installer, sidecar } };
     }
+    it("retains the guard when PID 6368 becomes a successor child, without making that child a live installer descendant", () => {
+      const f = scenario(), history = [...f.history.values()];
+      const instances = history.filter(value => value.pid === f.guard.pid);
+      expect(instances).toHaveLength(2);
+      expect(instances.map(fixtureProcessIdentity)).toEqual([fixtureProcessIdentity(f.guard), fixtureProcessIdentity(f.renderer)]);
+      const lineage = findDesktopUpdateLineage(history, f.live, f.options)!;
+      expect(lineage.guard).toMatchObject({ pid: 6368, start: f.guard.start, job: true });
+      expect(lineage.installer.pid).toBe(7408);
+      expect(desktopUpdateProcessesSettled(history, f.live, lineage)).toBe(true);
+      expect(f.history.get(fixtureProcessIdentity(f.renderer))).toMatchObject({ worker: false, installer: false, job: false, parentStart: f.recovery.start });
+      expect(f.live[2]).not.toHaveProperty("parentStart");
+      expect(desktopUpdateProcessesSettled(history, [...f.live, f.nsis], lineage)).toBe(false);
+    });
+    it("allows the worker PID to be reused by the accepted host without reviving its old custody instance", () => {
+      const f = scenario();
+      const reusedWorker = row(f.worker.pid, f.recovery.pid, 8, host);
+      const live = [...f.live, reusedWorker]; retainFixtureProcessHistory(f.history, live);
+      const history = [...f.history.values()], lineage = findDesktopUpdateLineage(history, live, f.options)!;
+      expect(lineage.worker.start).toBe(f.worker.start);
+      expect(desktopUpdateProcessesSettled(history, live, lineage)).toBe(true);
+      expect(desktopUpdateProcessesSettled(history, [...f.live, f.worker], lineage)).toBe(false);
+      expect(() => selectFixtureWindowsProcesses([f.worker], new Set(), history)).toThrow(/Stale/);
+    });
+    it("cannot repair the failed archive's missing guard or other incomplete ancestry from a receipt/PID alone", () => {
+      const f = scenario(), history = [...f.history.values()];
+      for (const missing of [f.guard, f.worker, f.nsis, f.oldHost]) {
+        expect(findDesktopUpdateLineage(history.filter(value => fixtureProcessIdentity(value) !== fixtureProcessIdentity(missing)), f.live, f.options)).toBeUndefined();
+      }
+      expect(findDesktopUpdateLineage(history, f.live, { ...f.options, oldHost: { ...f.oldHost, start: start(0) } })).toBeUndefined();
+      expect(findDesktopUpdateLineage(history, [f.recovery, { ...f.native, start: start(8) }, f.renderer], f.options)).toBeUndefined();
+      expect(findDesktopUpdateLineage(history, f.live.filter(value => value.pid !== f.recovery.pid), f.options)).toBeUndefined();
+      const unbound = history.map(value => fixtureProcessIdentity(value) === fixtureProcessIdentity(f.nsis) ? { ...value, parentStart: undefined } : value);
+      expect(findDesktopUpdateLineage(unbound, f.live, f.options)?.guard.start).toBe(f.guard.start);
+    });
+    it("admits the real sampling order when the old host and worker/host overlaps end before CIM completes", () => {
+      const f = scenario(), history = new Map<string, WindowsFixtureProcess>();
+      // driveScenario captures the old host before the second install, but its
+      // first completed worker sample may arrive only after that host has exited.
+      retainFixtureProcessHistory(history, [f.oldHost]);
+      retainFixtureProcessHistory(history, [f.worker, f.guard, f.nsis]);
+      // The same observation gap can affect the worker -> recovery-host edge.
+      retainFixtureProcessHistory(history, [f.recovery, f.native]);
+      retainFixtureProcessHistory(history, f.live);
+      expect(history.get(fixtureProcessIdentity(f.worker))!.parentStart).toBeUndefined();
+      expect(history.get(fixtureProcessIdentity(f.recovery))!.parentStart).toBeUndefined();
+      const lineage = findDesktopUpdateLineage([...history.values()], f.live, f.options)!;
+      expect(lineage.worker.start).toBe(f.worker.start);
+      expect(lineage.guard.start).toBe(f.guard.start);
+      expect(desktopUpdateProcessesSettled([...history.values()], f.live, lineage)).toBe(true);
+      // There is still no grant if the earlier parent instance was never captured.
+      history.delete(fixtureProcessIdentity(f.oldHost));
+      expect(findDesktopUpdateLineage([...history.values()], f.live, f.options)).toBeUndefined();
+    });
+    it("requires the unique historical interval to agree with any explicit parent-start hint", () => {
+      const f = scenario();
+      const history = [...f.history.values()].map(value => ({ ...value, parentStart: undefined }));
+      expect(findDesktopUpdateLineage(history, f.live, f.options)?.guard.start).toBe(f.guard.start);
+      const contradictory = history.map(value => value.pid === f.nsis.pid ? { ...value, parentStart: f.worker.start } : value);
+      expect(findDesktopUpdateLineage(contradictory, f.live, f.options)).toBeUndefined();
+      const boundary = history.map(value => value.pid === f.guard.pid && value.start === f.renderer.start ? { ...value, start: f.nsis.start } : value);
+      expect(findDesktopUpdateLineage(boundary, [f.recovery, f.native], f.options)).toBeUndefined();
+    });
+    it("requires a single installer chain and refuses unresolved live processes outside the accepted host subtree", () => {
+      const f = scenario(), history = [...f.history.values()];
+      const lineage = findDesktopUpdateLineage(history, f.live, f.options)!;
+      const orphan = row(999, 998, 8, "C:\\fixture\\unresolved.exe");
+      expect(desktopUpdateProcessesSettled([...history, orphan], [...f.live, orphan], lineage)).toBe(false);
+      const another = { ...f.history.get(fixtureProcessIdentity(f.nsis))!, pid: 7409 };
+      expect(findDesktopUpdateLineage([...history, another], f.live, f.options)).toBeUndefined();
+    });
+    it("uses observed parent lifetimes and rejects a replaced parent born before or exactly with the child", () => {
+      const f = scenario(), history = [...f.history.values()];
+      for (const nextBirth of [f.nsis.start, start(3)]) {
+        const conflicting = { ...f.renderer, start: nextBirth, parentStart: undefined };
+        const records = history.filter(value => fixtureProcessIdentity(value) !== fixtureProcessIdentity(f.renderer));
+        if (nextBirth === f.guard.start) expect(() => findDesktopUpdateLineage([...records, conflicting], f.live, f.options)).toThrow(/Duplicate/);
+        else {
+          records.push(conflicting);
+          expect(findDesktopUpdateLineage(records, [f.recovery, f.native], f.options)).toBeUndefined();
+        }
+      }
+      const laterOnly = history.filter(value => fixtureProcessIdentity(value) !== fixtureProcessIdentity(f.guard));
+      expect(findDesktopUpdateLineage(laterOnly, f.live, f.options)).toBeUndefined();
+    });
+    it("preserves 100ns creation precision and rejects ties, noncanonical timestamps and invalid calendar values", () => {
+      const f = scenario();
+      // Every fixture birth above falls in the same millisecond.
+      expect(Date.parse(f.guard.start)).toBe(Date.parse(f.renderer.start));
+      expect(fixtureProcessIdentity(f.guard)).not.toBe(fixtureProcessIdentity(f.renderer));
+      expect(parseFixtureProcessHistory(JSON.stringify([f.guard, f.renderer]))).toHaveLength(2);
+      const tied = new Map<string, WindowsFixtureProcess>();
+      retainFixtureProcessHistory(tied, [f.oldHost, f.worker, { ...f.guard, start: f.worker.start }, f.nsis, f.recovery, f.native]);
+      expect(findDesktopUpdateLineage([...tied.values()], [f.recovery, f.native], f.options)).toBeUndefined();
+      for (const invalid of ["2026-11-26T08:54:00.000Z", "2026-11-26T08:54:00.0000001+00:00", "2026-02-29T00:00:00.0000000Z",
+        "2026-11-31T00:00:00.0000000Z", "2026-11-26T24:00:00.0000000Z", "later-creation"]) {
+        expect(() => parseFixtureProcessHistory(JSON.stringify([{ ...f.guard, start: invalid }]))).toThrow(/creation identity/);
+      }
+    });
+    it("keeps current snapshots unique by PID and histories unique by full identity, with bounded atomic retention", () => {
+      const f = scenario();
+      expect(() => parseFixtureWindowsProcesses(JSON.stringify([f.guard, f.renderer]))).toThrow(/Duplicate/);
+      expect(() => parseFixtureProcessHistory(JSON.stringify([f.guard, f.guard]))).toThrow(/Duplicate/);
+      const before = [...f.history.entries()];
+      expect(() => retainFixtureProcessHistory(f.history, [f.guard, f.renderer])).toThrow(/Duplicate/);
+      expect([...f.history.entries()]).toEqual(before);
+      const tooMany = Array.from({ length: 4097 }, (_, index) => row(10000 + index, 0, 1, ""));
+      expect(() => retainFixtureProcessHistory(f.history, tooMany)).toThrow(/bounded/);
+      expect([...f.history.entries()]).toEqual(before);
+      const full = new Map<string, WindowsFixtureProcess>();
+      retainFixtureProcessHistory(full, tooMany.slice(0, 4096));
+      expect(() => retainFixtureProcessHistory(full, [tooMany[4096]!])).toThrow(/history exceeds/);
+      expect(full.size).toBe(4096);
+    });
+    it("preserves partial exact-instance metadata but rejects conflicting parent/path/positive-role evidence", () => {
+      const f = scenario(), previous = f.history.get(fixtureProcessIdentity(f.guard))!;
+      const partial = { ...f.guard, executable: "", job: false };
+      const retained = retainFixtureProcessObservation(previous, partial);
+      expect(retained).toMatchObject({ executable: f.guard.executable, job: true, parentStart: f.worker.start });
+      expect(partial).toMatchObject({ executable: "", job: false });
+      expect(retainFixtureProcessObservation(previous, f.renderer)).toEqual(f.renderer);
+      for (const change of [{ parentPid: 999 }, { parentStart: f.oldHost.start }, { executable: "C:\\foreign\\host.exe" }, { worker: true }]) {
+        const before = [...f.history.entries()];
+        expect(() => retainFixtureProcessHistory(f.history, [{ ...partial, ...change }])).toThrow(/Conflicting/);
+        expect([...f.history.entries()]).toEqual(before);
+      }
+    });
+    it("does not grant current descendants an old PID's ownership or a newer/tied parent's ancestry", () => {
+      const f = scenario();
+      const foreign = { ...f.renderer, executable: "C:\\foreign\\app.exe" }, child = row(998, foreign.pid, 8, "C:\\foreign\\child.exe");
+      expect(selectFixtureWindowsProcesses([foreign, child], new Set(), [f.guard])).toEqual([]);
+      // A newly owned root cannot adopt an older orphan whose parent reused its PID.
+      const olderOrphan = row(997, foreign.pid, 6, "C:\\foreign\\older.exe"), tied = row(996, foreign.pid, 7, "C:\\foreign\\tied.exe");
+      const selected = selectFixtureWindowsProcesses([foreign, olderOrphan, tied, child], new Set([fixtureProcessIdentity(foreign)]), [f.guard]);
+      expect(selected.map(value => value.pid)).toEqual([foreign.pid, child.pid]);
+      expect(selected[0]).toMatchObject({ job: false, worker: false, installer: false });
+      expect(selected[1]!.parentStart).toBe(foreign.start);
+    });
+    it("cleanup accepts multi-lifetime history but signals only freshly owned instances, never a reused foreign PID", async () => {
+      const f = scenario(), snapshots = [f.live, [] as WindowsFixtureProcess[]];
+      const stop = vi.fn(async (_rows: readonly WindowsFixtureProcess[]) => {}), wait = vi.fn(async () => {});
+      const observe = vi.fn(async (_root: string, known: readonly WindowsFixtureProcess[] = []) => {
+        expect(known.filter(value => value.pid === f.guard.pid)).toHaveLength(2);
+        return selectFixtureWindowsProcesses(snapshots.shift()!, new Set(), known);
+      });
+      await stopFixtureWindowsProcesses("C:\\fixture", [...f.history.values()], { observe, stop, wait });
+      expect(stop).toHaveBeenCalledOnce();
+      expect(stop.mock.calls[0]![0].find(value => value.pid === f.guard.pid)!.start).toBe(f.renderer.start);
+      const foreign = { ...f.renderer, executable: "C:\\foreign\\app.exe" };
+      const neverStop = vi.fn(async () => {});
+      await stopFixtureWindowsProcesses("C:\\fixture", [f.guard], {
+        observe: async (_root, known) => selectFixtureWindowsProcesses([foreign], new Set(), known ?? []), stop: neverStop, wait,
+      });
+      expect(neverStop).not.toHaveBeenCalled();
+    });
+
+    type CimRow = { ProcessId: number; ParentProcessId: number; CreationDate: string | null; ExecutablePath: string | null; CommandLine: string | null; Name: string | null };
+    const cim = (value: WindowsFixtureProcess, inside = false): CimRow => ({ ProcessId: value.pid, ParentProcessId: value.parentPid,
+      CreationDate: value.start, ExecutablePath: inside ? "C:\\fixture\\host.exe" : value.executable,
+      CommandLine: "", Name: value.job ? "powershell.exe" : "host.exe" });
+    const nativeProjection = (rows: CimRow[], known: readonly WindowsFixtureProcess[] = []) => {
+      // Execute the actual production observation script against controlled CIM
+      // results; this creates no product hook and never signals a real process.
+      const query: typeof powershell = (script, env, timeout, label, input) => powershell(`
+        $script:controlRows=ConvertFrom-Json $env:ER_FIXTURE_CIM_CONTROL;
+        foreach($control in $script:controlRows){
+          if($null -ne $control.CreationDate){$control.CreationDate=[DateTime]::ParseExact($control.CreationDate,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)}
+        }
+        function Get-CimInstance { $script:controlRows }
+        ${script}
+      `, { ...env, ER_FIXTURE_CIM_CONTROL: JSON.stringify(rows) }, timeout, label, input);
+      return fixtureWindowsProcesses("C:\\fixture", known, query);
+    };
+    it.skipIf(process.platform !== "win32")("native projection through Windows PowerShell handles empty, single and multi-lifetime known arrays without nesting", async () => {
+      const oldGuard = row(705, 701, 2, "C:\\Windows\\powershell.exe", "job");
+      const owner = row(709, 0, 5, "C:\\outside\\host.exe");
+      const reused = row(oldGuard.pid, owner.pid, 6, "C:\\outside\\renderer.exe");
+      // None of these current paths independently grants fixture ownership.
+      // The repeated PID has distinct exact births; input order is deliberately
+      // newest first so the native latest-incarnation comparison is exercised.
+      const known = [reused, owner, oldGuard];
+      const current = [cim(owner), cim(reused)];
+      expect(await nativeProjection([], known)).toEqual([]);
+      expect(await nativeProjection(current, [])).toEqual([]);
+      const single = await nativeProjection([cim(owner)], [owner]);
+      expect(single.map(value => fixtureProcessIdentity(value))).toEqual([fixtureProcessIdentity(owner)]);
+      const values = await nativeProjection(current, known);
+      expect(values.map(value => value.pid).sort()).toEqual([reused.pid, owner.pid]);
+      expect(values.find(value => value.pid === reused.pid)).toMatchObject({
+        start: reused.start, parentStart: owner.start, executable: reused.executable, worker: false, installer: false, job: false,
+      });
+      expect(values.some(value => value.start === oldGuard.start)).toBe(false);
+    });
+    it.skipIf(process.platform !== "win32")("native projection ignores unrelated unavailable metadata while retaining exact scoped parent births", async () => {
+      const owned = row(701, 0, 1, "C:\\fixture\\host.exe"), child = row(705, 701, 2, "C:\\Windows\\powershell.exe", "job");
+      const foreign = { ...cim(row(709, 0, 3, "C:\\foreign\\private.exe")), CreationDate: null, CommandLine: "unrelated private metadata" };
+      const values = await nativeProjection([cim(owned, true), foreign, cim(child)]);
+      expect(values.map(value => value.pid).sort()).toEqual([owned.pid, child.pid]);
+      expect(values.find(value => value.pid === child.pid)?.parentStart).toBe(owned.start);
+      expect(JSON.stringify(values)).not.toContain("unrelated private metadata");
+      expect(values.find(value => value.pid === child.pid)?.start).toBe(child.start);
+    });
+    it.skipIf(process.platform !== "win32").each(["rooted", "known-reused", "descendant", "ancestor"] as const)(
+      "native projection fails closed for unavailable %s creation identity", async kind => {
+        const owned = row(701, 0, 1, "C:\\fixture\\host.exe");
+        const unknown = { ...cim(row(705, kind === "descendant" ? owned.pid : 0, 2, "C:\\foreign\\host.exe")), CreationDate: null };
+        const known = kind === "known-reused" ? [row(705, 0, 1, "C:\\fixture\\prior.exe")] : [];
+        let controls: CimRow[];
+        if (kind === "rooted") controls = [{ ...cim(owned, true), CreationDate: null }];
+        else if (kind === "ancestor") controls = [{ ...cim(owned, true), ParentProcessId: unknown.ProcessId }, unknown];
+        else controls = [cim(owned, true), unknown];
+        await expect(nativeProjection(controls, known)).rejects.toThrow(/Scoped Windows process creation identity is unavailable/);
+      });
+    it.skipIf(process.platform !== "win32")("native projection excludes a verified foreign PID reincarnation and its unverified family", async () => {
+      const old = row(705, 0, 1, "C:\\fixture\\prior.exe"), foreign = row(705, 0, 2, "C:\\foreign\\new.exe");
+      const unknownChild = { ...cim(row(709, foreign.pid, 3, "")), CreationDate: null };
+      expect(await nativeProjection([cim(foreign), unknownChild], [old])).toEqual([]);
+    });
+    it.skipIf(process.platform !== "win32")("native projection rejects exact 100ns ties and excludes children older than a reused current parent", async () => {
+      const owned = row(701, 0, 7, "C:\\fixture\\host.exe"), older = row(705, owned.pid, 6, "C:\\foreign\\old-child.exe");
+      expect((await nativeProjection([cim(owned, true), cim(older)])).map(value => value.pid)).toEqual([owned.pid]);
+      await expect(nativeProjection([cim(owned, true), { ...cim(older), CreationDate: owned.start }])).rejects.toThrow(/Ambiguous Windows parent creation identity/);
+    });
+  });
+
+  it("streams bounded observation input without environment-size truncation or input disclosure", async () => {
+    const input = JSON.stringify(Array.from({ length: 2000 }, (_, index) => ({ pid: 10000 + index, start: "2026-11-26T08:54:00.0000001Z" })));
+    expect(Buffer.byteLength(input)).toBeGreaterThan(32767);
+    const result = await runFixtureCommand(process.execPath, ["-e",
+      "let data='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>data+=part);process.stdin.on('end',()=>process.stdout.write(String(JSON.parse(data).length)));"],
+    { input });
+    expect(result).toBe("2000");
+    await expect(runFixtureCommand("must-not-spawn", [], { input: "x".repeat(2 * 1024 * 1024 + 1) })).rejects.toThrow(/input exceeds its bound/);
   });
 
   it("does not allow a receipt to replace candidate source or an escaped link", () => {

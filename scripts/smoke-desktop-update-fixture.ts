@@ -7,7 +7,6 @@ import { createServer } from "node:https";
 import type { Duplex } from "node:stream";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { pipeline } from "node:stream/promises";
-import type { WindowsFixtureProcess } from "./smoke-desktop-update-windows";
 import type { UpdateActionResult } from "../src/runtime/update-contract";
 import { desktopUpdateFailure, type DesktopUpdateReceipt } from "../src/desktop/update-protocol";
 import { smokeAgentText, type SmokeAgentRequest } from "./smoke-agent-scenario";
@@ -138,20 +137,190 @@ export function remainingDesktopRecoveryArtifacts(installation: string, operatio
     .map(name => join(dirname(installation), name));
 }
 
-/** OS process relationships survive removal of the short-lived worker receipt. */
-export function findDesktopUpdateLineage(processes: readonly WindowsFixtureProcess[], expected: {
-  oldHostPid: number; sidecarPid: number; host: string; helper: string; installer: string; sidecar: string;
-}): { worker: WindowsFixtureProcess; guard: WindowsFixtureProcess; installer: WindowsFixtureProcess; host: WindowsFixtureProcess; sidecar: WindowsFixtureProcess } | undefined {
-  const samePath = (a: string, b: string) => win32.resolve(a).toLowerCase() === win32.resolve(b).toLowerCase();
-  const sidecar = processes.find(row => row.pid === expected.sidecarPid && samePath(row.executable, expected.sidecar));
-  const host = sidecar && processes.find(row => row.pid === sidecar.parentPid && row.pid !== expected.oldHostPid && samePath(row.executable, expected.host));
-  const worker = host && processes.find(row => row.pid === host.parentPid && row.worker && row.parentPid === expected.oldHostPid && samePath(row.executable, expected.helper));
-  if (!sidecar || !host || !worker) return;
-  for (const guard of processes.filter(row => row.job && row.parentPid === worker.pid)) {
-    const installer = processes.find(row => row.installer && row.parentPid === guard.pid && samePath(row.executable, expected.installer));
-    if (installer) return { worker, guard, installer, host, sidecar };
+export interface WindowsFixtureProcess {
+  pid: number; parentPid: number; start: string; executable: string;
+  worker: boolean; installer: boolean; job: boolean; requestedFrench?: boolean;
+  /** Current-parent corroboration; historical edges also require a unique valid lifetime interval. */
+  parentStart?: string;
+}
+const PROCESS_LIMIT = 4096;
+function validProcessStart(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{7})Z$/u.exec(value);
+  if (!match) return false;
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return year >= 1601 && month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1]!
+    && hour <= 23 && minute <= 59 && second <= 59;
+}
+export function fixtureProcessIdentity(row: Pick<WindowsFixtureProcess, "pid" | "start">): string {
+  assert(Number.isSafeInteger(row.pid) && row.pid > 0 && row.pid <= 0x7fffffff && validProcessStart(row.start), "Invalid Windows process creation identity");
+  // Fixed-width UTC CIM strings preserve all seven fractional digits and sort
+  // chronologically. Date.parse would collapse distinct lifetimes to milliseconds.
+  return `${row.pid}:${row.start}`;
+}
+function assertProcessRoles(row: WindowsFixtureProcess): void {
+  assert(Number(row.worker) + Number(row.installer) + Number(row.job) <= 1
+    && !(row.requestedFrench && (row.worker || row.installer || row.job)), "Conflicting Windows process role flags");
+}
+export function retainFixtureProcessObservation(previous: WindowsFixtureProcess | undefined, current: WindowsFixtureProcess): WindowsFixtureProcess {
+  const identity = fixtureProcessIdentity(current); assertProcessRoles(current);
+  if (!previous || fixtureProcessIdentity(previous) !== identity) return { ...current };
+  assert(previous.parentPid === current.parentPid, "Conflicting retained process parent identity");
+  assert(!previous.parentStart || !current.parentStart || previous.parentStart === current.parentStart, "Conflicting retained process parent lifetime");
+  assert(!previous.executable || !current.executable || previous.executable.toLowerCase() === current.executable.toLowerCase(), "Conflicting retained process executable identity");
+  const retained = { ...current, parentStart: current.parentStart ?? previous.parentStart, executable: current.executable || previous.executable,
+    worker: previous.worker || current.worker, installer: previous.installer || current.installer,
+    job: previous.job || current.job, requestedFrench: previous.requestedFrench || current.requestedFrench };
+  assertProcessRoles(retained);
+  return retained;
+}
+function parseProcessRows(text: string, history: boolean): WindowsFixtureProcess[] {
+  assert(Buffer.byteLength(text, "utf8") <= 2 * 1024 * 1024, "Windows process observations exceed their bound");
+  const rows: unknown = JSON.parse(text);
+  assert(Array.isArray(rows) && rows.length <= PROCESS_LIMIT, "Expected a bounded flat Windows process array");
+  const seen = new Set<string | number>();
+  return rows.map(value => {
+    assert(value && typeof value === "object" && !Array.isArray(value), "Invalid Windows process observation");
+    const row = value as WindowsFixtureProcess;
+    const identity = fixtureProcessIdentity(row);
+    assert(Number.isSafeInteger(row.parentPid) && row.parentPid >= 0 && row.parentPid <= 0x7fffffff && row.parentPid !== row.pid
+      && typeof row.executable === "string" && row.executable.length <= 32767 && !/[\r\n\0]/u.test(row.executable)
+      && typeof row.worker === "boolean" && typeof row.installer === "boolean" && typeof row.job === "boolean"
+      && (row.requestedFrench === undefined || typeof row.requestedFrench === "boolean")
+      && (row.parentStart === undefined || (row.parentPid > 0 && validProcessStart(row.parentStart) && row.parentStart < row.start)),
+    "Invalid Windows process identity or flags");
+    assertProcessRoles(row);
+    const key = history ? identity : row.pid;
+    assert(!seen.has(key), "Duplicate Windows process identity"); seen.add(key);
+    return { pid: row.pid, parentPid: row.parentPid, start: row.start, executable: row.executable,
+      worker: row.worker, installer: row.installer, job: row.job,
+      ...(row.requestedFrench === undefined ? {} : { requestedFrench: row.requestedFrench }),
+      ...(row.parentStart === undefined ? {} : { parentStart: row.parentStart }) };
+  });
+}
+export function parseFixtureWindowsProcesses(text: string): WindowsFixtureProcess[] { return parseProcessRows(text, false); }
+export function parseFixtureProcessHistory(text: string): WindowsFixtureProcess[] { return parseProcessRows(text, true); }
+
+function bindCurrentParents(rows: readonly WindowsFixtureProcess[]): WindowsFixtureProcess[] {
+  const current = new Map(rows.map(row => [row.pid, row]));
+  return rows.map(row => {
+    const parent = current.get(row.parentPid);
+    if (!parent || parent.start >= row.start) return { ...row };
+    assert(!row.parentStart || row.parentStart === parent.start, "Current process parent lifetime changed");
+    return { ...row, parentStart: parent.start };
+  });
+}
+/** One bounded history, with live snapshots kept separate and unmodified. */
+export function retainFixtureProcessHistory(history: Map<string, WindowsFixtureProcess>, snapshot: readonly WindowsFixtureProcess[]): void {
+  const current = bindCurrentParents(parseFixtureWindowsProcesses(JSON.stringify(snapshot)));
+  const next = new Map(history);
+  for (const row of current) {
+    const key = fixtureProcessIdentity(row);
+    next.set(key, retainFixtureProcessObservation(next.get(key), row));
   }
-  return;
+  assert(next.size <= PROCESS_LIMIT, "Windows process history exceeds its bound");
+  parseFixtureProcessHistory(JSON.stringify([...next.values()]));
+  for (const [key, row] of next) assert(key === fixtureProcessIdentity(row), "Invalid Windows process history key");
+  for (const [key, row] of next) history.set(key, row);
+}
+
+/** Validate the native scope-filtered projection, not a machine-wide CIM dump.
+ * Current ownership uses current parent identities, never historical PID ancestry. */
+export function selectFixtureWindowsProcesses(rows: readonly WindowsFixtureProcess[], rooted: ReadonlySet<string>, previouslyOwned: readonly WindowsFixtureProcess[]): WindowsFixtureProcess[] {
+  const current = bindCurrentParents(parseFixtureWindowsProcesses(JSON.stringify(rows)));
+  const known = new Map(parseFixtureProcessHistory(JSON.stringify(previouslyOwned)).map(row => [fixtureProcessIdentity(row), row]));
+  const latest = new Map<number, string>();
+  for (const row of known.values()) if (!latest.has(row.pid) || latest.get(row.pid)! < row.start) latest.set(row.pid, row.start);
+  const byPid = new Map(current.map(row => [row.pid, row]));
+  const owned = new Set<string>();
+  for (const row of current) {
+    assert(!latest.has(row.pid) || latest.get(row.pid)! <= row.start, "Stale Windows process lifetime observed");
+    const key = fixtureProcessIdentity(row), previous = known.get(key);
+    if (previous) retainFixtureProcessObservation(previous, row); // Validate, but never enrich a live sample.
+    if (rooted.has(key) || previous) owned.add(key);
+  }
+  const children = new Map<string, string[]>();
+  for (const row of current) {
+    const parent = byPid.get(row.parentPid);
+    if (!parent || parent.start >= row.start || row.parentStart !== parent.start) continue;
+    const key = fixtureProcessIdentity(parent), bucket = children.get(key) ?? [];
+    bucket.push(fixtureProcessIdentity(row)); children.set(key, bucket);
+  }
+  const pending = [...owned];
+  for (let index = 0; index < pending.length; index++) for (const key of children.get(pending[index]!) ?? []) {
+    if (!owned.has(key)) { owned.add(key); pending.push(key); }
+  }
+  return current.filter(row => owned.has(fixtureProcessIdentity(row)));
+}
+
+function processGraph(history: readonly WindowsFixtureProcess[]) {
+  const rows = parseFixtureProcessHistory(JSON.stringify(history));
+  const identities = new Map(rows.map(row => [fixtureProcessIdentity(row), row]));
+  const lifetimes = new Map<number, WindowsFixtureProcess[]>();
+  for (const row of rows) { const bucket = lifetimes.get(row.pid) ?? []; bucket.push(row); lifetimes.set(row.pid, bucket); }
+  for (const bucket of lifetimes.values()) bucket.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
+  const ends = new Map<string, string>();
+  for (const bucket of lifetimes.values()) for (let index = 0; index < bucket.length - 1; index++) {
+    ends.set(fixtureProcessIdentity(bucket[index]!), bucket[index + 1]!.start);
+  }
+  const parent = (row: WindowsFixtureProcess): WindowsFixtureProcess | undefined => {
+    const candidates = (lifetimes.get(row.parentPid) ?? []).filter(candidate => {
+      const end = ends.get(fixtureProcessIdentity(candidate));
+      return candidate.start < row.start && (!end || row.start < end);
+    });
+    if (candidates.length !== 1) return;
+    const candidate = candidates[0]!;
+    if (row.parentStart && row.parentStart !== candidate.start) return;
+    return candidate;
+  };
+  const current = (live: readonly WindowsFixtureProcess[]) => {
+    const result = new Map<string, WindowsFixtureProcess>();
+    for (const row of parseFixtureWindowsProcesses(JSON.stringify(live))) {
+      const key = fixtureProcessIdentity(row), recorded = identities.get(key);
+      if (!recorded || ends.has(key)) return; // A known reused PID cannot resurrect its old instance.
+      result.set(key, retainFixtureProcessObservation(recorded, row));
+    }
+    return result;
+  };
+  return { rows, identities, parent, current };
+}
+export interface DesktopUpdateLineage {
+  worker: WindowsFixtureProcess; guard: WindowsFixtureProcess; installer: WindowsFixtureProcess; host: WindowsFixtureProcess; sidecar: WindowsFixtureProcess;
+}
+/** Exact historical parent instances plus a positively live successor pair. */
+export function findDesktopUpdateLineage(processes: readonly WindowsFixtureProcess[], live: readonly WindowsFixtureProcess[], expected: {
+  oldHost: WindowsFixtureProcess; sidecarPid: number; host: string; helper: string; installer: string; sidecar: string;
+}): DesktopUpdateLineage | undefined {
+  const graph = processGraph(processes), current = graph.current(live);
+  if (!current) return;
+  const same = (a: WindowsFixtureProcess, b: WindowsFixtureProcess) => fixtureProcessIdentity(a) === fixtureProcessIdentity(b);
+  const samePath = (a: string, b: string) => a !== "" && win32.resolve(a).toLowerCase() === win32.resolve(b).toLowerCase();
+  const sidecar = [...current.values()].find(row => row.pid === expected.sidecarPid && samePath(row.executable, expected.sidecar));
+  const host = sidecar && graph.parent(sidecar);
+  if (!host || !sidecar || !current.has(fixtureProcessIdentity(host)) || same(host, expected.oldHost) || !samePath(host.executable, expected.host)) return;
+  const worker = graph.parent(host), oldHost = worker && graph.parent(worker);
+  if (!worker || !worker.worker || !samePath(worker.executable, expected.helper) || !oldHost || !same(oldHost, expected.oldHost)) return;
+  retainFixtureProcessObservation(expected.oldHost, oldHost);
+  const matches: DesktopUpdateLineage[] = [];
+  for (const installer of graph.rows.filter(row => row.installer && samePath(row.executable, expected.installer))) {
+    const guard = graph.parent(installer), owner = guard && graph.parent(guard);
+    if (guard?.job && owner && same(owner, worker)) matches.push({ worker, guard, installer, host, sidecar });
+  }
+  return matches.length === 1 ? matches[0] : undefined;
+}
+/** Only the current accepted host's exact subtree may outlive the updater. */
+export function desktopUpdateProcessesSettled(processes: readonly WindowsFixtureProcess[], live: readonly WindowsFixtureProcess[], lineage: DesktopUpdateLineage): boolean {
+  const graph = processGraph(processes), current = graph.current(live);
+  if (!current || !current.has(fixtureProcessIdentity(lineage.host)) || !current.has(fixtureProcessIdentity(lineage.sidecar))) return false;
+  const host = fixtureProcessIdentity(lineage.host), worker = fixtureProcessIdentity(lineage.worker);
+  for (const row of current.values()) {
+    let ancestor: WindowsFixtureProcess | undefined = row;
+    while (ancestor && fixtureProcessIdentity(ancestor) !== host && fixtureProcessIdentity(ancestor) !== worker) ancestor = graph.parent(ancestor);
+    if (!ancestor || fixtureProcessIdentity(ancestor) !== host) return false;
+  }
+  return true;
 }
 
 export function assertFixtureChild(root: string, path: string): string {
@@ -188,17 +357,22 @@ export function assertOlderVersion(older: string, current: string): void {
   assert(difference !== undefined && difference < 0, "Fixture version must be older than the accepted candidate version");
 }
 
-export interface CommandOptions { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; logFile?: string; windowsVerbatimArguments?: boolean; label?: string }
+export interface CommandOptions { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; logFile?: string; windowsVerbatimArguments?: boolean; label?: string; input?: string }
 export async function runFixtureCommand(command: string, args: string[], options: CommandOptions = {}): Promise<string> {
+  if (options.input !== undefined) assert(Buffer.byteLength(options.input, "utf8") <= 2 * 1024 * 1024, "Fixture command input exceeds its bound");
   return new Promise((resolveCommand, reject) => {
     const child = spawn(command, args, { cwd: options.cwd, env: options.env, windowsHide: true,
-      windowsVerbatimArguments: options.windowsVerbatimArguments, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+      windowsVerbatimArguments: options.windowsVerbatimArguments, detached: process.platform !== "win32", stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
     let stdout = ""; let stderr = ""; let failure: Error | undefined; let finished = false;
     let hardDeadline: ReturnType<typeof setTimeout> | undefined;
     const capture = (text: string, chunk: Buffer) => (text + chunk.toString()).slice(-2 * 1024 * 1024);
-    child.stdout.on("data", chunk => { stdout = capture(stdout, chunk); });
-    child.stderr.on("data", chunk => { stderr = capture(stderr, chunk); });
+    child.stdout!.on("data", chunk => { stdout = capture(stdout, chunk); });
+    child.stderr!.on("data", chunk => { stderr = capture(stderr, chunk); });
     child.once("error", error => { failure = error; });
+    if (options.input !== undefined) {
+      child.stdin!.on("error", () => { failure = new Error("Fixture command input could not be delivered."); });
+      child.stdin!.end(options.input);
+    }
     const timer = setTimeout(() => {
       failure = new Error(`Fixture command timed out: ${options.label ?? command}`);
       // Broken inherited pipes cannot hang the gate forever. Caller-owned native
@@ -263,9 +437,9 @@ export function powershellExecutable(): string {
   const path = win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   assert(statSync(path).isFile(), "Windows PowerShell is unavailable"); return path;
 }
-export async function powershell(script: string, env: NodeJS.ProcessEnv = process.env, timeoutMs = 30_000, label = "PowerShell fixture probe"): Promise<string> {
+export async function powershell(script: string, env: NodeJS.ProcessEnv = process.env, timeoutMs = 30_000, label = "PowerShell fixture probe", input?: string): Promise<string> {
   return runFixtureCommand(powershellExecutable(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand",
-    Buffer.from(`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ${script}`, "utf16le").toString("base64")], { env, timeoutMs, label });
+    Buffer.from(`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ${script}`, "utf16le").toString("base64")], { env, timeoutMs, label, input });
 }
 
 export function assertHostedWindowsFixture(): void {

@@ -101,7 +101,7 @@ jobs:
           EASYRESEARCH_CODING_AGENT_DIR: ${{ runner.temp }}/easyresearch-window-tests/agent
           HOME: ${{ runner.temp }}/easyresearch-window-tests/home
           USERPROFILE: ${{ runner.temp }}/easyresearch-window-tests/home
-        run: bun run test src/runtime/update-fixture.test.ts -t "admits real visible Windows"
+        run: bun run test src/runtime/update-fixture.test.ts -t "admits real visible Windows|native projection"
 
       - name: Build native platform binary
         run: bun scripts/build.ts --only ${{ matrix.target }}

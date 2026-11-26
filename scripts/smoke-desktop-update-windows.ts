@@ -5,82 +5,124 @@ import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { windowsInstallerRegistryId } from "../src/desktop/update-worker";
 import { LATEST_RELEASE_PAGE } from "../src/runtime/update-contract";
-import { assertFixtureChild, assertHostedWindowsFixture, fixtureDiagnosticError, powershell, runFixtureCommand, withFixtureRoamingBinding } from "./smoke-desktop-update-fixture";
-
-export interface WindowsFixtureProcess { pid: number; parentPid: number; start: string; executable: string; worker: boolean; installer: boolean; job: boolean; requestedFrench?: boolean }
-export function retainFixtureProcessObservation(previous: WindowsFixtureProcess | undefined, current: WindowsFixtureProcess): WindowsFixtureProcess {
-  if (!previous || previous.pid !== current.pid || previous.start !== current.start) return current;
-  assert(previous.parentPid === current.parentPid, "Conflicting retained process parent identity");
-  assert(!previous.executable || !current.executable || previous.executable.toLowerCase() === current.executable.toLowerCase(), "Conflicting retained process executable identity");
-  return { ...current, executable: current.executable || previous.executable,
-    worker: previous.worker || current.worker, installer: previous.installer || current.installer,
-    job: previous.job || current.job, requestedFrench: previous.requestedFrench || current.requestedFrench };
-}
-export function parseFixtureWindowsProcesses(text: string): WindowsFixtureProcess[] {
-  assert(Buffer.byteLength(text, "utf8") <= 2 * 1024 * 1024, "Windows process observations exceed their bound");
-  const rows: unknown = JSON.parse(text);
-  assert(Array.isArray(rows) && rows.length <= 4096, "Expected a bounded flat Windows process array");
-  const seen = new Set<number>();
-  return rows.map(value => {
-    assert(value && typeof value === "object" && !Array.isArray(value), "Invalid Windows process observation");
-    const row = value as Record<string, unknown>;
-    assert(Number.isSafeInteger(row.pid) && (row.pid as number) > 0 && (row.pid as number) <= 0x7fffffff
-      && Number.isSafeInteger(row.parentPid) && (row.parentPid as number) >= 0 && (row.parentPid as number) <= 0x7fffffff
-      && typeof row.start === "string" && row.start.trim().length > 0 && row.start.length <= 128 && !/[\r\n\0]/u.test(row.start)
-      && typeof row.executable === "string" && row.executable.length <= 32767 && !/[\r\n\0]/u.test(row.executable)
-      && typeof row.worker === "boolean" && typeof row.installer === "boolean" && typeof row.job === "boolean"
-      && (row.requestedFrench === undefined || typeof row.requestedFrench === "boolean"), "Invalid Windows process identity or flags");
-    assert(!seen.has(row.pid as number), "Duplicate Windows process identity"); seen.add(row.pid as number);
-    return { pid: row.pid as number, parentPid: row.parentPid as number, start: row.start, executable: row.executable,
-      worker: row.worker, installer: row.installer, job: row.job,
-      ...(row.requestedFrench === undefined ? {} : { requestedFrench: row.requestedFrench as boolean }) };
-  });
-}
-export async function fixtureWindowsProcesses(root: string, previouslyOwned: readonly WindowsFixtureProcess[] = []): Promise<WindowsFixtureProcess[]> {
-  const known = parseFixtureWindowsProcesses(JSON.stringify(previouslyOwned));
-  const result = await powershell(`
+import { assertFixtureChild, assertHostedWindowsFixture, fixtureDiagnosticError, fixtureProcessIdentity, parseFixtureProcessHistory, parseFixtureWindowsProcesses,
+  powershell, retainFixtureProcessHistory, runFixtureCommand, selectFixtureWindowsProcesses, withFixtureRoamingBinding, type WindowsFixtureProcess } from "./smoke-desktop-update-fixture";
+export { fixtureProcessIdentity, parseFixtureProcessHistory, parseFixtureWindowsProcesses, retainFixtureProcessHistory, retainFixtureProcessObservation, selectFixtureWindowsProcesses, type WindowsFixtureProcess } from "./smoke-desktop-update-fixture";
+export async function fixtureWindowsProcesses(root: string, previouslyOwned: readonly WindowsFixtureProcess[] = [], query: typeof powershell = powershell): Promise<WindowsFixtureProcess[]> {
+  const known = parseFixtureProcessHistory(JSON.stringify(previouslyOwned));
+  const result = await query(`
     $root=[IO.Path]::GetFullPath($env:ER_FIXTURE_ROOT).TrimEnd('\\')+'\\';
-    $all=@(Get-CimInstance Win32_Process); $owned=@{}; $known=ConvertFrom-Json $env:ER_FIXTURE_KNOWN_PROCESSES;
-    foreach($k in $known){
-      $knownPid=0;
-      if($null -eq $k -or $k -is [array] -or $k.pid -is [array] -or ![int]::TryParse([string]$k.pid,[ref]$knownPid) -or $knownPid -le 0 -or $k.start -isnot [string] -or [string]::IsNullOrWhiteSpace($k.start)){throw 'Invalid retained fixture process identity'}
+    $known=@{};$latest=@{};
+    $knownRows=ConvertFrom-Json ([Console]::In.ReadToEnd());
+    foreach($k in $knownRows){
+      $id=[int]$k.pid;
+      if(!$known.ContainsKey($id)){$known[$id]=@{};$latest[$id]=[string]$k.start}
+      $known[$id][[string]$k.start]=$true;
+      if([string]::CompareOrdinal($latest[$id],[string]$k.start) -lt 0){$latest[$id]=[string]$k.start}
     }
+    $all=@(Get-CimInstance Win32_Process);$byPid=@{};$children=@{};$roots=@{};
     foreach($p in $all){
-      if(($p.ExecutablePath -and $p.ExecutablePath.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) -or
-        ($p.CommandLine -and $p.CommandLine.IndexOf($root,[StringComparison]::OrdinalIgnoreCase) -ge 0)){$owned[[int]$p.ProcessId]=$true}
-      foreach($k in $known){if([int]$p.ProcessId -eq [int]$k.pid -and $p.CreationDate.ToUniversalTime().ToString('o') -ceq $k.start){$owned[[int]$p.ProcessId]=$true}}
+      $withinRoot=(($p.ExecutablePath -and $p.ExecutablePath.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) -or
+        ($p.CommandLine -and $p.CommandLine.IndexOf($root,[StringComparison]::OrdinalIgnoreCase) -ge 0));
+      $id=[int]$p.ProcessId;
+      if($id -le 0){if($withinRoot){throw 'Scoped Windows process PID is unavailable'};continue}
+      if(!$byPid.ContainsKey($id)){$byPid[$id]=@()};$byPid[$id]+=$p;
+      $parent=[int]$p.ParentProcessId;
+      if(!$children.ContainsKey($parent)){$children[$parent]=@()};$children[$parent]+=$id;
+      if($withinRoot){$roots[$id]=$true}
     }
-    do {$added=$false; foreach($p in $all){if($owned.ContainsKey([int]$p.ParentProcessId) -and !$owned.ContainsKey([int]$p.ProcessId)){$owned[[int]$p.ProcessId]=$true;$added=$true}}}while($added)
-    $rows=@(foreach($p in $all){if($owned.ContainsKey([int]$p.ProcessId)){
-      @{pid=[int]$p.ProcessId;parentPid=[int]$p.ParentProcessId;start=$p.CreationDate.ToUniversalTime().ToString('o');executable=[string]$p.ExecutablePath;
-        worker=([string]$p.CommandLine).Contains('--desktop-update-worker');installer=([string]$p.Name -like '*EasyResearch-*.exe');job=([string]$p.Name -match '^(powershell|pwsh).exe$');requestedFrench=([string]$p.CommandLine -match '(?:^|\\s)--lang=fr(?:\\s|$)')}
-    }}); ConvertTo-Json -InputObject $rows -Compress
-  `, { ...process.env, ER_FIXTURE_ROOT: root, ER_FIXTURE_KNOWN_PROCESSES: JSON.stringify(known) });
-  const rows = parseFixtureWindowsProcesses(result);
+    # Unrelated processes remain in this local CIM result only. Their optional
+    # metadata is neither validated nor serialized into fixture observations.
+    function Scoped-Process([int]$targetId){
+      if(!$byPid.ContainsKey($targetId)){return $null}
+      if($byPid[$targetId].Count -ne 1){throw 'Duplicate scoped Windows process identity'}
+      return $byPid[$targetId][0]
+    }
+    $starts=@{};
+    function Scoped-Start([int]$targetId){
+      if($starts.ContainsKey($targetId)){return $starts[$targetId]}
+      $p=Scoped-Process $targetId;
+      if($null -eq $p -or $p.CreationDate -isnot [datetime]){throw 'Scoped Windows process creation identity is unavailable'}
+      $value=$p.CreationDate.ToUniversalTime().ToString('o');$starts[$targetId]=$value;return $value
+    }
+    $owned=@{};$queue=[Collections.Generic.List[int]]::new();
+    foreach($id in @($byPid.Keys)){
+      if(!$roots.ContainsKey($id) -and !$known.ContainsKey($id)){continue}
+      $birth=Scoped-Start $id;
+      if($known.ContainsKey($id) -and [string]::CompareOrdinal($latest[$id],$birth) -gt 0){throw 'Stale Windows process lifetime observed'}
+      if($roots.ContainsKey($id) -or ($known.ContainsKey($id) -and $known[$id].ContainsKey($birth))){
+        $owned[$id]=$true;$queue.Add($id)
+      }
+    }
+    if($owned.Count -gt 4096){throw 'Windows process observation exceeds its bound'}
+    for($index=0;$index -lt $queue.Count;$index++){
+      $parent=$queue[$index];$parentBirth=Scoped-Start $parent;
+      foreach($id in @($children[$parent])){
+        if($null -eq $id){continue}
+        $birth=Scoped-Start $id;$order=[string]::CompareOrdinal($parentBirth,$birth);
+        if($order -eq 0){throw 'Ambiguous Windows parent creation identity'}
+        if($order -lt 0 -and !$owned.ContainsKey($id)){
+          $owned[$id]=$true;$queue.Add($id);
+          if($owned.Count -gt 4096){throw 'Windows process observation exceeds its bound'}
+        }
+      }
+    }
+    $rows=@(foreach($id in $queue){
+      $p=Scoped-Process $id;$birth=Scoped-Start $id;
+      if($null -eq $p.ParentProcessId){throw 'Scoped Windows process parent identity is unavailable'}
+      $parent=[int]$p.ParentProcessId;$parentBirth=$null;
+      if($parent -gt 0 -and $byPid.ContainsKey($parent)){
+        $observedParentBirth=Scoped-Start $parent;
+        $order=[string]::CompareOrdinal($observedParentBirth,$birth);
+        if($order -eq 0){throw 'Ambiguous Windows parent creation identity'}
+        if($order -lt 0){$parentBirth=$observedParentBirth}
+      }
+      $row=@{pid=$id;parentPid=$parent;start=$birth;executable=[string]$p.ExecutablePath;withinRoot=$roots.ContainsKey($id);
+        worker=([string]$p.CommandLine).Contains('--desktop-update-worker');installer=([string]$p.Name -like '*EasyResearch-*.exe');
+        job=([string]$p.Name -match '^(powershell|pwsh).exe$');requestedFrench=([string]$p.CommandLine -match '(?:^|\\s)--lang=fr(?:\\s|$)')};
+      if($null -ne $parentBirth){$row.parentStart=$parentBirth};$row
+    }); ConvertTo-Json -InputObject $rows -Compress
+  `, { ...process.env, ER_FIXTURE_ROOT: root }, 30_000, "owned Windows process observation",
+  JSON.stringify(known.map(({ pid, start }) => ({ pid, start }))));
+  const current = parseFixtureWindowsProcesses(result);
+  const raw = JSON.parse(result) as Array<{ withinRoot: boolean }>;
+  assert(raw.every(row => typeof row.withinRoot === "boolean"), "Invalid fixture process root evidence");
+  const rooted = new Set(current.filter((_row, index) => raw[index]!.withinRoot).map(fixtureProcessIdentity));
+  const rows = selectFixtureWindowsProcesses(current, rooted, known);
   assert(rows.every(row => row.pid !== process.pid && row.pid !== process.ppid), "Fixture process observation included its caller or parent");
   return rows;
 }
 
-export async function stopFixtureWindowsProcesses(root: string, previouslyOwned: readonly WindowsFixtureProcess[] = []): Promise<void> {
+export async function stopFixtureWindowsProcesses(root: string, previouslyOwned: readonly WindowsFixtureProcess[] = [], io: {
+  observe?: typeof fixtureWindowsProcesses;
+  stop?: (rows: readonly WindowsFixtureProcess[]) => Promise<void>;
+  wait?: (milliseconds: number) => Promise<void>;
+} = {}): Promise<void> {
   // Every PID is rechecked against creation identity immediately before signalling.
   // The freshly created private root is never reused by another installation.
-  const known = new Map(parseFixtureWindowsProcesses(JSON.stringify(previouslyOwned)).map(row => [row.pid, row]));
+  const known = new Map(parseFixtureProcessHistory(JSON.stringify(previouslyOwned)).map(row => [fixtureProcessIdentity(row), row]));
+  const observe = io.observe ?? fixtureWindowsProcesses;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const processes = await fixtureWindowsProcesses(root, [...known.values()]); if (!processes.length) return;
-    for (const row of processes) known.set(row.pid, retainFixtureProcessObservation(known.get(row.pid), row));
-    await powershell(`
+    const processes = parseFixtureWindowsProcesses(JSON.stringify(await observe(root, [...known.values()]))); if (!processes.length) return;
+    retainFixtureProcessHistory(known, processes);
+    if (io.stop) await io.stop(processes);
+    else await powershell(`
       $rows=ConvertFrom-Json $env:ER_FIXTURE_PROCESSES;
       foreach($row in $rows){
         $targetPid=0;
         if($null -eq $row -or $row -is [array] -or $row.pid -is [array] -or ![int]::TryParse([string]$row.pid,[ref]$targetPid) -or $targetPid -le 0 -or $row.start -isnot [string] -or [string]::IsNullOrWhiteSpace($row.start)){throw 'Invalid fixture process cleanup identity'}
         if($targetPid -eq $PID -or $targetPid -eq [int]$env:ER_FIXTURE_CALLER_PID -or $targetPid -eq [int]$env:ER_FIXTURE_PARENT_PID){throw 'Refusing to stop a fixture observer or its parent'}
         $p=Get-CimInstance Win32_Process -Filter ('ProcessId='+[string]$targetPid);
-        if($p -and $p.CreationDate.ToUniversalTime().ToString('o') -ceq $row.start){Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue}
+        if($p -and $p.CreationDate.ToUniversalTime().ToString('o') -ceq $row.start){
+          if([int]$p.ParentProcessId -ne [int]$row.parentPid -or
+            ($p.ExecutablePath -and $row.executable -and !$p.ExecutablePath.Equals($row.executable,[StringComparison]::OrdinalIgnoreCase))){throw 'Fixture cleanup process identity changed'}
+          Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue
+        }
       }
     `, { ...process.env, ER_FIXTURE_PROCESSES: JSON.stringify(processes), ER_FIXTURE_CALLER_PID: String(process.pid), ER_FIXTURE_PARENT_PID: String(process.ppid) });
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await (io.wait ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))))(500);
   }
-  assert.equal((await fixtureWindowsProcesses(root, [...known.values()])).length, 0, "Owned Windows fixture processes survived cleanup");
+  assert.equal((await observe(root, [...known.values()])).length, 0, "Owned Windows fixture processes survived cleanup");
 }
 
 export interface InstallationRegistryEntry { hive: string; view: string; key: string; location: string; version: string; uninstall: string }
