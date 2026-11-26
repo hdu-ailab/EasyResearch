@@ -1,19 +1,16 @@
-import { memo, useEffect, useEffectEvent, useRef, useState } from "react";
+import { memo, useEffect, useEffectEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
-import { cancelMarkdown, canUseMarkdownWorker, requestMarkdown } from "./markdown/client";
+import { canUseMarkdownWorker } from "./markdown/client";
 import { rehypeFileReferences } from "./markdown/file-references";
-import {
-  getCompletedMarkdown,
-  type PreparedMarkdownBlock,
-  prepareMarkdownBlocks,
-  setCompletedMarkdown,
-} from "./markdown/render";
+import { MarkdownMotionSource, MarkdownSpan, MarkdownTextMotion, MarkdownTextOffset } from "./markdown/TextMotion";
 import { TranscriptCode } from "./markdown/TranscriptCode";
 import { FileReferenceSettledContext, TranscriptFileLink } from "./markdown/TranscriptFileLink";
+import { rehypeTextMotion } from "./markdown/text-nodes";
+import { usePreparedMarkdown } from "./markdown/usePreparedMarkdown";
 
 export interface MarkdownBlockProps {
   text: string;
@@ -21,14 +18,16 @@ export interface MarkdownBlockProps {
   scope?: string;
   cacheKey?: string;
   streaming?: boolean;
+  animateText?: boolean;
   onRendered?: () => void;
 }
 
 const remarkPlugins = [remarkGfm, remarkMath];
-const rehypePlugins = [rehypeKatex, rehypeFileReferences];
+const rehypePlugins = [rehypeKatex, rehypeFileReferences, rehypeTextMotion];
 const components = {
   a: TranscriptFileLink,
   code: TranscriptCode,
+  span: MarkdownSpan,
 };
 
 function SynchronousMarkdown({ text, className }: Pick<MarkdownBlockProps, "text" | "className">) {
@@ -47,73 +46,60 @@ function MarkdownBlockComponent({
   scope,
   cacheKey,
   streaming = false,
+  animateText = false,
   onRendered,
 }: MarkdownBlockProps) {
-  const markdownScope = scope;
-  const markdownKey = cacheKey;
-  const [rendered, setRendered] = useState<{ source: string; blocks: readonly PreparedMarkdownBlock[] } | null>(() =>
-    markdownScope && markdownKey ? (getCompletedMarkdown(markdownScope, markdownKey, text) ?? null) : null,
-  );
-  const [failedSource, setFailedSource] = useState<string | null>(null);
-  const previous = useRef<readonly PreparedMarkdownBlock[]>(rendered?.blocks ?? []);
-  const latestRevision = useRef(0);
+  const { rendered, generation, failed } = usePreparedMarkdown(scope, cacheKey, text, streaming);
   const notifyRendered = useEffectEvent(() => onRendered?.());
 
   useEffect(() => {
-    if (!markdownScope || !markdownKey || !canUseMarkdownWorker()) return;
-    const cached = getCompletedMarkdown(markdownScope, markdownKey, text);
-    if (cached) {
-      previous.current = cached.blocks;
-      setRendered(cached);
-      setFailedSource(null);
-      return;
-    }
-    const request = requestMarkdown({ scope: markdownScope, key: markdownKey, source: text });
-    latestRevision.current = request.revision;
-    let active = true;
-    void request.promise.then(
-      (result) => {
-        if (!active || latestRevision.current !== result.revision || result.source !== text) return;
-        const blocks = prepareMarkdownBlocks(result.blocks, previous.current);
-        previous.current = blocks;
-        if (!streaming) setCompletedMarkdown(markdownScope, markdownKey, text, blocks);
-        setRendered({ source: text, blocks });
-        setFailedSource(null);
-      },
-      () => {
-        if (active && latestRevision.current === request.revision) setFailedSource(text);
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [markdownKey, markdownScope, streaming, text]);
-
-  useEffect(() => {
-    if (!markdownScope || !markdownKey) return;
-    return () => cancelMarkdown(markdownScope, markdownKey);
-  }, [markdownKey, markdownScope]);
-
-  useEffect(() => {
-    if (rendered?.source !== text) return;
+    if (!rendered) return;
     const frame = requestAnimationFrame(() => notifyRendered());
     return () => cancelAnimationFrame(frame);
-  }, [rendered, text]);
+  }, [rendered]);
 
-  if (!markdownScope || !markdownKey || !canUseMarkdownWorker() || failedSource === text) {
+  if (!scope || !cacheKey || !canUseMarkdownWorker() || failed) {
     return (
       <FileReferenceSettledContext value={!streaming}>
-        <SynchronousMarkdown text={text} className={className} />
+        <MarkdownMotionSource
+          key={`${scope ?? ""}\0${cacheKey ?? ""}\0${generation}`}
+          value={{ source: text, generation, enabled: animateText, streaming }}
+        >
+          <SynchronousMarkdown text={text} className={className} />
+        </MarkdownMotionSource>
       </FileReferenceSettledContext>
     );
   }
-  const canReuse = rendered && (rendered.source === text || (streaming && text.startsWith(rendered.source)));
-  const pendingText = canReuse ? text.slice(rendered.source.length) : text;
+  let offset = 0;
   return (
-    <FileReferenceSettledContext value={!streaming}>
-      <div className={className} data-markdown-root data-markdown-source-length={canReuse ? rendered.source.length : 0}>
-        {canReuse ? rendered.blocks.map((block) => block.node) : null}
-        {pendingText ? <div className="whitespace-pre-wrap">{pendingText}</div> : null}
+    <FileReferenceSettledContext value={!streaming && rendered?.source === text}>
+      <div className={className} data-markdown-root data-markdown-source-length={rendered?.source.length ?? 0}>
+        {rendered ? (
+          <MarkdownMotionSource
+            key={`${scope}\0${cacheKey}\0${rendered.generation}`}
+            value={{
+              source: rendered.source,
+              generation: rendered.generation,
+              enabled: animateText,
+              streaming,
+              replacing: rendered.generation !== generation,
+            }}
+          >
+            <MarkdownTextMotion prose={rendered.blocks.map((block) => block.prose).join("")}>
+              {rendered.blocks.map((block) => {
+                const start = offset;
+                offset += block.prose.length;
+                return (
+                  <MarkdownTextOffset key={block.key} value={start}>
+                    {block.node}
+                  </MarkdownTextOffset>
+                );
+              })}
+            </MarkdownTextMotion>
+          </MarkdownMotionSource>
+        ) : (
+          <div className="whitespace-pre-wrap">{text}</div>
+        )}
       </div>
     </FileReferenceSettledContext>
   );

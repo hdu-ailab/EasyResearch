@@ -271,6 +271,7 @@ function MessageRow({
               scope={markdownScope}
               cacheKey={`${message.key}:text`}
               streaming={message.streaming}
+              animateText={message.role === "assistant"}
               onRendered={onRendered}
             />
           )}
@@ -465,7 +466,9 @@ const TranscriptVirtualRow = memo(function TranscriptVirtualRow({
         data-testid={`transcript-row-${rowKey}`}
         ref={bindMeasure}
         className={`px-4 ${animate ? "v2-transcript-row-enter" : ""}`}
-        onAnimationEnd={() => onAnimationEnd(rowKey)}
+        onAnimationEnd={(event) => {
+          if (event.target === event.currentTarget) onAnimationEnd(rowKey);
+        }}
         style={{ paddingBottom: ROW_GAP_PX }}
       >
         {"kind" in entry && entry.kind === "pending" ? (

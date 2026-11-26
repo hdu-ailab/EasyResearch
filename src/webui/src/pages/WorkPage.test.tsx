@@ -5,10 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackgroundTask } from "../../../background/contracts";
 import type { FileEntryDto, SubagentSessionSummaryDto, SubagentSupervisorEventDto } from "../../../web/contracts";
 import * as api from "../api";
+import { configureMarkdownWorkerFactoryForTests, resetMarkdownRuntimeForTests } from "../components/markdown/client";
+import { clearCompletedMarkdownCacheForTests } from "../components/markdown/render";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { STORAGE_KEY } from "../preferences";
 import { PreferencesProvider } from "../preferences/PreferencesProvider";
 import { contextSnapshot } from "../testing/context";
+import { ControlledMarkdownWorker } from "../testing/markdownWorker";
 import { completionEntry } from "../testing/subagentCompletion";
 import { fireTranscriptGrowth, hydrateTranscript, metricStub, observerFor } from "../testing/transcriptTest";
 import { TIMELINE_CATEGORIES } from "../timeline-detail";
@@ -16,6 +19,12 @@ import { ViewActivityProvider } from "../view-activity";
 import { WorkPage } from "./WorkPage";
 
 const fileQueueProbe = vi.hoisted(() => ({ pending: 0 }));
+
+// Streaming prose contains word spans. Match complete semantic paragraphs, so
+// an isolated partial row cannot be confused with a word in a reconciled answer.
+const paragraphText = (text: string | RegExp) => (_content: string, element: Element | null) =>
+  element?.tagName === "P" &&
+  (typeof text === "string" ? element.textContent === text : text.test(element.textContent ?? ""));
 
 function startPanelResize(handle: HTMLElement, clientX = 880, pointerId = 1, pointerType = "mouse") {
   if (!handle.setPointerCapture) {
@@ -1452,7 +1461,7 @@ describe("WorkPage", () => {
         session: { ...snapshotValue.session, cwd, isStreaming: streaming, status: streaming ? "running" : "ready" },
       } as never);
       renderFiles(<WorkPage id="s1" cwd={cwd} onBack={() => {}} onOpenSettings={() => {}} />);
-      await screen.findByText("starting research");
+      await screen.findByText(paragraphText("starting research"));
       const input = screen.getByRole("textbox", { name: /message/i }) as HTMLTextAreaElement;
       fireEvent.change(input, { target: { value: draft } });
       input.focus();
@@ -2512,7 +2521,7 @@ describe("WorkPage", () => {
       message: { id: "m1", role: "assistant", content: [{ type: "text", text: "on it" }] },
     });
     await waitFor(() => expect(screen.queryByLabelText("Working")).toBeNull());
-    expect(await screen.findByText("on it")).toBeTruthy();
+    expect(await screen.findByText(paragraphText("on it"))).toBeTruthy();
   });
 
   it("replaces the working agent row when the first real output is a tool call", async () => {
@@ -2681,7 +2690,7 @@ describe("WorkPage", () => {
       subagents: [],
     } as never);
     render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
-    expect(await screen.findByText("parent answer")).toBeTruthy();
+    expect(await screen.findByText(paragraphText("parent answer"))).toBeTruthy();
     const tabs = within(screen.getByTestId("agent-tab-group"));
     const el = screen.getByLabelText("Conversation") as HTMLDivElement;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 400 });
@@ -2761,8 +2770,8 @@ describe("WorkPage", () => {
       type: "message_start",
       message: { role: "assistant", id: "m2", content: [], errorMessage: "provider auth failed" },
     });
-    expect(await screen.findByText(/provider auth failed/)).toBeTruthy();
-    expect(screen.queryByText(/auth failed/i)).toBeTruthy();
+    expect(await screen.findByText(paragraphText(/provider auth failed/))).toBeTruthy();
+    expect(screen.queryByText(paragraphText(/auth failed/i))).toBeTruthy();
   });
 
   it("unmount only closes EventSource, never stops the session", async () => {
@@ -2937,7 +2946,7 @@ describe("WorkPage", () => {
       } as never,
     });
 
-    expect(await screen.findByText("live output after reconnect")).toBeVisible();
+    await waitFor(() => expect(screen.getByText(paragraphText("live output after reconnect"))).toBeVisible());
   });
 
   it("loads inherited history exactly once when a retained temporary tab receives a delayed UUID", async () => {
@@ -3010,6 +3019,125 @@ describe("WorkPage", () => {
     expect(screen.queryByText("Drop to insert file path")).toBeNull();
     expect(within(conversation).queryByRole("button", { name: "View details" })).toBeNull();
   });
+
+  it.each(["message_end", "agent_settled"])(
+    "retains a selected child's coherent table while %s arrives before its pending Markdown parse",
+    async (boundary) => {
+      const worker = new ControlledMarkdownWorker();
+      configureMarkdownWorkerFactoryForTests(() => worker);
+      clearCompletedMarkdownCacheForTests();
+      try {
+        const child = {
+          toolCallId: "rich-child",
+          childSessionId: "rich-session",
+          agent: "search",
+          agentId: "search_0",
+        };
+        const usage = {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        };
+        const assistant = (text: string) => ({
+          role: "assistant" as const,
+          api: "openai-completions" as const,
+          provider: "fixture",
+          model: "fixture",
+          timestamp: 100,
+          usage,
+          stopReason: "stop" as const,
+          content: [{ type: "text" as const, text }],
+        });
+        vi.mocked(api.getSnapshot).mockResolvedValue({
+          session: { id: "s1", cwd: "/p", isStreaming: false, status: "running" },
+          subagents: [
+            subagentSummary(child.toolCallId, child.childSessionId, child.agent, {
+              agentId: child.agentId,
+              status: "working",
+            }),
+          ],
+          timeline: [
+            {
+              kind: "message",
+              entryId: "rich-launch",
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "toolCall", id: child.toolCallId, name: "subagent", arguments: { agent: child.agent } },
+                ],
+              },
+            },
+          ],
+        } as never);
+        vi.mocked(api.getChildSnapshot).mockResolvedValue({
+          session: { id: child.childSessionId, cwd: "/p", sessionName: "easyresearch:search" },
+          timeline: [],
+          subagents: [],
+        });
+        render(<WorkPage id="s1" cwd="/p" onBack={() => {}} onOpenSettings={() => {}} />);
+        const conversation = screen.getByLabelText("Conversation");
+        await userEvent.click(await within(conversation).findByRole("button", { name: "View details" }));
+        await waitFor(() => expect(api.getChildSnapshot).toHaveBeenCalledTimes(1));
+        emitSupervisorChildEvent({
+          ...child,
+          event: { type: "message_start", message: { ...assistant(""), content: [] } },
+        });
+        const prefix = "|A|B|\n|-|-|\n|one|two|\n\n## Heading\n\nAlready formatted";
+        const delta = (text: string) =>
+          emitSupervisorChildEvent({
+            ...child,
+            event: {
+              type: "message_update",
+              usage,
+              assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text },
+            },
+          });
+        delta(prefix);
+        // Start and full prefix may be separate active/newest requests.
+        for (let attempt = 0; attempt < 4; attempt++) {
+          await act(async () => {
+            await Promise.resolve();
+            if (worker.pending.length) await worker.respond();
+          });
+          if (within(conversation).queryByRole("table")) break;
+        }
+        const table = within(conversation).getByRole("table");
+        const heading = within(conversation).getByRole("heading", { name: "Heading" });
+        const row = table.closest("[data-row-key]");
+        const markdown = table.closest("[data-markdown-root]");
+        const paragraph = markdown?.querySelector("p");
+        delta(" prose.");
+        expect(within(conversation).getByRole("table")).toBe(table);
+        const final = `${prefix} prose.`;
+        emitSupervisorChildEvent({
+          ...child,
+          event:
+            boundary === "message_end"
+              ? {
+                  type: "message_end",
+                  message: assistant(final),
+                }
+              : { type: "agent_settled", aborted: true },
+        });
+        expect(within(conversation).getByRole("table")).toBe(table);
+        expect(within(conversation).getByRole("heading", { name: "Heading" })).toBe(heading);
+        expect(markdown?.querySelector(":scope > div")).toBeNull();
+        await act(() => worker.respond());
+        expect(within(conversation).getByRole("table")).toBe(table);
+        expect(table.closest("[data-row-key]")).toBe(row);
+        expect(markdown?.querySelector("p")).toBe(paragraph);
+        expect(paragraph).toHaveTextContent("Already formatted prose.");
+        expect(markdown).toHaveAttribute("data-markdown-source-length", String(final.length));
+        expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
+      } finally {
+        resetMarkdownRuntimeForTests();
+        clearCompletedMarkdownCacheForTests();
+      }
+    },
+  );
 
   it("reduces nested child deltas and tools in order, then stops and closes before reopening from its card", async () => {
     const user = userEvent.setup();
@@ -3109,7 +3237,7 @@ describe("WorkPage", () => {
         isError: false,
       },
     });
-    expect(await screen.findByText("live tokens")).toBeVisible();
+    expect(await screen.findByText(paragraphText("live tokens"))).toBeVisible();
     act(() =>
       resolveChild({
         session: { id: "child-live", cwd: "/p", sessionName: "easyresearch:search" },
@@ -3119,7 +3247,7 @@ describe("WorkPage", () => {
     );
     expect(tabs.getByRole("button", { name: "Agent search_0" })).toHaveAttribute("aria-pressed", "true");
     expect(await screen.findByText("older task")).toBeVisible();
-    expect(screen.getByText("live tokens")).toBeVisible();
+    expect(screen.getByText(paragraphText("live tokens"))).toBeVisible();
     const rows = [...screen.getByLabelText("Conversation").querySelectorAll("li")].map((row) => row.textContent ?? "");
     expect(rows.findIndex((row) => row.includes("live tokens"))).toBeLessThan(
       rows.findIndex((row) => row.includes("bash")),
@@ -3143,7 +3271,7 @@ describe("WorkPage", () => {
     expect(api.abortSession).not.toHaveBeenCalled();
     expect(await conversation.findByRole("button", { name: "View details" })).toBeVisible();
     await user.click(conversation.getByRole("button", { name: "View details" }));
-    expect(await screen.findByText("live tokens")).toBeVisible();
+    expect(await screen.findByText(paragraphText("live tokens"))).toBeVisible();
     expect(api.getChildSnapshot).toHaveBeenCalledTimes(1);
   });
 
@@ -3220,7 +3348,7 @@ describe("WorkPage", () => {
     });
 
     await user.click(tabs.getByRole("button", { name: "Agent search_nested" }));
-    expect(await screen.findByText("grandchild live")).toBeVisible();
+    expect(await screen.findByText(paragraphText("grandchild live"))).toBeVisible();
     await user.click(tabs.getByRole("button", { name: "Agent writing_0" }));
 
     emitSupervisor({
@@ -3641,7 +3769,7 @@ describe("WorkPage", () => {
           assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Live suffix after reconnect" },
         } as never,
       });
-      expect(await screen.findByText("Live suffix after reconnect")).toBeVisible();
+      expect(await screen.findByText(paragraphText("Live suffix after reconnect"))).toBeVisible();
       expect(screen.getByText("Previous complete answer")).toBeVisible();
       expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
 
@@ -3676,14 +3804,14 @@ describe("WorkPage", () => {
               ],
             } as never),
           );
-        expect(screen.getByText("Live suffix after reconnect")).toBeVisible();
+        expect(screen.getByText(paragraphText("Live suffix after reconnect"))).toBeVisible();
         emitSupervisorChildEvent({
           toolCallId: "sub-cursor",
           childSessionId: "child-cursor",
           event: { type: "message_end", message: finalMessage } as never,
         });
-        expect(await screen.findByText("Full body. Live suffix after reconnect")).toBeVisible();
-        expect(screen.queryByText("Live suffix after reconnect")).toBeNull();
+        expect(await screen.findByText(paragraphText("Full body. Live suffix after reconnect"))).toBeVisible();
+        expect(screen.queryByText(paragraphText("Live suffix after reconnect"))).toBeNull();
         emitSupervisor({ toolCallId: "sub-cursor", childSessionId: "child-cursor", status: "complete" });
       }
       expect(await screen.findByRole("button", { name: "Thinking process" })).toBeVisible();
@@ -3812,20 +3940,20 @@ describe("WorkPage", () => {
         } as never),
       );
 
-      expect(await screen.findByText("Complete body with suffix")).toBeVisible();
-      expect(screen.queryByText("suffix")).toBeNull();
+      expect(await screen.findByText(paragraphText("Complete body with suffix"))).toBeVisible();
+      expect(screen.queryByText(paragraphText("suffix"))).toBeNull();
       expect(screen.getByText("Prior answer")).toBeVisible();
       expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
       if (status === "working") {
         if (duringHydration) {
-          expect(screen.getByText("Post-snapshot delta")).toBeVisible();
+          expect(screen.getByText(paragraphText("Post-snapshot delta"))).toBeVisible();
           expect(screen.getByText("Nested progress")).toBeVisible();
           expect(screen.getByRole("button", { name: "Agent writing_0" })).toBeVisible();
           delta(" and more");
-          expect(screen.getByText("Post-snapshot delta and more")).toBeVisible();
+          expect(screen.getByText(paragraphText("Post-snapshot delta and more"))).toBeVisible();
         } else {
           delta("Next live response");
-          expect(screen.getByText("Next live response")).toBeVisible();
+          expect(screen.getByText(paragraphText("Next live response"))).toBeVisible();
         }
         const keys = [...view.container.querySelectorAll<HTMLElement>("[data-row-key]")].map(
           (row) => row.dataset.rowKey,
@@ -3839,10 +3967,10 @@ describe("WorkPage", () => {
             message: { role: "assistant", timestamp: 21, content: "Next complete body" },
           } as never,
         });
-        expect(await screen.findByText("Next complete body")).toBeVisible();
-        expect(screen.getByText("Complete body with suffix")).toBeVisible();
-        expect(screen.queryByText("Post-snapshot delta and more")).toBeNull();
-        expect(screen.queryByText("Next live response")).toBeNull();
+        expect(await screen.findByText(paragraphText("Next complete body"))).toBeVisible();
+        expect(screen.getByText(paragraphText("Complete body with suffix"))).toBeVisible();
+        expect(screen.queryByText(paragraphText("Post-snapshot delta and more"))).toBeNull();
+        expect(screen.queryByText(paragraphText("Next live response"))).toBeNull();
       }
       expect(api.sendPrompt).not.toHaveBeenCalled();
     },
@@ -4156,7 +4284,7 @@ describe("WorkPage", () => {
         assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "new nested output" },
       },
     });
-    expect(await screen.findByText("new nested output")).toBeVisible();
+    expect(await screen.findByText(paragraphText("new nested output"))).toBeVisible();
     emitSupervisorChildEvent({
       toolCallId: "sub-race",
       agent: "search",
@@ -4192,7 +4320,7 @@ describe("WorkPage", () => {
       } as never),
     );
 
-    await waitFor(() => expect(screen.getByText("new nested output")).toBeVisible());
+    await waitFor(() => expect(screen.getByText(paragraphText("new nested output"))).toBeVisible());
     expect(screen.queryByText("stale refresh output")).toBeNull();
   });
 

@@ -398,14 +398,16 @@ describe("ChatTranscript", () => {
     view.rerender(
       <ChatTranscript messages={[{ ...thinking, isThinking: false, text: "First token" }]} tools={[child]} />,
     );
-    const answer = screen.getByText("First token").closest("[data-message-body]");
+    const answer = screen.getByTestId("transcript-row-live").querySelector("[data-message-body]");
+    expect(answer).toHaveTextContent("First token");
     view.rerender(
       <ChatTranscript
         messages={[{ ...thinking, isThinking: false, text: "First token and the rest" }]}
         tools={[child]}
       />,
     );
-    expect(screen.getByText("First token and the rest").closest("[data-message-body]")).toBe(answer);
+    expect(screen.getByTestId("transcript-row-live").querySelector("[data-message-body]")).toBe(answer);
+    expect(answer).toHaveTextContent("First token and the rest");
     expect(screen.queryByRole("status")).toBeNull();
     view.rerender(<ChatTranscript messages={[]} tools={[{ ...child, running: false, done: true }]} />);
     expect(screen.queryByText("Send a message to start.")).toBeNull();
@@ -1288,8 +1290,8 @@ describe("ChatTranscript", () => {
       <ChatTranscript messages={[msg({ key: "a", text: "streaming answer", streaming: true })]} tools={[]} />,
     );
 
-    const body = screen.getByText("streaming answer").closest("div.v2-md");
-    expect(body).toBeTruthy();
+    const body = screen.getByTestId("transcript-row-a").querySelector("[data-message-body]");
+    expect(body).toHaveTextContent("streaming answer");
     expect(body?.querySelector(".v2-caret")).toBeNull();
   });
 

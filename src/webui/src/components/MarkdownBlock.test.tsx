@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ControlledMarkdownWorker } from "../testing/markdownWorker";
 import { MarkdownBlock } from "./MarkdownBlock";
 import {
   configureMarkdownWorkerFactoryForTests,
@@ -11,7 +12,7 @@ import {
 import { FileReferenceBatch } from "./markdown/file-reference-batch";
 import { parseMarkdownBlocks } from "./markdown/parse";
 import type { MarkdownParseRequest, MarkdownWorkerResponse } from "./markdown/protocol";
-import { clearCompletedMarkdownCacheForTests } from "./markdown/render";
+import { clearCompletedMarkdownCacheForTests, getCompletedMarkdown } from "./markdown/render";
 import { FileReferenceResolutionContext, TranscriptFileContext } from "./markdown/TranscriptFileLink";
 
 function VerifiedFiles({ children }: { children: ReactNode }) {
@@ -58,23 +59,6 @@ class ParsingWorker implements MarkdownWorkerLike {
   terminate() {}
 }
 
-class DelayedWorker extends ParsingWorker {
-  pending: MarkdownParseRequest[] = [];
-
-  override postMessage(request: MarkdownParseRequest) {
-    this.pending.push(request);
-  }
-
-  async respond() {
-    await Promise.resolve();
-    const request = this.pending.shift();
-    if (!request) throw new Error("No pending Markdown parse");
-    const blocks = await parseMarkdownBlocks(request.source);
-    const response: MarkdownWorkerResponse = { ...request, type: "parsed", blocks };
-    for (const listener of this.message) listener({ data: response } as MessageEvent<unknown>);
-  }
-}
-
 describe("MarkdownBlock", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -94,6 +78,82 @@ describe("MarkdownBlock", () => {
     render(<MarkdownBlock text={"```mermaid\ngraph TD; A-->B\n```"} />);
     expect(await screen.findByTestId("mermaid-svg")).toBeTruthy();
   });
+
+  it("recovers a retained Mermaid component when a partial streamed fence becomes valid", async () => {
+    const mermaid = (await import("mermaid")).default;
+    vi.mocked(mermaid.render).mockRejectedValueOnce(new Error("Incomplete diagram"));
+    const worker = new ControlledMarkdownWorker();
+    configureMarkdownWorkerFactoryForTests(() => worker);
+    const view = render(
+      <MarkdownBlock scope="diagram" cacheKey="body" text={"```mermaid\ngraph TD; A-->"} streaming />,
+    );
+    await act(() => worker.respond());
+    expect(await screen.findByText("graph TD; A-->")).toBeTruthy();
+    view.rerender(
+      <MarkdownBlock scope="diagram" cacheKey="body" text={"```mermaid\ngraph TD; A-->B\n```"} streaming />,
+    );
+    await act(() => worker.respond());
+    expect(await screen.findByTestId("mermaid-svg")).toBeTruthy();
+    expect(view.container.querySelector(".er-rendered-diagram")).toBeTruthy();
+  });
+
+  it.each(["worker", "fallback"])(
+    "resets asynchronous diagram state only when a non-append replacement is published (%s)",
+    async (mode) => {
+      const worker = new ControlledMarkdownWorker();
+      if (mode === "worker") configureMarkdownWorkerFactoryForTests(() => worker);
+      const parsed = async () => {
+        if (mode === "worker") await act(() => worker.respond());
+      };
+      const mermaid = (await import("mermaid")).default;
+      const lateOld = Promise.withResolvers<{ svg: string; diagramType: string }>();
+      const newDiagram = Promise.withResolvers<{ svg: string; diagramType: string }>();
+      vi.mocked(mermaid.render)
+        .mockReset()
+        .mockResolvedValue({ svg: '<svg data-testid="mermaid-svg" />', diagramType: "flowchart-v2" })
+        .mockResolvedValueOnce({ svg: '<svg data-testid="old-diagram" />', diagramType: "flowchart-v2" })
+        .mockReturnValueOnce(lateOld.promise)
+        .mockReturnValueOnce(newDiagram.promise);
+      const props = { scope: "replacement-diagram", cacheKey: "body", animateText: true };
+      const oldSource = "Old caption\n\n```mermaid\ngraph TD; A-->B";
+      const view = render(<MarkdownBlock {...props} text={oldSource} streaming />);
+      await parsed();
+      const oldDiagram = (await screen.findByTestId("old-diagram")).closest(".er-rendered-diagram");
+      const oldCaption = view.container.querySelector("p");
+
+      // An append keeps the last successful diagram while its own async render is pending.
+      view.rerender(<MarkdownBlock {...props} text={`${oldSource}\nB-->C`} streaming />);
+      await parsed();
+      await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2));
+      expect(screen.getByTestId("old-diagram").closest(".er-rendered-diagram")).toBe(oldDiagram);
+      expect(view.container.querySelector("p")).toBe(oldCaption);
+
+      const replacement = "New caption\n\n```mermaid\ngraph TD; X-->Y";
+      view.rerender(<MarkdownBlock {...props} text={replacement} streaming />);
+      if (mode === "worker") {
+        expect(view.container.querySelector("p")).toBe(oldCaption);
+        expect(screen.getByTestId("old-diagram").closest(".er-rendered-diagram")).toBe(oldDiagram);
+      }
+      await parsed();
+      await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(3));
+      expect(view.container.querySelector("p")?.textContent).toBe("New caption");
+      expect(screen.queryByTestId("old-diagram")).toBeNull();
+      expect(oldDiagram?.isConnected).toBe(false);
+      expect(view.container.querySelector("[data-entering]")).toBeNull();
+
+      await act(async () => {
+        newDiagram.resolve({ svg: '<svg data-testid="new-diagram" />', diagramType: "flowchart-v2" });
+      });
+      const currentDiagram = screen.getByTestId("new-diagram").closest(".er-rendered-diagram");
+      await act(async () => {
+        lateOld.resolve({ svg: '<svg data-testid="late-old-diagram" />', diagramType: "flowchart-v2" });
+      });
+      expect(screen.queryByTestId("late-old-diagram")).toBeNull();
+      expect(screen.getByTestId("new-diagram").closest(".er-rendered-diagram")).toBe(currentDiagram);
+      view.rerender(<MarkdownBlock {...props} text={replacement} />);
+      expect(screen.getByTestId("new-diagram").closest(".er-rendered-diagram")).toBe(currentDiagram);
+    },
+  );
 
   it("keeps non-mermaid code fences as code", () => {
     render(<MarkdownBlock text={"```ts\nconst x = 1;\n```"} />);
@@ -189,27 +249,40 @@ describe("MarkdownBlock", () => {
     expect(worker.requests).toBe(1);
   });
 
-  it("shows every unparsed streaming suffix while preserving blocks and rejecting stale results", async () => {
-    const worker = new DelayedWorker();
+  it("publishes coherent prefix progress under continuous appends without raw tails or paragraph remounts", async () => {
+    const worker = new ControlledMarkdownWorker();
     configureMarkdownWorkerFactoryForTests(() => worker);
     const { container, rerender } = render(
-      <MarkdownBlock scope="session" cacheKey="message" text="**seed**" streaming />,
+      <MarkdownBlock scope="session" cacheKey="message" text={"**seed**\n\none"} streaming />,
     );
     await act(() => worker.respond());
     const seed = container.querySelector("strong");
     expect(seed?.textContent).toBe("seed");
-    let suffix = "\n\none";
+    const paragraph = container.querySelectorAll("p")[1];
+    let suffix = "\n\none two";
+    let accepted = "**seed**\n\none";
     const update = () =>
       rerender(<MarkdownBlock scope="session" cacheKey="message" text={`**seed**${suffix}`} streaming />);
     update();
-    for (const token of [" two", " three", " <img src=x onerror=alert(1)>"]) {
+    for (const token of [" three", " four", " <img src=x onerror=alert(1)>"]) {
       suffix += token;
       update();
-      // Complete the previous request only after a newer source is already queued.
-      await act(() => worker.respond());
-      expect(container.textContent).toBe(`seed${suffix}`);
+      // The last rich snapshot remains whole while a newer source is pending.
+      expect(container.querySelector("[data-markdown-source-length]")).toHaveAttribute(
+        "data-markdown-source-length",
+        String(accepted.length),
+      );
+      await act(async () => {
+        accepted = (await worker.respond()).source;
+      });
+      expect(container.querySelector("[data-markdown-source-length]")).toHaveAttribute(
+        "data-markdown-source-length",
+        String(accepted.length),
+      );
+      expect(container.querySelectorAll("p")[1]).toBe(paragraph);
       expect(container.querySelector("strong")).toBe(seed);
       expect(container.querySelector("img")).toBeNull();
+      expect(container.querySelector("[data-markdown-root] > div")).toBeNull();
     }
     await act(() => worker.respond());
     expect(container.querySelector("[data-markdown-source-length]")?.getAttribute("data-markdown-source-length")).toBe(
@@ -217,19 +290,108 @@ describe("MarkdownBlock", () => {
     );
     expect(container.querySelector("strong")).toBe(seed);
     expect(container.textContent).toContain("one two three");
+    expect(container).toHaveTextContent("<img src=x onerror=alert(1)>");
   });
 
-  it("does not retain a parsed prefix when the source is replaced", async () => {
-    const worker = new DelayedWorker();
+  it("atomically replaces rich content and rejects a prior non-append generation even when its source is a prefix again", async () => {
+    const worker = new ControlledMarkdownWorker();
     configureMarkdownWorkerFactoryForTests(() => worker);
     const { container, rerender } = render(
       <MarkdownBlock scope="session" cacheKey="message" text="**old**" streaming />,
     );
     await act(() => worker.respond());
+    const old = container.querySelector("strong");
+    rerender(<MarkdownBlock scope="session" cacheKey="message" text="**old** pending" streaming />);
+    await act(async () => {});
     rerender(<MarkdownBlock scope="session" cacheKey="message" text="**replacement**" streaming />);
-    expect(container.textContent).toBe("**replacement**");
-    expect(container.querySelector("strong")).toBeNull();
+    rerender(<MarkdownBlock scope="session" cacheKey="message" text="**old** pending returned" streaming />);
+    // The old-generation reply is a textual prefix but no longer has authority.
+    await act(() => worker.respond());
+    expect(container.querySelector("strong")).toBe(old);
+    expect(container.textContent).toBe("old");
+    rerender(<MarkdownBlock scope="session" cacheKey="message" text="**replacement**" streaming />);
+    await act(() => worker.respond());
+    expect(container.textContent).toBe("old");
     await act(() => worker.respond());
     expect(container.querySelector("strong")?.textContent).toBe("replacement");
+  });
+
+  it("retains tables and headings through completion with parsing pending, then caches the exact final source", async () => {
+    const worker = new ControlledMarkdownWorker();
+    configureMarkdownWorkerFactoryForTests(() => worker);
+    const prefix = "|A|B|\n|-|-|\n|one|two|\n\n## Heading\n\nAlready formatted";
+    const props = { scope: "final", cacheKey: "body" };
+    const view = render(<MarkdownBlock {...props} text={prefix} streaming />);
+    await act(() => worker.respond());
+    const table = screen.getByRole("table");
+    const heading = screen.getByRole("heading", { name: "Heading" });
+    const paragraph = view.container.querySelector("p");
+    const final = `${prefix} prose.`;
+    view.rerender(<MarkdownBlock {...props} text={final} streaming />);
+    await act(async () => {});
+    view.rerender(<MarkdownBlock {...props} text={final} streaming={false} />);
+    expect(screen.getByRole("table")).toBe(table);
+    expect(screen.getByRole("heading", { name: "Heading" })).toBe(heading);
+    expect(view.container.querySelector("[data-markdown-root] > div")).toBeNull();
+    await act(() => worker.respond());
+    expect(screen.getByRole("table")).toBe(table);
+    expect(view.container.querySelector("p")).toBe(paragraph);
+    expect(paragraph).toHaveTextContent("Already formatted prose.");
+    const requests = worker.requests.length;
+    view.unmount();
+    const remount = render(<MarkdownBlock {...props} text={final} />);
+    expect(screen.getByRole("table")).toBeTruthy();
+    expect(remount.container.querySelector("[data-markdown-root] > div")).toBeNull();
+    expect(worker.requests).toHaveLength(requests);
+  });
+
+  it("does not display another content owner's render or accept its late reply", async () => {
+    const worker = new ControlledMarkdownWorker();
+    configureMarkdownWorkerFactoryForTests(() => worker);
+    const view = render(<MarkdownBlock scope="first" cacheKey="body" text="**foreign**" streaming />);
+    await act(() => worker.respond());
+    view.rerender(<MarkdownBlock scope="first" cacheKey="body" text="**foreign** pending" streaming />);
+    await act(async () => {});
+    view.rerender(<MarkdownBlock scope="second" cacheKey="body" text="**current**" streaming />);
+    expect(view.container).not.toHaveTextContent("foreign");
+    await act(() => worker.respond());
+    expect(view.container).not.toHaveTextContent("foreign");
+    await act(() => worker.respond());
+    expect(view.container.querySelector("strong")).toHaveTextContent("current");
+  });
+
+  it("drains an active prefix and the queued final source after completion without caching the interim result", async () => {
+    const worker = new ControlledMarkdownWorker();
+    configureMarkdownWorkerFactoryForTests(() => worker);
+    const props = { scope: "drain", cacheKey: "body" };
+    const view = render(<MarkdownBlock {...props} text="Seed" streaming />);
+    await act(() => worker.respond());
+    const paragraph = view.container.querySelector("p");
+    view.rerender(<MarkdownBlock {...props} text="Seed active" streaming />);
+    await act(async () => {});
+    view.rerender(<MarkdownBlock {...props} text="Seed active final" streaming={false} />);
+    await act(() => worker.respond());
+    expect(view.container.querySelector("p")).toBe(paragraph);
+    expect(paragraph).toHaveTextContent("Seed active");
+    expect(getCompletedMarkdown("drain", "body", "Seed active")).toBeUndefined();
+    await act(() => worker.respond());
+    expect(view.container.querySelector("p")).toBe(paragraph);
+    expect(paragraph?.textContent).toBe("Seed active final");
+    expect(getCompletedMarkdown("drain", "body", "Seed active final")?.source).toBe("Seed active final");
+  });
+
+  it("falls back safely after actual Worker failure, not after queued-request supersession", async () => {
+    const worker = new ControlledMarkdownWorker();
+    configureMarkdownWorkerFactoryForTests(() => worker);
+    const view = render(<MarkdownBlock scope="failure" cacheKey="body" text="**seed**" streaming />);
+    await act(() => worker.respond());
+    for (const text of ["**seed** one", "**seed** one two", "**seed** one two three"])
+      view.rerender(<MarkdownBlock scope="failure" cacheKey="body" text={text} streaming />);
+    await act(async () => {});
+    expect(view.container.querySelector("[data-markdown-root]")).not.toBeNull();
+    expect(view.container).not.toHaveTextContent("three");
+    await act(() => worker.fail());
+    expect(view.container).toHaveTextContent("seed one two three");
+    expect(view.container.querySelector("strong")).toHaveTextContent("seed");
   });
 });

@@ -80,17 +80,32 @@ describe("transcript render isolation", () => {
     });
     hydrateTranscript(view.container);
     expect(screen.getByText("LIVE_THOUGHT")).toBeVisible();
-    const answer = screen.getByText("Visible answer").closest("[data-message-body]");
+    const answer = screen.getByTestId("transcript-row-live").querySelector("[data-message-body]");
+    expect(answer).toHaveTextContent("Visible answer");
     store(hidden);
     fireEvent(window, new StorageEvent("storage", { key: STORAGE_KEY }));
     expect(screen.queryByText("LIVE_THOUGHT")).toBeNull();
     expect(screen.getByRole("status")).toHaveTextContent("Thinking");
-    expect(screen.getByText("Visible answer").closest("[data-message-body]")).toBe(answer);
+    expect(screen.getByTestId("transcript-row-live").querySelector("[data-message-body]")).toBe(answer);
     store(expanded);
     fireEvent(window, new StorageEvent("storage", { key: STORAGE_KEY }));
     expect(screen.getByText("LIVE_THOUGHT")).toBeVisible();
-    expect(screen.getByText("Visible answer").closest("[data-message-body]")).toBe(answer);
+    expect(screen.getByTestId("transcript-row-live").querySelector("[data-message-body]")).toBe(answer);
     expect(source.reasoning).toBe("LIVE_THOUGHT");
+  });
+
+  it("keeps row entrance ownership separate from descendant word animation completion", () => {
+    const view = render(<ChatTranscript messages={[]} tools={[]} />, { wrapper: PreferencesProvider });
+    hydrateTranscript(view.container);
+    view.rerender(<ChatTranscript messages={[{ ...message("new", 0, "New answer"), streaming: true }]} tools={[]} />);
+    const row = screen.getByTestId("transcript-row-new");
+    const word = within(row).getByText("New");
+    expect(row).toHaveClass("v2-transcript-row-enter");
+    const end = () => new Event("AnimationEvent" in window ? "animationend" : "webkitAnimationEnd", { bubbles: true });
+    fireEvent(word, end());
+    expect(row).toHaveClass("v2-transcript-row-enter");
+    fireEvent(row, end());
+    expect(row).not.toHaveClass("v2-transcript-row-enter");
   });
 
   it.each([

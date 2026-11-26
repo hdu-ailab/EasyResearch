@@ -126,7 +126,9 @@ describe("SubagentToolCard", () => {
       type: "message_update",
       assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Current answer" },
     });
-    expect(screen.getByText("Current answer")).toBeVisible();
+    expect(
+      screen.getByText((_, element) => element?.tagName === "P" && element.textContent === "Current answer"),
+    ).toBeVisible();
     expect(screen.queryByText(/Reconsidering the result/)).toBeNull();
   });
 

@@ -4,7 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownBlock } from "../MarkdownBlock";
 import { FileReferenceBatch } from "./file-reference-batch";
 import { parseMarkdownBlocks } from "./parse";
-import { clearCompletedMarkdownCacheForTests, prepareMarkdownBlocks } from "./render";
+import {
+  clearCompletedMarkdownCacheForTests,
+  getCompletedMarkdown,
+  prepareMarkdownBlocks,
+  setCompletedMarkdown,
+} from "./render";
 import { FileReferenceResolutionContext, TranscriptFileContext } from "./TranscriptFileLink";
 
 vi.mock("mermaid", () => ({
@@ -85,5 +90,32 @@ describe("prepareMarkdownBlocks", () => {
     const second = prepareMarkdownBlocks(await parseMarkdownBlocks("first\n\nchanged"), first);
     expect(second[0]!.node).toBe(first[0]!.node);
     expect(second.at(-1)!.node).not.toBe(first.at(-1)!.node);
+  });
+
+  it("reconciles a changed paragraph without replacing its DOM or identical sibling blocks", async () => {
+    const first = prepareMarkdownBlocks(await parseMarkdownBlocks("Repeated\n\nRepeated\n\n**Tail**"));
+    const view = render(<section>{first.map((block) => block.node)}</section>);
+    const paragraphs = [...view.container.querySelectorAll("p")];
+    const strong = view.container.querySelector("strong");
+    const next = prepareMarkdownBlocks(await parseMarkdownBlocks("Repeated\n\nRepeated\n\n**Tail** grows"), first);
+    view.rerender(<section>{next.map((block) => block.node)}</section>);
+    [...view.container.querySelectorAll("p")].forEach((paragraph, index) => {
+      expect(paragraph).toBe(paragraphs[index]);
+    });
+    expect(view.container.querySelector("strong")).toBe(strong);
+    expect(paragraphs[2]?.textContent).toBe("Tail grows");
+    expect(next[0]).toBe(first[0]);
+    expect(next[2]).toBe(first[2]);
+    expect(next.at(-1)?.signature).not.toBe(first.at(-1)?.signature);
+  });
+
+  it("bounds completed results at 200 entries and verifies exact raw source on reuse", () => {
+    for (let index = 0; index < 200; index++) setCompletedMarkdown("bounded", String(index), `source ${index}`, []);
+    expect(getCompletedMarkdown("bounded", "0", "source 0")?.source).toBe("source 0");
+    setCompletedMarkdown("bounded", "new", "new", []);
+    expect(getCompletedMarkdown("bounded", "1", "source 1")).toBeUndefined();
+    expect(getCompletedMarkdown("bounded", "0", "source 0")?.source).toBe("source 0");
+    expect(getCompletedMarkdown("bounded", "0", "another source")).toBeUndefined();
+    expect(getCompletedMarkdown("foreign", "0", "source 0")).toBeUndefined();
   });
 });

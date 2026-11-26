@@ -196,6 +196,7 @@ export function SubagentToolCard({
                     scope={markdownScope}
                     cacheKey={markdownCacheKey}
                     streaming={running && (activity?.kind === "text" || thinking?.active === true)}
+                    animateText={!thinking && !isToolActivity}
                     onRendered={onMarkdownRendered}
                   />
                 )

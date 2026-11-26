@@ -5,12 +5,15 @@ import { defaultUrlTransform } from "react-markdown";
 import { recordMarkdownRuntimeMetric } from "./client";
 import { LruCache } from "./lru";
 import type { MarkdownWorkerBlock } from "./protocol";
+import { MarkdownSpan } from "./TextMotion";
 import { TranscriptCode } from "./TranscriptCode";
 import { TranscriptFileLink } from "./TranscriptFileLink";
+import { prepareTextNodes } from "./text-nodes";
 
 export interface PreparedMarkdownBlock {
+  key: string;
   signature: string;
-  occurrence: number;
+  prose: string;
   node: ReactNode;
 }
 
@@ -30,32 +33,29 @@ const components = {
   a: TranscriptFileLink,
   code: TranscriptCode,
   img: TranscriptImage,
+  span: MarkdownSpan,
 };
-
-function occurrenceKey(signature: string, occurrence: number): string {
-  return `${signature}:${occurrence}`;
-}
 
 export function prepareMarkdownBlocks(
   blocks: readonly MarkdownWorkerBlock[],
   previous: readonly PreparedMarkdownBlock[] = [],
 ): readonly PreparedMarkdownBlock[] {
-  const reusable = new Map(previous.map((block) => [occurrenceKey(block.signature, block.occurrence), block]));
-  const occurrences = new Map<string, number>();
-  return blocks.map((block) => {
-    const occurrence = occurrences.get(block.signature) ?? 0;
-    occurrences.set(block.signature, occurrence + 1);
-    const key = occurrenceKey(block.signature, occurrence);
+  const reusable = new Map(previous.map((block) => [block.key, block]));
+  return blocks.map((block, index) => {
+    // Appending source keeps its structural slots. Signatures decide whether the
+    // prepared value is reusable, never whether React must destroy the live slot.
+    const key = `block:${index}`;
     const prior = reusable.get(key);
-    if (prior) return prior;
-    const rendered = toJsxRuntime(block.tree, {
+    if (prior?.signature === block.signature) return prior;
+    const { tree, prose } = prepareTextNodes(block.tree);
+    const rendered = toJsxRuntime(tree, {
       Fragment,
       jsx,
       jsxs,
       components,
       passKeys: true,
     });
-    return { signature: block.signature, occurrence, node: <Fragment key={key}>{rendered}</Fragment> };
+    return { key, signature: block.signature, prose, node: <Fragment key={key}>{rendered}</Fragment> };
   });
 }
 

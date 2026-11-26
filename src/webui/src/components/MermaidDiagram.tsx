@@ -34,7 +34,10 @@ export function MermaidDiagram({ source }: MermaidDiagramProps) {
         return mermaid.render(id, source);
       })
       .then((result) => {
-        if (!cancelled && result) setSvg(result.svg);
+        if (!cancelled && result) {
+          setSvg(result.svg);
+          setError(null);
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));

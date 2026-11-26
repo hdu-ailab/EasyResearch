@@ -1,0 +1,14 @@
+@keyframes er-markdown-word-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .er-markdown-word-enter {
+    animation: er-markdown-word-enter 180ms ease-out both;
+  }
+}

@@ -2,25 +2,19 @@
 
 EasyResearch Desktop runs the same EasyResearch backend and Web interface as the npm CLI. It embeds the matching native EasyResearch executable, so Node and Bun are not required at runtime.
 
-## 0.1.25 highlights
+## 0.1.26 highlights
 
-- Remove the separate Desktop startup loading window. Tray and version-button updates share a redesigned dialog with clear versions, progress and recovery actions.
-- Improve Windows update rollback when installation files are temporarily locked, while preserving recovery files on failure.
-- Separate **Skills**, **Skill marketplace** and **Tools** in Settings. Installed Skills use categorized cards with edit, disable/enable and delete actions.
-- Load marketplace details only on demand. The plus button installs directly and becomes a checkmark after success; installation verifies discovery and refreshes the installed list immediately.
-- Apply user Tool source/helper updates through the existing idle reload lifecycle. User tools default to Research Assistant; other Agents require explicit tool names.
-- Show scoped extension-load failures and registration issues separately, preserving healthy tools and offering refresh recovery. Hidden tools are no longer advertised as callable.
-- Fix Skill title hover feedback, action-menu dismissal and stale editor responses; align human messages consistently on the right.
+- Fix repeated Markdown/raw-text flashes in assistant and subagent output. Rendered paragraphs, tables and headings stay visible while parsing catches up, including completion and Stop.
+- Add a subtle **180 ms fade-in for newly arriving assistant words**, without replaying existing text. Respect reduced-motion preferences.
+- Preserve paragraph identity and selected word prefixes during streaming; keep the reading position when scrolling away from the latest output.
+- Fix Mermaid recovery after incomplete streamed syntax and clear stale diagram state when content is replaced.
 
-## 0.1.25 更新
+## 0.1.26 更新
 
-- 取消桌面端独立的启动加载窗口。托盘与版本按钮共用重新设计的升级弹窗，统一版本信息、进度和失败恢复操作。
-- 改进 Windows 升级回滚对安装文件临时占用的处理，失败时保留恢复文件。
-- 设置中拆分 **技能、技能市场、工具** 三个入口。已安装技能采用分类卡片，支持编辑、禁用/启用及删除。
-- 市场详情改为按需加载，加号直接安装，成功后显示勾号；安装会核验技能发现结果，并立即刷新已安装列表。
-- 自建工具源码及辅助文件的变化接入现有空闲重载机制。默认向研究助手开放，其他 Agent 通过显式工具名称授权。
-- 按作用域分别显示扩展加载失败与注册问题，保留正常工具并提供刷新恢复；隐藏工具不再被误列为可调用。
-- 修复技能名称悬停反馈、操作菜单误关闭和旧编辑请求覆盖问题，并统一真人消息的右侧对齐。
+- 修复助手与子 Agent 输出反复闪回 Markdown 源码的问题。解析过程中保持已排版的正文、表格和标题，回复结束或停止时也保持稳定。
+- 助手新增词语采用 **180ms 淡入**，已有文字不重复播放动画，并适配减少动画设置。
+- 保持段落节点与已输出词语的选区稳定，向上阅读时保留当前滚动位置。
+- 修复 Mermaid 流式语法补全后的恢复，以及替换内容时残留旧图的问题。
 
 ## Downloads
 
@@ -32,7 +26,7 @@ EasyResearch Desktop runs the same EasyResearch backend and Web interface as the
 For Linux ARM64, replace the version below with the downloaded release:
 
 ```bash
-version=0.1.25
+version=0.1.26
 chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 "./EasyResearch-${version}-linux-arm64.AppImage"
 ```
@@ -40,7 +34,7 @@ chmod +x "EasyResearch-${version}-linux-arm64.AppImage"
 Or install the Debian/Ubuntu package and open EasyResearch from the applications menu:
 
 ```bash
-version=0.1.25
+version=0.1.26
 sudo apt install "./EasyResearch-${version}-linux-arm64.deb"
 ```
 
